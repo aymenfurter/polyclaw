@@ -5,7 +5,7 @@
 > **Warning:** Octoclaw is an independent, community-built tool -- not an official GitHub product. It operates under your identity with a high degree of autonomy, meaning it can take actions on your behalf (GitHub, Azure, phone calls, code execution). Misconfiguration or unattended use can have real consequences. This project is intended for developers and technical users who understand the risks of running an autonomous agent with access to their accounts and infrastructure.
 
 <p align="center">
-  <strong>Your personal AI copilot that lives where you do -- browser, terminal, your apps, or a phone call.</strong>
+  <strong>Your personal AI copilot that lives where you do -- browser, terminal, your messaging apps, or a phone call.</strong>
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
 
 ---
 
-Octoclaw is an implementation similar to [OpenClaw](https://github.com/amidabuddha/openclaw) but built natively in the GitHub ecosystem, powered by the **GitHub Copilot SDK**. It gives you the full power of GitHub Copilot -- untethered from the IDE. It can write code, but it also uses the GitHub CLI to interact with your repos, actions, issues, and pull requests. It writes its own skills, reaches out to you when something matters, schedules tasks for the future, and can even phone you for urgent matters. Give it access to Azure and it can deploy Foundry agents or pull in business context from WorkIQ through the plugin system.
+Octoclaw is an implementation similar to [OpenClaw](https://github.com/openclaw/openclaw) but built natively in the GitHub ecosystem, powered by the **GitHub Copilot SDK**. It gives you the full power of GitHub Copilot -- untethered from the IDE. It can write code, but it also uses the GitHub CLI to interact with your repos, actions, issues, and pull requests. It writes its own skills, reaches out to you when something matters, schedules tasks for the future, and can even phone you for urgent matters. Give it access to Azure and it can deploy Foundry agents or pull in business context from WorkIQ through the plugin system.
 
 You interact with it through a web dashboard, a terminal UI, your messaging apps, or a phone call -- whichever fits the moment.
 
