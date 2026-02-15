@@ -214,7 +214,7 @@ class SkillRegistry:
 
         headers: dict[str, str] = {
             "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "moltcopilot-skill-registry",
+            "User-Agent": "octoclaw-skill-registry",
         }
         token = cfg.github_token
         if token:
@@ -308,7 +308,7 @@ class SkillRegistry:
     async def _fetch_commit_counts(self, skills: list[SkillInfo]) -> None:
         headers: dict[str, str] = {
             "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "moltcopilot-skill-registry",
+            "User-Agent": "octoclaw-skill-registry",
         }
         token = cfg.github_token
         if token:
@@ -355,7 +355,7 @@ class SkillRegistry:
 
         headers: dict[str, str] = {
             "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "moltcopilot-skill-registry",
+            "User-Agent": "octoclaw-skill-registry",
         }
         token = cfg.github_token
         if token:

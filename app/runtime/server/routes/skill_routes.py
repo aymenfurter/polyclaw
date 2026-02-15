@@ -160,7 +160,7 @@ class SkillRoutes:
             )
         skill_path = f"skills/{skill_id}/SKILL.md"
         github_url = (
-            "https://github.com/AymenDev/moltcopilot/new/main?"
+            "https://github.com/aymenfurter/octoclaw/new/main?"
             f"filename={skill_path}"
         )
         return web.json_response({

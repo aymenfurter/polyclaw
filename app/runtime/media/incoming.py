@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 def _sync_download(url: str, dest: str) -> None:
     import urllib.request
 
-    req = urllib.request.Request(url, headers={"User-Agent": "moltcopilot/4.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "octoclaw/4.0"})
     with urllib.request.urlopen(req, timeout=60) as resp:
         Path(dest).write_bytes(resp.read())
 
