@@ -7,10 +7,6 @@ weight: 8
 
 Polyclaw includes a defense-in-depth guardrails framework that intercepts every tool invocation before execution and applies a configurable mitigation strategy. This gives operators fine-grained control over what the agent can do, how much autonomy it has, and how suspicious activity is detected and blocked.
 
-![Layered security model](/layered-security.svg)
-
-The diagram above shows the four concentric layers of protection. The guardrails framework operates at **Layer 4** (runtime controls), wrapping every tool call with policy evaluation before it reaches execution. Layers 1-3 (model alignment, platform safety, and the system prompt) are always active underneath.
-
 ![Guardrails settings](/screenshots/web-hardening-guardrails-intropage.png)
 
 ---

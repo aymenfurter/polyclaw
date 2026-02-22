@@ -36,7 +36,19 @@ Middleware is applied in order to every request:
 
 ### 1. Lockdown Middleware
 
-When `LOCKDOWN_MODE=true`, all API requests are rejected with `403`. The intent is to allow operators to disable the agent from the web UI and later re-enable it via a bot service channel (e.g. `/lockdown off` in Teams or Telegram). Bot and voice endpoints remain open during lockdown. This feature is experimental and not yet fully implemented.
+When `LOCKDOWN_MODE=true`, all API requests are rejected with `403`. Operators can toggle lockdown from the admin UI (`POST /api/setup/lockdown`) or from a bot service channel (`/lockdown on` / `/lockdown off` in Teams or Telegram). Bot and voice endpoints remain reachable during lockdown so the agent can still receive the `/lockdown off` command to restore access.
+
+Enabling lockdown also logs out the Azure CLI session and activates tunnel restriction, effectively cutting off all external access to the admin plane. On startup, a server in lockdown skips infrastructure provisioning entirely. On shutdown it skips decommission.
+
+**Allowed paths during lockdown:**
+
+| Path | Reason |
+|---|---|
+| `/health` | Health probe |
+| `/api/messages` | Bot Framework webhook (so `/lockdown off` can arrive) |
+| `/acs`, `/realtime-acs` | ACS voice callbacks |
+| `/api/voice/acs-callback`, `/api/voice/media-streaming` | ACS voice callbacks |
+| `/api/setup/lockdown` | Admin UI needs to query and toggle lockdown status |
 
 ### 2. Tunnel Restriction Middleware
 
