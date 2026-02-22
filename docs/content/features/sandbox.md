@@ -5,9 +5,6 @@ weight: 5
 
 # Sandbox Execution
 
-<div class="callout callout--warning">
-<strong>Experimental feature.</strong> Agent Sandbox is experimental and may change or be removed in future releases. The API includes this warning in all responses.
-</div>
 
 Polyclaw can execute code in isolated sandbox environments using [Azure Container Apps Dynamic Sessions](https://learn.microsoft.com/en-us/azure/container-apps/sessions). Sandbox mode is **disabled by default**.
 

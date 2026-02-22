@@ -13,11 +13,10 @@ Defined in `app/runtime/server/app.py`. The server creates an `aiohttp.web.Appli
 
 ### Server Modes
 
-The server runs in one of three modes controlled by `POLYCLAW_SERVER_MODE` (or CLI flags):
+The server runs in one of two modes controlled by `POLYCLAW_SERVER_MODE` (or CLI flags):
 
 | Mode | CLI flag | Description |
 |---|---|---|
-| `combined` | *(default)* | Both admin and agent runtime in a single process |
 | `admin` | `--admin-only` | Admin control-plane only (setup wizard, config UI, no agent) |
 | `runtime` | `--runtime-only` | Agent runtime data-plane only (agent, bot, voice, no setup UI) |
 
@@ -78,7 +77,7 @@ All other `/api/voice/*` routes (e.g. `/api/voice/call`, `/api/voice/status`) **
 
 ## Route Groups
 
-Routes are split between admin-only and runtime-only handlers. In `combined` mode both sets are registered.
+Routes are split between admin-only and runtime-only handlers.
 
 ### Admin-Only Routes
 
@@ -124,7 +123,7 @@ Registered in all modes:
 ### Static Assets
 
 - `/media/*` -- Serves files from the media directory
-- `/*` -- SPA catch-all serving the frontend `index.html` (admin and combined modes only)
+- `/*` -- SPA catch-all serving the frontend `index.html` (admin mode only)
 
 ## Lifecycle Hooks
 
@@ -145,7 +144,7 @@ Startup and cleanup hooks are split by mode:
 ### on_cleanup
 
 1. Cancel background tasks (scheduler, proactive, Foundry IQ, reconcile)
-2. In combined mode: decommission infrastructure (unless lockdown is active)
+2. Decommission infrastructure (unless lockdown is active) -- runtime mode only
 3. Stop the agent and close all sessions
 
 ## Health Check
@@ -156,8 +155,8 @@ Startup and cleanup hooks are split by mode:
 {
   "status": "ok",
   "version": "5.0.0",
-  "mode": "combined"
+  "mode": "runtime"
 }
 ```
 
-In `runtime` or `combined` mode, the response also includes `tunnel_url` with the current Cloudflare tunnel URL (empty string if no tunnel is running).
+In `runtime` mode, the response also includes `tunnel_url` with the current Cloudflare tunnel URL (empty string if no tunnel is running).
