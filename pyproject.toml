@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "polyclaw"
-version = "4.0.0"
+version = "5.0.0"
 description = "Autonomous AI copilot with web admin interface, multi-channel Bot Framework support, and built-in chat. Powered by GitHub Copilot SDK."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,6 +29,10 @@ dependencies = [
     "PyJWT>=2.8",
     "cryptography>=41.0",
     "croniter>=2.0",
+    "azure-monitor-opentelemetry>=1.6",
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "agent-policy-guard @ git+https://github.com/agent-policy/guard.git#subdirectory=python",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +50,7 @@ polyclaw = "polyclaw.cli:main"
 polyclaw-bot = "polyclaw.server:main"
 polyclaw-admin = "polyclaw.server:main"
 polyclaw-env = "polyclaw.env_cli:main"
+polyclaw-run = "polyclaw.run_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["polyclaw*"]
@@ -58,7 +63,7 @@ target-version = "py311"
 select = ["E", "W", "F", "I", "UP"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "app/runtime/tests"]
+testpaths = ["tests", "app/runtime/tests", "app/cli/tests"]
 asyncio_mode = "auto"
 filterwarnings = ["ignore::DeprecationWarning"]
 markers = [

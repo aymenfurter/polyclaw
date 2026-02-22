@@ -27,10 +27,6 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
-# After this many hours without a pending message being scheduled by the
-# memory agent, the loop will try to autonomously generate one.
-_AUTO_GENERATE_IDLE_HOURS = 3.0
-
 # Minimum hours since last user activity before we proactively reach out.
 _MIN_USER_IDLE_HOURS = 1.0
 

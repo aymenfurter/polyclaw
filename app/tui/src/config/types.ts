@@ -78,13 +78,23 @@ export interface AcaConfig {
   acrLoginServer: string;
   environmentName: string;
   appName: string;
+  /** FQDN of the remote ACA runtime container. */
   fqdn: string;
   storageAccountName: string;
+  /** NFS share name (used by ACA runtime). */
   storageShareName: string;
+  /** SMB share name (used by local admin Docker container). */
+  smbShareName?: string;
   vnetName: string;
   subnetName: string;
   adminPort: number;
   botPort: number;
   adminSecret: string;
+  /** Azure Storage account key for mounting SMB share locally. */
+  storageKey?: string;
+  /** Managed identity resource ID for the runtime container. */
+  miId?: string;
+  /** Managed identity client ID for the runtime container. */
+  miClientId?: string;
   lastDeployed: string;
 }

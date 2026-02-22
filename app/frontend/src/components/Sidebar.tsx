@@ -17,6 +17,8 @@ const NAV_ITEMS = [
   { to: '/profile', icon: '👤', label: 'Profile' },
   { to: '/messaging', icon: '✉️', label: 'Messaging' },
   { to: '/infrastructure', icon: '🏗️', label: 'Infrastructure' },
+  { to: '/guardrails', icon: '🛡️', label: 'Hardening' },
+  { to: '/tool-activity', icon: '🔍', label: 'Tool Activity' },
 ]
 
 export default function Sidebar({ status, collapsed, onToggle }: Props) {

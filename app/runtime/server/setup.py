@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 
+import aiohttp as _aiohttp
 from aiohttp import web
 
-from ..config.settings import SECRET_ENV_KEYS, cfg
+from ..config.settings import SECRET_ENV_KEYS, ServerMode, cfg
+from ..services.aca_deployer import AcaDeployer, AcaDeployRequest
 from ..services.azure import AzureCLI
 from ..services.deployer import BotDeployer
 from ..services.github import GitHubAuth
 from ..services.provisioner import Provisioner
-from ..services.tunnel import CloudflareTunnel
+from ..services.runtime_identity import RuntimeIdentityProvisioner
 from ..state.deploy_state import DeployStateStore
 from ..state.infra_config import InfraConfigStore
 from ..util.async_helpers import run_sync
@@ -31,12 +34,13 @@ class SetupRoutes:
         self,
         az: AzureCLI,
         gh: GitHubAuth,
-        tunnel: CloudflareTunnel,
+        tunnel: object | None,
         deployer: BotDeployer,
         rebuild_adapter: Callable,
         infra_store: InfraConfigStore,
         provisioner: Provisioner,
         deploy_store: DeployStateStore | None = None,
+        aca_deployer: AcaDeployer | None = None,
     ) -> None:
         self._az = az
         self._gh = gh
@@ -46,9 +50,11 @@ class SetupRoutes:
         self._store = infra_store
         self._provisioner = provisioner
         self._deploy_store = deploy_store
+        self._aca_deployer = aca_deployer
         self._voice_routes = VoiceSetupRoutes(az, infra_store)
         self._prerequisites_routes = PrerequisitesRoutes(az, infra_store, deploy_store)
-        self._preflight_routes = PreflightRoutes(tunnel, infra_store)
+        self._preflight_routes = PreflightRoutes(tunnel, infra_store, az=az)
+        self._runtime_identity = RuntimeIdentityProvisioner(az)
 
     def register(self, router: web.UrlDispatcher) -> None:
         r = router
@@ -82,13 +88,23 @@ class SetupRoutes:
         self._preflight_routes.register(r)
         r.add_get("/api/setup/lockdown", self.lockdown_status)
         r.add_post("/api/setup/lockdown", self.lockdown_toggle)
+        r.add_get("/api/setup/runtime-identity", self.runtime_identity_status)
+        r.add_post("/api/setup/runtime-identity/provision", self.runtime_identity_provision)
+        r.add_post("/api/setup/runtime-identity/revoke", self.runtime_identity_revoke)
+        r.add_get("/api/setup/aca/status", self.aca_status)
+        r.add_post("/api/setup/aca/deploy", self.aca_deploy)
+        r.add_post("/api/setup/aca/destroy", self.aca_destroy)
+        r.add_post("/api/setup/container/restart", self.container_restart)
 
     # -- Status --
 
     async def status(self, _req: web.Request) -> web.Response:
+        from .tunnel_status import resolve_tunnel_info
+
         account = self._az.account_info()
         copilot = self._gh.status()
         kv_url = cfg.env.read("KEY_VAULT_URL") or ""
+        tunnel_info = await resolve_tunnel_info(self._tunnel, self._az)
 
         return web.json_response({
             "azure": {
@@ -98,11 +114,7 @@ class SetupRoutes:
                 "subscription_id": account.get("id") if account else None,
             },
             "copilot": copilot,
-            "tunnel": {
-                "active": self._tunnel.is_active,
-                "url": self._tunnel.url,
-                "restricted": cfg.tunnel_restricted,
-            },
+            "tunnel": tunnel_info,
             "lockdown_mode": cfg.lockdown_mode,
             "prerequisites_configured": bool(kv_url),
             "bot_configured": self._store.bot_configured,
@@ -173,7 +185,17 @@ class SetupRoutes:
     # -- Copilot --
 
     async def copilot_status(self, _req: web.Request) -> web.Response:
-        return web.json_response(self._gh.status())
+        info = self._gh.status()
+        # Auto-persist: if gh CLI is authenticated but no GITHUB_TOKEN in
+        # .env yet, extract the token and write it so the runtime container
+        # picks it up from the shared volume.
+        if info.get("authenticated") and not cfg.github_token:
+            token = self._gh.extract_token()
+            if token:
+                cfg.write_env(GITHUB_TOKEN=token)
+                logger.info("[setup.copilot] persisted GITHUB_TOKEN from gh CLI session")
+                await self._restart_runtime()
+        return web.json_response(info)
 
     async def copilot_login(self, _req: web.Request) -> web.Response:
         status, info = self._gh.start_login()
@@ -187,7 +209,43 @@ class SetupRoutes:
         if not token:
             return _error("Token is required", 400)
         cfg.write_env(GITHUB_TOKEN=token)
+        await self._restart_runtime()
         return _ok("GitHub token saved")
+
+    async def _restart_runtime(self) -> None:
+        """Signal the runtime container to reload configuration.
+
+        In two-container mode the admin container calls the runtime's
+        ``/api/internal/reload`` endpoint so it picks up new settings
+        from the shared volume without a full container restart.
+
+        In combined mode this is a no-op (changes are already in-process).
+        """
+        runtime_url = os.getenv("RUNTIME_URL", "")
+        if not runtime_url or cfg.server_mode == ServerMode.combined:
+            return
+
+        url = f"{runtime_url.rstrip('/')}/api/internal/reload"
+        headers: dict[str, str] = {}
+        if cfg.admin_secret:
+            headers["Authorization"] = f"Bearer {cfg.admin_secret}"
+
+        try:
+            async with _aiohttp.ClientSession() as session:
+                async with session.post(
+                    url, headers=headers,
+                    timeout=_aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    body = await resp.json()
+                    logger.info(
+                        "[setup.restart_runtime] reload response: status=%s body=%r",
+                        resp.status, body,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "[setup.restart_runtime] failed to signal runtime reload: %s",
+                exc, exc_info=True,
+            )
 
     async def smoke_test(self, _req: web.Request) -> web.Response:
         runner = SmokeTestRunner(self._gh)
@@ -197,6 +255,8 @@ class SetupRoutes:
     # -- Tunnel --
 
     async def start_tunnel(self, req: web.Request) -> web.Response:
+        if not self._tunnel:
+            return _error("Tunnel is managed by the runtime container", 400)
         body = await req.json()
         port = body.get("port", cfg.admin_port)
         result = self._tunnel.start(port)
@@ -220,6 +280,8 @@ class SetupRoutes:
         })
 
     async def stop_tunnel(self, _req: web.Request) -> web.Response:
+        if not self._tunnel:
+            return _error("Tunnel is managed by the runtime container", 400)
         result = self._tunnel.stop()
         if not result:
             return _error(result.message)
@@ -229,20 +291,29 @@ class SetupRoutes:
         body = await req.json()
         restricted = bool(body.get("restricted", False))
 
-        if restricted:
-            if not self._store.bot_configured:
-                return _error(
-                    "Cannot enable: bot configuration incomplete.", 400
-                )
-            if not self._tunnel.is_active:
-                return _error("Cannot enable: tunnel not active.", 400)
-
         cfg.write_env(TUNNEL_RESTRICTED="1" if restricted else "")
         state = "enabled" if restricted else "disabled"
         logger.info("Tunnel restriction %s", state)
+
+        # Detect whether a container redeploy is needed for the change to
+        # take effect (ACA / Docker deployments where the runtime container
+        # reads env vars at startup).
+        import os
+
+        deploy_mode = "local"
+        if os.getenv("POLYCLAW_USE_MI"):
+            deploy_mode = "aca"
+        elif os.getenv("POLYCLAW_CONTAINER") == "1":
+            deploy_mode = "docker"
+
+        needs_redeploy = deploy_mode in ("aca", "docker")
+
         return web.json_response({
-            "status": "ok", "restricted": restricted,
+            "status": "ok",
+            "restricted": restricted,
             "message": f"Tunnel restriction {state}",
+            "needs_redeploy": needs_redeploy,
+            "deploy_mode": deploy_mode,
         })
 
     # -- Bot config --
@@ -349,6 +420,7 @@ class SetupRoutes:
                 "detail": "Some secrets could not be migrated",
             })
 
+        await self._restart_runtime()
         return web.json_response({
             "status": "ok", "steps": steps,
             "message": "Configuration saved securely",
@@ -367,6 +439,8 @@ class SetupRoutes:
 
         all_steps = decomm_steps + prov_steps
         prov_failed = any(s.get("status") == "failed" for s in prov_steps)
+        if not prov_failed:
+            await self._restart_runtime()
         return web.json_response({
             "status": "error" if prov_failed else "ok",
             "message": "Deploy completed with errors" if prov_failed else "Deployed",
@@ -396,8 +470,18 @@ class SetupRoutes:
                 raw[key] = "****"
         return web.json_response(raw)
 
+    _ALLOWED_CONFIG_KEYS: frozenset[str] = frozenset({
+        "COPILOT_MODEL",
+        "BOT_PORT",
+        "GITHUB_TOKEN",
+    })
+
     async def save_config(self, req: web.Request) -> web.Response:
-        cfg.write_env(**(await req.json()))
+        body = await req.json()
+        invalid = set(body) - self._ALLOWED_CONFIG_KEYS
+        if invalid:
+            return _error(f"Disallowed config keys: {', '.join(sorted(invalid))}", 400)
+        cfg.write_env(**body)
         return _ok("Config saved")
 
     # -- Lock Down Mode --
@@ -433,6 +517,118 @@ class SetupRoutes:
                 "status": "ok", "lockdown_mode": False,
                 "message": "Lock Down Mode disabled.",
             })
+
+    # -- Runtime Identity --
+
+    async def runtime_identity_status(self, _req: web.Request) -> web.Response:
+        return web.json_response(self._runtime_identity.status())
+
+    async def runtime_identity_provision(self, req: web.Request) -> web.Response:
+        body = await req.json()
+        rg = body.get("resource_group") or cfg.env.read("BOT_RESOURCE_GROUP")
+        if not rg:
+            return _error("resource_group is required (or set BOT_RESOURCE_GROUP)", 400)
+        result = await run_sync(self._runtime_identity.provision, rg)
+        if result.get("ok"):
+            await self._restart_runtime()
+        status_code = 200 if result.get("ok") else 500
+        return web.json_response(result, status=status_code)
+
+    async def runtime_identity_revoke(self, _req: web.Request) -> web.Response:
+        result = await run_sync(self._runtime_identity.revoke)
+        return web.json_response(result)
+
+    # -- ACA Deployment --
+
+    async def aca_status(self, _req: web.Request) -> web.Response:
+        if not self._aca_deployer:
+            return _error("ACA deployer not available", 500)
+        return web.json_response(self._aca_deployer.status())
+
+    async def aca_deploy(self, req: web.Request) -> web.Response:
+        if not self._aca_deployer:
+            return _error("ACA deployer not available", 500)
+        body = await req.json()
+        aca_req = AcaDeployRequest(
+            resource_group=body.get("resource_group", self._store.bot.resource_group),
+            location=body.get("location", self._store.bot.location),
+            bot_display_name=body.get("display_name", self._store.bot.display_name),
+            bot_handle=body.get("bot_handle", self._store.bot.bot_handle),
+            admin_port=int(body.get("admin_port", 9090)),
+            runtime_port=int(body.get("runtime_port", 8080)),
+            image_tag=body.get("image_tag", "latest"),
+            acr_name=body.get("acr_name", ""),
+            env_name=body.get("env_name", ""),
+        )
+        result = await run_sync(self._aca_deployer.deploy, aca_req)
+        status_code = 200 if result.ok else 500
+        return web.json_response({
+            "status": "ok" if result.ok else "error",
+            "message": "ACA deployment complete" if result.ok else result.error,
+            "steps": result.steps,
+            "runtime_fqdn": result.runtime_fqdn,
+            "deploy_id": result.deploy_id,
+        }, status=status_code)
+
+    async def aca_destroy(self, req: web.Request) -> web.Response:
+        if not self._aca_deployer:
+            return _error("ACA deployer not available", 500)
+        body = await req.json() if req.can_read_body else {}
+        deploy_id = body.get("deploy_id")
+        result = await run_sync(self._aca_deployer.destroy, deploy_id)
+        return web.json_response({
+            "status": "ok" if result.ok else "error",
+            "steps": result.steps,
+        })
+
+    async def container_restart(self, _req: web.Request) -> web.Response:
+        """Restart the agent container (Docker or ACA) to pick up config changes."""
+        import subprocess
+
+        deploy_mode = "local"
+        if os.getenv("POLYCLAW_USE_MI"):
+            deploy_mode = "aca"
+        elif os.getenv("POLYCLAW_CONTAINER") == "1":
+            deploy_mode = "docker"
+
+        if deploy_mode == "aca":
+            if not self._aca_deployer:
+                return _error("ACA deployer not available", 500)
+            result = await run_sync(self._aca_deployer.restart)
+            status_code = 200 if result["ok"] else 500
+            return web.json_response({
+                "status": "ok" if result["ok"] else "error",
+                "message": "ACA containers restarted" if result["ok"] else "Some containers failed to restart",
+                "deploy_mode": "aca",
+                "results": result["results"],
+            }, status=status_code)
+
+        if deploy_mode == "docker":
+            try:
+                proc = subprocess.run(
+                    ["docker", "restart", "polyclaw-runtime"],
+                    capture_output=True, text=True, timeout=60,
+                )
+                ok = proc.returncode == 0
+                return web.json_response({
+                    "status": "ok" if ok else "error",
+                    "message": "Docker runtime container restarted" if ok else proc.stderr.strip(),
+                    "deploy_mode": "docker",
+                }, status=200 if ok else 500)
+            except Exception as exc:
+                logger.warning(
+                    "[setup.container_restart] docker restart failed: %s",
+                    exc, exc_info=True,
+                )
+                return _error(f"Docker restart failed: {exc}")
+
+        # Local / combined mode -- reload config in-process
+        await self._restart_runtime()
+        return web.json_response({
+            "status": "ok",
+            "message": "Configuration reloaded",
+            "deploy_mode": "local",
+        })
 
 
 def _ok(message: str) -> web.Response:

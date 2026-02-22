@@ -71,15 +71,18 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log("Starting polyclaw...");
-  let containerId: string;
+  console.log("Starting polyclaw (admin + runtime)...");
+  let instanceId: string;
   try {
-    containerId = await startContainer(adminPort, botPort, "bot");
+    instanceId = await startContainer(adminPort, botPort, "bot");
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("Failed to start container:", msg);
+    console.error("Failed to start containers:", msg);
     process.exit(1);
   }
+
+  // Admin container listens on 9090 (docker-compose.yml)
+  const composeAdminPort = 9090;
 
   let secret = await getAdminSecret();
   if (secret.startsWith("@kv:")) {
@@ -87,26 +90,26 @@ async function main(): Promise<void> {
   }
 
   const adminUrl = secret
-    ? `http://localhost:${adminPort}/?secret=${secret}`
-    : `http://localhost:${adminPort}`;
+    ? `http://localhost:${composeAdminPort}/?secret=${secret}`
+    : `http://localhost:${composeAdminPort}`;
 
-  console.log(`Bot running on port ${botPort}`);
+  console.log(`Runtime on port 8080 | Admin on port ${composeAdminPort}`);
   console.log(`Admin: ${adminUrl}`);
   console.log("");
 
   const shutdown = async () => {
     console.log("\nStopping...");
-    await stopContainer(containerId);
+    await stopContainer(instanceId);
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
   console.log("Waiting for server...");
-  const ready = await waitForReady(`http://localhost:${adminPort}`);
+  const ready = await waitForReady(`http://localhost:${composeAdminPort}`);
   if (!ready) {
     console.error("Server did not become ready.");
-    await stopContainer(containerId);
+    await stopContainer(instanceId);
     process.exit(1);
   }
   console.log("Server is ready. Press Ctrl+C to stop.");

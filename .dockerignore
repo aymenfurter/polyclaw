@@ -1,0 +1,41 @@
+# Ignore heavy/unnecessary files for ACR server-side builds.
+# az acr build reads this from the source-context root before
+# creating the upload tarball.  Patterns follow .dockerignore
+# syntax (not .gitignore): no trailing slash needed.
+
+# Version control & tooling caches
+.git
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Node / JS
+node_modules
+app/frontend/node_modules
+app/tui/node_modules
+app/frontend/test-results
+*.tsbuildinfo
+bun.lock
+
+# Documentation / static site build output
+docs/public
+docs/themes
+
+# Media / non-runtime assets (logo + favicon are staged explicitly)
+*.drawio
+screens
+video
+presentations
+customer
+
+# IDE / OS
+.vscode
+.DS_Store
+.env
+.env.local
+.env.*.local

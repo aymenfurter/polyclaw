@@ -50,6 +50,18 @@ class GitHubAuth:
         except FileNotFoundError:
             return "error", {"message": "gh CLI not found."}
 
+    def extract_token(self) -> str | None:
+        """Return the current ``gh`` OAuth token, or *None*."""
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "token"],
+                capture_output=True, text=True, timeout=10,
+            )
+            token = result.stdout.strip()
+            return token if result.returncode == 0 and token else None
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return None
+
     @staticmethod
     def _read_device_code(
         proc: subprocess.Popen,

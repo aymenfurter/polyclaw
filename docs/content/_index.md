@@ -10,6 +10,7 @@ title: "Polyclaw Documentation"
 | [Architecture](/architecture/) | System design, components, and data flow |
 | [Configuration](/configuration/) | Environment variables and secrets management |
 | [Security, Governance & RAI](/responsible-ai/) | Responsible AI principles, security controls, governance |
+| [Runtime Isolation](/deployment/runtime-isolation/) | Separated admin and agent runtime architecture |
 | [Plugins & MCP](/plugins/) | Model Context Protocol servers and plugin system |
 | [Skills](/skills/) | Skill authoring, marketplace, and built-in skills |
 | [API Reference](/api/) | REST endpoints and WebSocket protocol |
@@ -35,5 +36,13 @@ polyclaw is an autonomous AI copilot built on the **GitHub Copilot SDK**. It mes
 - **Key Vault integration** for secure secret management
 - **Cloudflare tunnel** for zero-config public endpoint exposure
 - **Flexible deployment** -- from hybrid (agent on a Raspberry Pi with cloud components) to full cloud on Azure Container Apps; deploy wherever it fits your setup
+
+### Hardening
+
+- **Guardrails & HITL** -- defense-in-depth tool interception with allow/deny/HITL/PITL/AITL/filter strategies and per-model autonomy levels
+- **Agent Identity** -- least-privilege managed identity with credential isolation between admin and runtime containers
+- **Tool Activity** -- enterprise audit dashboard with automated scoring and Prompt Shield results
+- **Runtime Isolation** -- separated admin and agent runtime architecture with independent credentials
+- **Monitoring** -- OpenTelemetry integration with Azure Monitor (Application Insights, Log Analytics)
 
 ![Session management](/screenshots/web-sessionlist.png)

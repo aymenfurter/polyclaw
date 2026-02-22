@@ -18,7 +18,7 @@ On launch, the TUI presents a **deployment target picker** where you choose betw
 | Target | Description |
 |---|---|
 | **Local Docker** | Builds the Docker image and runs a container on your machine. The container lifecycle is tied to the TUI process. |
-| **Azure Container Apps** | Pushes the image to Azure Container Registry and deploys a persistent Container App in your Azure subscription. The app keeps running after the TUI exits. |
+| **Azure Container Apps** (Experimental) | Pushes the image to Azure Container Registry and deploys a persistent Container App in your Azure subscription. The app keeps running after the TUI exits. |
 
 After selecting a target, the TUI handles the build, deploy, health check, and then drops you into a full-featured dashboard with live logs, chat, plugin management, scheduling, and more.
 

@@ -13,8 +13,8 @@ The `media/classify.py` module maintains a MIME type registry that classifies fi
 
 | Category | Examples |
 |---|---|
-| **Image** | JPEG, PNG, GIF, WebP, SVG |
-| **Audio** | MP3, WAV, OGG, FLAC |
+| **Image** | JPEG, PNG, GIF, WebP, SVG, BMP |
+| **Audio** | MP3, WAV, OGG, FLAC, M4A, AAC |
 | **Video** | MP4, WebM, MOV |
 | **File** | PDF, DOCX, XLSX, ZIP, etc. |
 
@@ -42,17 +42,17 @@ When a user sends a file through a messaging channel:
 
 ## Outgoing Media
 
-When the agent generates content that includes file references:
+Outgoing media is handled by two complementary mechanisms.
 
-1. `incoming.py` extracts file paths from the response text using regex patterns
-2. Referenced files are copied to `media/pending/`
-3. During proactive message delivery, pending files are attached
-4. Successfully sent files are moved to `media/sent/`
-5. Files that fail to send are moved to `media/error/`
+**Inline response attachments** (`incoming.py::extract_outgoing_attachments`): file paths referenced in the agent response text are detected via regex, read from disk, and base64-encoded as inline `Attachment` objects sent directly with the reply.
+
+**Pending directory pipeline** (`outgoing.py::collect_pending_outgoing`): files written to `media/pending/` by agent tools or skills are collected and attached on the next message delivery. The pipeline enforces a **190 KB per-file limit**. Images that exceed this limit are automatically downscaled using Pillow (up to six progressive attempts at 75% scale each). Files that cannot be reduced to fit are moved to `media/error/` with a `.error.txt` sidecar explaining the reason. Successfully sent files are moved to `media/sent/`.
+
+Both mechanisms are invoked together in `message_processor.py` on every agent response.
 
 ## Media in Web Chat
 
-The web dashboard serves media files via the `/media/*` endpoint. Incoming and outgoing files are accessible for viewing and downloading through the chat interface.
+The web dashboard serves media files via the `/api/media/{filename}` endpoint. Incoming and outgoing files are accessible for viewing and downloading through the chat interface.
 
 ## Supported Operations
 
@@ -60,5 +60,7 @@ The web dashboard serves media files via the `/media/*` endpoint. Incoming and o
 |---|---|
 | Receive images | View and analyze images sent by users |
 | Receive documents | Process uploaded documents |
-| Send files | Attach generated files to responses |
+| Send files (inline) | Attach response-referenced files directly to replies |
+| Send files (pending) | Attach pre-generated files from `media/pending/` |
+| Image auto-resize | Downscale oversized images before sending (requires Pillow) |
 | Image analysis | Describe image contents (via LLM vision) |

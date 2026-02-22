@@ -19,11 +19,11 @@ export default defineConfig(async () => {
       ...(!isMock && {
         proxy: {
           '/api': {
-            target: 'http://localhost:8080',
+            target: 'http://localhost:9090',
             ws: true,
           },
-          '/health': 'http://localhost:8080',
-          '/static': 'http://localhost:8080',
+          '/health': 'http://localhost:9090',
+          '/static': 'http://localhost:9090',
         },
       }),
     },

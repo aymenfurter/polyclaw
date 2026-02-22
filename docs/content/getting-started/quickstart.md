@@ -48,9 +48,11 @@ On first launch, a risk disclaimer is shown. Read it carefully and type `accept`
 
 The target picker presents two options:
 
-**Local Docker** -- Builds the image locally and runs a container. The container stops when you exit the TUI. This is the default and requires only Docker.
+**Local Docker** -- Builds the image locally and runs the admin and agent runtime containers. The containers stop when you exit the TUI. This is the recommended starting point and requires only Docker.
 
-**Azure Container Apps** -- Deploys to Azure with a persistent container that keeps running after the TUI exits. Requires the Azure CLI (`az`) with an active login. If `az` is not installed or you are not logged in, this option is greyed out with a status message.
+**Azure Container Apps** -- Deploys the agent runtime to Azure while the admin container continues to run locally. This option is only available once you have a fully configured local environment (identity, channels, secrets). It reuses the local admin container and pushes only the agent runtime to ACA. Requires the Azure CLI (`az`) with an active login. If `az` is not installed or you are not logged in, this option is greyed out.
+
+> The remote agent runtime deployment model is experimental and will be overhauled in a future release. Use Local Docker for initial setup and evaluation.
 
 Use the arrow keys to select a target and press Enter.
 
@@ -80,7 +82,17 @@ All other integrations (voice via ACS, Key Vault secrets, additional MCP servers
 
 ## 8. Open the Web Dashboard
 
-The admin web dashboard is available at the URL shown in the TUI (typically `http://localhost:8080` for local, or the ACA FQDN for Azure). The admin secret is displayed in the TUI output.
+The admin web dashboard is available at the URL shown in the TUI (typically `http://localhost:9090` for local, or the ACA FQDN for Azure). The admin secret is displayed in the TUI output.
+
+## 9. Configure Guardrails
+
+After deployment, configure guardrails through the web dashboard under the Guardrails settings page. As a starting point:
+
+1. Enable **Azure AI Content Safety** (Prompt Shields) to detect prompt injection attacks.
+2. Start with the **permissive** preset and tighten policies incrementally as you observe the agent's behavior and understand which tools need stricter controls.
+3. Adjust per-model autonomy levels based on your risk appetite.
+
+See [Guardrails & HITL](/features/guardrails/) for full configuration details.
 
 ## Next Steps
 

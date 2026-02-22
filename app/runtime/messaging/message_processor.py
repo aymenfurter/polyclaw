@@ -1,13 +1,10 @@
-"""Background message processing pipeline.
-
-Runs the agent prompt and delivers replies via proactive messaging with
-typing indicators, attachment handling, and session recording.
-"""
+"""Background message processing pipeline."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 from botbuilder.core import BotFrameworkAdapter, TurnContext
 from botbuilder.schema import Activity, ActivityTypes, ConversationReference
@@ -20,10 +17,14 @@ from ..media import (
     move_attachments_to_error,
     read_error_details,
 )
+from ..services.otel import agent_span, record_event
 from ..state.memory import MemoryFormation
 from ..state.session_store import SessionStore
 from .cards import drain_pending_cards
 from .formatting import strip_markdown
+
+if TYPE_CHECKING:
+    from ..agent.hitl import HitlInterceptor
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,6 @@ MAX_MESSAGE_LENGTH = 4000
 
 
 class MessageProcessor:
-    """Runs the agent prompt and delivers the reply via proactive messaging."""
 
     def __init__(
         self,
@@ -39,11 +39,13 @@ class MessageProcessor:
         adapter: BotFrameworkAdapter | None,
         memory: MemoryFormation,
         session_store: SessionStore,
+        hitl: HitlInterceptor | None = None,
     ) -> None:
         self._agent = agent
         self.adapter = adapter
         self._memory = memory
         self.session_store = session_store
+        self._hitl = hitl
         self._lock = asyncio.Lock()
 
     async def process(self, ref: ConversationReference, prompt: str, channel: str) -> None:
@@ -51,8 +53,23 @@ class MessageProcessor:
         asyncio.create_task(self._typing_loop(ref, typing_done))
 
         try:
-            async with self._lock:
-                response = await self._agent.send(prompt)
+            with agent_span(
+                "bot.agent_turn",
+                attributes={"bot.channel": channel, "bot.prompt_length": len(prompt)},
+            ):
+                async with self._lock:
+                    if self._hitl:
+                        async def bot_reply(text: str) -> None:
+                            await self._send_proactive_reply(ref, text, channel)
+
+                        self._hitl.set_bot_reply_fn(bot_reply)
+                        self._hitl.set_execution_context("bot_processor")
+                        self._hitl.set_model(cfg.copilot_model)
+                    try:
+                        response = await self._agent.send(prompt)
+                    finally:
+                        if self._hitl:
+                            self._hitl.clear_bot_reply_fn()
             if response:
                 self._memory.record("assistant", response)
                 self.session_store.record("assistant", response)
@@ -60,6 +77,7 @@ class MessageProcessor:
             await self._send_proactive_reply(ref, response, channel)
         except Exception as exc:
             typing_done.set()
+            record_event("agent_error", {"error": str(exc)})
             logger.error("Background processing error: %s", exc, exc_info=True)
             try:
                 await self._send_proactive_reply(ref, "An error occurred while processing your message.", channel)

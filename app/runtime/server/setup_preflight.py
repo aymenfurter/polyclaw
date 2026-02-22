@@ -9,7 +9,7 @@ import aiohttp
 from aiohttp import web
 
 from ..config.settings import cfg
-from ..services.tunnel import CloudflareTunnel
+from ..services.azure import AzureCLI
 from ..state.infra_config import InfraConfigStore
 
 logger = logging.getLogger(__name__)
@@ -18,9 +18,15 @@ logger = logging.getLogger(__name__)
 class PreflightRoutes:
     """/api/setup/preflight endpoint and sub-checks."""
 
-    def __init__(self, tunnel: CloudflareTunnel, store: InfraConfigStore) -> None:
+    def __init__(
+        self,
+        tunnel: object | None,
+        store: InfraConfigStore,
+        az: AzureCLI | None = None,
+    ) -> None:
         self._tunnel = tunnel
         self._store = store
+        self._az = az
 
     def register(self, router: web.UrlDispatcher) -> None:
         router.add_get("/api/setup/preflight", self._preflight)
@@ -48,10 +54,14 @@ class PreflightRoutes:
             jwt_ok, jwt_detail = await self._check_jwt_validation()
         checks.append({"check": "jwt_validation", "ok": jwt_ok, "detail": jwt_detail})
 
-        tunnel_ok = self._tunnel.is_active
+        from .tunnel_status import resolve_tunnel_info
+
+        tunnel_info = await resolve_tunnel_info(self._tunnel, self._az)
+        tunnel_ok = tunnel_info["active"]
         checks.append({
             "check": "tunnel", "ok": tunnel_ok,
-            "detail": self._tunnel.url if tunnel_ok else "Tunnel not running",
+            "detail": tunnel_info["url"] if tunnel_ok
+            else "Tunnel not running",
         })
 
         has_tenant = bool(cfg.bot_app_tenant_id)
@@ -242,8 +252,11 @@ class PreflightRoutes:
             })
 
         if voice_configured or voice_routes_active:
-            tunnel_active = self._tunnel.is_active
-            tunnel_url = (self._tunnel.url or "").rstrip("/")
+            from .tunnel_status import resolve_tunnel_info
+
+            t_info = await resolve_tunnel_info(self._tunnel, self._az)
+            tunnel_active = t_info["active"]
+            tunnel_url = (t_info["url"] or "").rstrip("/") if t_info["url"] else ""
             if tunnel_active and tunnel_url:
                 sub.append({
                     "name": "tunnel", "ok": True,

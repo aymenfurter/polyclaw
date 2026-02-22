@@ -57,33 +57,90 @@ class RealtimeMiddleTier:
         self._tools_pending: dict[str, _ToolCall] = {}
         self._pending_prompt: str | None = None
         self._pending_opening_message: str | None = None
+        self._pending_tools: list[dict[str, Any]] | None = None
+        self._pending_exclusive: bool = False
 
-    def set_pending_prompt(self, prompt: str | None, *, opening_message: str | None = None) -> None:
+    def set_pending_prompt(
+        self,
+        prompt: str | None,
+        *,
+        opening_message: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        exclusive: bool = False,
+    ) -> None:
+        """Stage a prompt override for the next Realtime session.
+
+        Parameters
+        ----------
+        prompt:
+            Custom prompt text.  When *exclusive* is ``False`` (default)
+            this is appended to the base system prompt via the call-
+            instructions template.  When *exclusive* is ``True`` the
+            prompt **replaces** the base system prompt entirely.
+        opening_message:
+            Optional opening greeting for the voice agent.
+        tools:
+            When provided, these tool schemas replace the default
+            ``ALL_REALTIME_TOOL_SCHEMAS`` for the session.
+        exclusive:
+            If ``True``, *prompt* is the entire system message and
+            *tools* are the only tools available.
+        """
         self._pending_prompt = prompt
         self._pending_opening_message = opening_message
+        self._pending_tools = tools
+        self._pending_exclusive = exclusive
 
-    def _consume_pending_prompt(self) -> str:
+    def _consume_pending(self) -> tuple[str, list[dict[str, Any]]]:
+        """Consume staged overrides, returning *(prompt, tools)*."""
         base = self.system_message
         prompt = self._pending_prompt
         opening_message = self._pending_opening_message
+        tools_override = self._pending_tools
+        exclusive = self._pending_exclusive
+
+        # Reset pending state.
         self._pending_prompt = None
         self._pending_opening_message = None
+        self._pending_tools = None
+        self._pending_exclusive = False
 
-        parts: list[str] = [base]
-        if prompt:
-            template = (_TEMPLATES_DIR / "realtime_call_instructions.md").read_text()
-            parts.append(template.format(prompt=prompt))
-        if opening_message:
-            template = (_TEMPLATES_DIR / "realtime_opening_message.md").read_text()
-            parts.append(template.format(opening_message=opening_message))
+        # Build effective prompt.
+        if exclusive and prompt:
+            # In exclusive mode the custom prompt replaces the base
+            # system message entirely.  If an opening message was
+            # provided, append a short instruction so the Realtime
+            # model speaks first.
+            if opening_message:
+                effective_prompt = (
+                    prompt
+                    + "\n\nWhen the call connects, your FIRST spoken "
+                    "message MUST be:\n"
+                    f'"{opening_message}"\n'
+                    "After delivering this opening message, wait for "
+                    "the user to respond."
+                )
+            else:
+                effective_prompt = prompt
+        else:
+            parts: list[str] = [base]
+            if prompt:
+                template = (_TEMPLATES_DIR / "realtime_call_instructions.md").read_text()
+                parts.append(template.format(prompt=prompt))
+            if opening_message:
+                template = (_TEMPLATES_DIR / "realtime_opening_message.md").read_text()
+                parts.append(template.format(opening_message=opening_message))
+            effective_prompt = "\n\n".join(parts) if len(parts) > 1 else base
 
-        return "\n\n".join(parts) if len(parts) > 1 else base
+        effective_tools = tools_override if tools_override is not None else ALL_REALTIME_TOOL_SCHEMAS
+        return effective_prompt, effective_tools
 
     async def forward_messages(self, client_ws: web.WebSocketResponse, is_acs: bool) -> None:
-        effective_prompt = self._consume_pending_prompt()
+        effective_prompt, effective_tools = self._consume_pending()
+        tool_names = [t.get("name", "?") for t in effective_tools]
         logger.info(
-            "Realtime session starting (is_acs=%s, custom_prompt=%s)",
-            is_acs, effective_prompt != self.system_message,
+            "Realtime session starting (is_acs=%s, custom_prompt=%s, tools=%s)",
+            is_acs, effective_prompt != self.system_message, tool_names,
         )
 
         async with aiohttp.ClientSession(base_url=self.endpoint) as session:
@@ -96,7 +153,11 @@ class RealtimeMiddleTier:
                     async for msg in client_ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             data = json.loads(msg.data)
-                            await self._process_to_server(data, client_ws, server_ws, is_acs, effective_prompt=effective_prompt)
+                            await self._process_to_server(
+                                data, client_ws, server_ws, is_acs,
+                                effective_prompt=effective_prompt,
+                                effective_tools=effective_tools,
+                            )
 
                 async def server_to_client() -> None:
                     async for msg in server_ws:
@@ -117,10 +178,12 @@ class RealtimeMiddleTier:
         is_acs: bool,
         *,
         effective_prompt: str | None = None,
+        effective_tools: list[dict[str, Any]] | None = None,
     ) -> None:
         prompt = effective_prompt or self.system_message
+        tools = effective_tools if effective_tools is not None else ALL_REALTIME_TOOL_SCHEMAS
         if is_acs:
-            data = _acs_to_openai(data, tools=ALL_REALTIME_TOOL_SCHEMAS, system_message=prompt, voice=self.voice)
+            data = _acs_to_openai(data, tools=tools, system_message=prompt, voice=self.voice)
         if data is None:
             return
 
@@ -129,7 +192,12 @@ class RealtimeMiddleTier:
             session["voice"] = self.voice
             session["instructions"] = prompt
             session["tool_choice"] = "auto"
-            session["tools"] = ALL_REALTIME_TOOL_SCHEMAS
+            session["tools"] = tools
+            tool_names = [t.get("name", "?") for t in tools]
+            logger.info(
+                "[middleware] session.update prepared: tools=%s prompt_len=%d",
+                tool_names, len(prompt),
+            )
 
         await server_ws.send_str(json.dumps(data))
 
@@ -153,6 +221,7 @@ class RealtimeMiddleTier:
             session["max_response_output_tokens"] = None
 
         elif msg_type == "session.updated":
+            logger.info("[middleware] session.updated received, sending response.create")
             await server_ws.send_json({"type": "response.create"})
 
         elif msg_type == "response.output_item.added":
@@ -181,6 +250,11 @@ class RealtimeMiddleTier:
 
         elif msg_type == "response.done":
             if self._tools_pending:
+                logger.info(
+                    "[middleware] response.done with %d pending tools, "
+                    "sending response.create",
+                    len(self._tools_pending),
+                )
                 self._tools_pending.clear()
                 await server_ws.send_json({"type": "response.create"})
             resp = message.get("response", {})

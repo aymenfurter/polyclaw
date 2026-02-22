@@ -19,7 +19,7 @@
 
 ---
 
-> **Warning:** Polyclaw is an autonomous agent that runs as you. It authenticates with your GitHub token, Azure credentials, and API keys. It can execute code, deploy infrastructure, send messages to real people, and make phone calls -- all under your identity. Understand the [risks](https://aymenfurter.github.io/polyclaw/responsible-ai/) before running it.
+> **Warning:** Polyclaw is an autonomous agent. It can execute code, deploy infrastructure, send messages to real people, and make phone calls. The agent runtime is architecturally separated from the admin plane and operates under its **own Azure managed identity** with least-privilege RBAC -- it does **not** share your personal Azure credentials. GitHub authentication is still a prerequisite (the Copilot SDK is the agent's reasoning engine). Understand the [risks](https://aymenfurter.github.io/polyclaw/responsible-ai/) before running it.
 
 Polyclaw is an autonomous AI copilot built on the **GitHub Copilot SDK**. It gives you the full power of GitHub Copilot -- untethered from the IDE. It writes code, interacts with your repos via the GitHub CLI, authors its own skills at runtime, reaches out to you proactively when something matters, schedules tasks for the future, and can even call you on the phone for urgent matters.
 
@@ -34,6 +34,14 @@ Polyclaw is an autonomous AI copilot built on the **GitHub Copilot SDK**. It giv
 **Voice calls.** For truly urgent matters, it calls you on the phone via Azure Communication Services and OpenAI Realtime for a live conversation with your agent.
 
 **Extensible.** Add MCP servers, drop in plugin packs, or write skill files in Markdown. Everything is configurable from the dashboard. Ships with built-in plugins for **Microsoft Work IQ** (daily rollover, end-of-day reviews, weekly and monthly retrospectives powered by Microsoft 365 productivity data) and **Microsoft Foundry Agents** (provision Foundry resources, deploy models, and spin up ad-hoc agents with code interpreter and data analysis via the Foundry v2 Responses API).
+
+**Guardrails & HITL.** A defense-in-depth framework intercepts every tool invocation and applies a configurable mitigation strategy -- allow, deny, human-in-the-loop (chat or phone call), AI-in-the-loop (a second model reviews the action), or content filtering via Azure AI Prompt Shields. Preset policies (permissive, balanced, restrictive) and per-tool rules give you fine-grained control over what the agent can do.
+
+**Agent Identity.** The agent runtime runs under its own Azure managed identity (or service principal in Docker) with least-privilege RBAC. It never shares your personal CLI session. The admin plane and agent runtime are separate containers with independent credential scopes, enforcing strict isolation between configuration management and agent execution.
+
+**Tool Activity.** An enterprise audit dashboard logs every tool invocation with automated risk scoring, Prompt Shield results, session breakdowns, manual flagging, and CSV export. Risk scoring runs automatically on every tool call as an observability layer.
+
+**Monitoring.** One-click provisioning of Application Insights and Log Analytics. OpenTelemetry traces, metrics, and logs flow from the runtime to Azure Monitor with configurable sampling and optional live metrics.
 
 **Memory system.** Conversations are automatically consolidated into long-term memory after idle periods. Daily topic notes and memory logs build a persistent knowledge base across sessions. Enable **Foundry IQ** as an optional retrieval layer to index memories into Azure AI Search for richer, semantically grounded recall.
 
@@ -78,7 +86,7 @@ cd polyclaw
 ./scripts/run-tui.sh
 ```
 
-The TUI walks you through setup, configuration, and deployment. Run locally or deploy to Azure Container Apps.
+The TUI walks you through setup, configuration, and deployment. Run locally or deploy to Azure Container Apps (experimental).
 
 For full setup instructions, configuration reference, and feature guides, see the **[Documentation](https://aymenfurter.github.io/polyclaw/)**.
 
@@ -91,11 +99,11 @@ For full setup instructions, configuration reference, and feature guides, see th
 
 ## Security, Governance & Responsible AI
 
-Polyclaw is in **early preview**. Security hardening is the next major focus area. Treat it as experimental software and read this section carefully.
+Polyclaw is in **early preview**. Treat it as experimental software and read this section carefully.
 
 ### Understand the Risks
 
-Polyclaw is an autonomous agent that acts without asking first -- sending messages, writing files, executing code, making API calls, and placing phone calls on your behalf. It authenticates with your GitHub token, your Azure credentials, your API keys. There is no sandbox between the agent and your accounts unless you explicitly set one up.
+Polyclaw is an autonomous agent. The agent runtime is architecturally separated from the admin plane and operates under its **own Azure managed identity** with least-privilege RBAC -- it does **not** share your personal Azure credentials. However, it can still execute code, deploy infrastructure, send messages, and make phone calls within the scope of its assigned roles. GitHub authentication remains a prerequisite for using the Copilot SDK.
 
 **What can go wrong:** unintended actions from misunderstood instructions, credential exposure via prompt injection or badly written skills, cost overruns from runaway loops provisioning Azure resources, arbitrary code execution without human review, and data leakage through conversations and tool outputs passing through configured channels.
 
@@ -115,21 +123,28 @@ None of these controls have been formally audited. They represent a best-effort 
 | Lockdown | `LOCKDOWN_MODE` rejects all admin API requests immediately |
 | Transparency | Tool calls visible in chat UI, human-readable `SOUL.md`, version-controlled prompt templates, full session archives |
 | Preflight | [Setup Wizard](https://aymenfurter.github.io/polyclaw/getting-started/setup-wizard/) validates JWT, tunnel, endpoints, and channel security before deployment |
+| [Guardrails](https://aymenfurter.github.io/polyclaw/features/guardrails/) | Defense-in-depth tool interception with configurable mitigation strategies (allow/deny/HITL/PITL/AITL/filter) |
+| [Content Safety](https://aymenfurter.github.io/polyclaw/features/guardrails/) | Azure AI Prompt Shields detect and block prompt injection attacks before tool execution |
+| [Agent Identity](https://aymenfurter.github.io/polyclaw/features/agent-identity/) | Least-privilege managed identity for the agent runtime with RBAC scoping and credential isolation |
+| [Tool Activity](https://aymenfurter.github.io/polyclaw/features/tool-activity/) | Append-only audit log of every tool invocation with automated scoring and manual flagging |
+| [Monitoring](https://aymenfurter.github.io/polyclaw/features/monitoring/) | OpenTelemetry integration with Azure Monitor for traces, metrics, and logs |
+| Runtime separation | Admin and agent runtime containers with separate HOME directories, credential isolation, and route separation |
 
 ### What Is Missing
 
-- **Rate limiting.** No built-in rate limits on API calls, tool executions, or scheduled tasks.
-- **Fine-grained permissions.** The agent has access to all configured credentials with no per-tool or per-skill scoping.
+- **Multi-runtime management (1:N).** The admin plane currently manages a single agent runtime. The goal is to support managing multiple agent runtimes from a single admin plane -- deploying, monitoring, and configuring N independent agent runtimes from one control surface.
 - **Multi-tenant isolation.** Designed for single-operator use only.
 
 ### Recommendations
 
-1. Do not run against production accounts or infrastructure. Use scoped credentials in a test environment.
+1. Deploy with separated admin and agent runtime containers to enforce credential isolation.
 2. Set a strong `ADMIN_SECRET` and store it in a key vault.
 3. Enable `TUNNEL_RESTRICTED` and `TELEGRAM_WHITELIST`.
 4. Enable sandbox execution for code-running workloads.
-5. Monitor logs and session archives. Do not leave the agent running unattended for extended periods.
-6. Review `SOUL.md` and system prompt templates to make sure agent instructions match your expectations.
+5. Run the security preflight checker to verify identity, RBAC, and secret isolation.
+6. Enable guardrails with at least the balanced preset. Use HITL for high-risk tools.
+7. Monitor tool activity and logs. Do not leave the agent running unattended for extended periods.
+8. Review `SOUL.md` and system prompt templates to make sure agent instructions match your expectations.
 
 For the full assessment, see the [Security, Governance & Responsible AI](https://aymenfurter.github.io/polyclaw/responsible-ai/) documentation.
 

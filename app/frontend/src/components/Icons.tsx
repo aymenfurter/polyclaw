@@ -205,3 +205,15 @@ export function IconBrain(p: P) {
 export function IconTerminal(p: P) {
   return <I {...p}><polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" /></I>
 }
+
+export function IconShield(p: P) {
+  return <I {...p}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></I>
+}
+
+export function IconActivity(p: P) {
+  return <I {...p}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></I>
+}
+
+export function IconFingerprint(p: P) {
+  return <I {...p}><path d="M2 12C2 6.5 6.5 2 12 2a10 10 0 0 1 8 4" /><path d="M5 19.5C5.5 18 6 15 6 12c0-3.5 2.5-6 6-6 1 0 2 .2 3 .5" /><path d="M12 12c0 4-1.5 7.5-3.5 10" /><path d="M18 12c0 3-1 5.5-2.5 8" /><path d="M22 12c0 2.5-.5 5-1.5 7" /></I>
+}

@@ -10,7 +10,7 @@ from ..state.deploy_state import DeploymentRecord, DeployStateStore
 from ..state.infra_config import InfraConfigStore
 from .azure import AzureCLI
 from .deployer import BotDeployer, DeployRequest
-from .tunnel import CloudflareTunnel
+from .runtime_identity import RuntimeIdentityProvisioner
 
 logger = logging.getLogger(__name__)
 
@@ -22,17 +22,25 @@ class Provisioner:
         self,
         az: AzureCLI,
         deployer: BotDeployer,
-        tunnel: CloudflareTunnel,
         store: InfraConfigStore,
         deploy_store: DeployStateStore | None = None,
+        *,
+        tunnel: object | None = None,
     ) -> None:
         self._az = az
         self._deployer = deployer
         self._tunnel = tunnel
         self._store = store
         self._deploy_store = deploy_store
+        self._runtime_identity = RuntimeIdentityProvisioner(az)
 
     def provision(self) -> list[dict[str, Any]]:
+        """Register Entra ID app + provision a scoped agent identity.
+
+        The Bot Service ARM resource is NOT created here -- the agent
+        container creates it at startup when a messaging channel (e.g.
+        Telegram) is configured.  See :meth:`recreate_endpoint`.
+        """
         steps: list[dict[str, Any]] = []
         bc = self._store.bot
         logger.info("Provisioning started")
@@ -49,75 +57,44 @@ class Provisioner:
                 self._deploy_store.register(rec)
                 logger.info("Created new local deployment record: %s", rec.deploy_id)
 
-        logger.info("Provision step 1/3: Ensuring tunnel...")
-        tunnel_url = self._ensure_tunnel(steps)
-        if not tunnel_url:
-            logger.error("Provisioning aborted: tunnel failed")
+        # Step 1: Register Entra ID app (no Bot Service resource -- the agent
+        # container creates that at startup when a channel is configured).
+        logger.info("Provision step 1/2: Registering Entra ID app...")
+        if not self._ensure_app_registration(bc, steps):
+            logger.error("Provisioning aborted: app registration failed")
             return steps
 
-        logger.info("Provision step 2/3: Ensuring bot resource...")
-        if not self._ensure_bot(bc, tunnel_url, steps):
-            logger.error("Provisioning aborted: bot deployment failed")
-            return steps
+        # Step 2: Provision scoped identity for the agent container.
+        logger.info("Provision step 2/2: Provisioning runtime identity...")
+        self._ensure_runtime_identity(bc.resource_group, steps)
 
-        logger.info("Provision step 3/3: Ensuring channels...")
-        self._ensure_channels(steps)
         logger.info("Provisioning completed: %d steps", len(steps))
         return steps
 
-    def _ensure_tunnel(self, steps: list[dict]) -> str | None:
-        if self._tunnel.is_active and self._tunnel.url:
-            logger.info("Tunnel already active: %s", self._tunnel.url)
-            steps.append({"step": "tunnel", "status": "ok", "detail": self._tunnel.url})
-            return self._tunnel.url
-
-        logger.info("Starting tunnel on port %s...", cfg.admin_port)
-        result = self._tunnel.start(cfg.admin_port)
-        if result:
-            url = result.value
-            logger.info("Tunnel started: %s", url)
-            steps.append({"step": "tunnel", "status": "ok", "detail": url})
-            return url
-
-        logger.error("Tunnel failed to start: %s", result.message)
-        steps.append({"step": "tunnel", "status": "failed", "detail": result.message})
-        return None
-
-    def _ensure_bot(self, bc: Any, tunnel_url: str, steps: list[dict]) -> bool:
-        existing_name = cfg.env.read("BOT_NAME")
-        endpoint = tunnel_url.rstrip("/") + "/api/messages"
-
-        if existing_name:
-            # Always delete the existing bot so we start with a clean slate.
-            logger.info(
-                "Bot '%s' already deployed -- deleting before fresh deploy",
-                existing_name,
-            )
-            cleanup_result = self._deployer.delete()
-            steps.extend(cleanup_result.steps)
-            steps.append({
-                "step": "bot_cleanup",
-                "status": "ok" if cleanup_result.ok else "failed",
-                "detail": f"Deleted {existing_name}" if cleanup_result.ok else cleanup_result.error,
-            })
-
-        logger.info(
-            "Starting fresh bot deployment (rg=%s, location=%s)",
-            bc.resource_group, bc.location,
-        )
+    def _ensure_app_registration(
+        self, bc: Any, steps: list[dict],
+    ) -> bool:
+        """Create or re-use the Entra ID app registration (no bot service)."""
         req = DeployRequest(
-            resource_group=bc.resource_group, location=bc.location,
-            display_name=bc.display_name, bot_handle=bc.bot_handle,
-            endpoint_url=tunnel_url,
+            resource_group=bc.resource_group,
+            location=bc.location,
+            display_name=bc.display_name,
+            bot_handle=bc.bot_handle,
         )
-        result = self._deployer.deploy(req)
+        result = self._deployer.register_app(req)
         steps.extend(result.steps)
         if result.ok:
-            steps.append({"step": "bot_deploy", "status": "ok", "detail": result.bot_handle})
-            ok, msg = self._az.update_endpoint(endpoint)
-            steps.append({"step": "bot_endpoint", "status": "ok" if ok else "failed", "detail": msg})
+            steps.append({
+                "step": "app_registration",
+                "status": "ok",
+                "detail": result.app_id,
+            })
         else:
-            steps.append({"step": "bot_deploy", "status": "failed", "detail": result.error})
+            steps.append({
+                "step": "app_registration",
+                "status": "failed",
+                "detail": result.error,
+            })
         return result.ok
 
     def _ensure_channels(self, steps: list[dict]) -> None:
@@ -135,6 +112,73 @@ class Provisioner:
                 cfg.write_env(TELEGRAM_WHITELIST=tg.whitelist)
         else:
             steps.append({"step": "telegram", "status": "skip", "detail": "Not configured"})
+
+    def _ensure_runtime_identity(self, resource_group: str, steps: list[dict]) -> None:
+        """Provision a scoped identity for the agent runtime container.
+
+        Uses a service principal for Docker Compose deployments.  ACA
+        deployments use a managed identity provisioned by ``AcaDeployer``
+        instead -- this step is skipped if a MI is already configured.
+        """
+        # Skip if a managed identity is already set (ACA deployment)
+        if cfg.env.read("ACA_MI_CLIENT_ID"):
+            steps.append({
+                "step": "runtime_identity",
+                "status": "skip",
+                "detail": "Managed identity already configured (ACA)",
+            })
+            return
+
+        try:
+            result = self._runtime_identity.provision(resource_group)
+            sub_steps = result.get("steps", [])
+            steps.extend(sub_steps)
+            if result.get("ok"):
+                steps.append({
+                    "step": "runtime_identity",
+                    "status": "ok",
+                    "detail": f"SP {result.get('app_id')} scoped to {resource_group}",
+                })
+            else:
+                steps.append({
+                    "step": "runtime_identity",
+                    "status": "failed",
+                    "detail": result.get("error", "Unknown error"),
+                })
+        except Exception as exc:
+            logger.warning("Runtime identity provisioning failed (non-fatal): %s", exc, exc_info=True)
+            steps.append({
+                "step": "runtime_identity",
+                "status": "failed",
+                "detail": str(exc),
+            })
+
+    def recreate_endpoint(self, endpoint_url: str) -> list[dict[str, Any]]:
+        """Recreate the bot resource with a new messaging endpoint.
+
+        This is the lightweight path for the runtime container: it only
+        touches the Bot Service ARM resource and reconfigures channels.
+        The Entra ID app registration and credentials are preserved.
+        """
+        steps: list[dict[str, Any]] = []
+        logger.info("recreate_endpoint: endpoint=%s", endpoint_url)
+
+        if not self._store.bot_configured:
+            steps.append({"step": "bot_config", "status": "skip",
+                          "detail": "No bot configured"})
+            return steps
+
+        result = self._deployer.recreate(endpoint_url)
+        steps.extend(result.steps)
+        if not result.ok:
+            logger.error("recreate_endpoint: bot recreate failed: %s", result.error)
+            return steps
+
+        # Reconfigure channels (Telegram, etc.) on the fresh bot resource
+        self._ensure_channels(steps)
+
+        logger.info("recreate_endpoint: completed -- %d steps", len(steps))
+        return steps
 
     def decommission(self) -> list[dict[str, Any]]:
         steps: list[dict[str, Any]] = []
@@ -163,6 +207,14 @@ class Provisioner:
                 "step": "bot_delete",
                 "status": "ok" if result.ok else "failed",
                 "detail": "Bot deleted" if result.ok else (result.error or "Failed"),
+            })
+        elif app_id:
+            # Entra app exists but agent hasn't created the bot service yet.
+            ok, _ = self._az.ok("ad", "app", "delete", "--id", app_id)
+            steps.append({
+                "step": "app_delete",
+                "status": "ok" if ok else "failed",
+                "detail": f"Deleted Entra app {app_id[:12]}..." if ok else "Delete failed",
             })
         else:
             steps.append({"step": "bot_delete", "status": "skip", "detail": "No bot deployed"})
@@ -210,7 +262,10 @@ class Provisioner:
         }
 
         prov: dict[str, Any] = {}
-        prov["tunnel"] = {"active": self._tunnel.is_active, "url": self._tunnel.url}
+        prov["tunnel"] = {
+            "active": getattr(self._tunnel, "is_active", False),
+            "url": getattr(self._tunnel, "url", None),
+        }
         if not self._tunnel.is_active:
             result["in_sync"] = False
 

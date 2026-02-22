@@ -1,4 +1,4 @@
-"""Tests for Provisioner and tunnel/endpoint sync."""
+"""Tests for Provisioner -- admin provisions Entra app + identity, agent creates bot service."""
 
 from __future__ import annotations
 
@@ -50,82 +50,40 @@ def deploy_store(data_dir) -> DeployStateStore:
 
 @pytest.fixture()
 def provisioner(az, deployer, tunnel, store, deploy_store) -> Provisioner:
-    return Provisioner(az, deployer, tunnel, store, deploy_store)
+    return Provisioner(az, deployer, store, deploy_store, tunnel=tunnel)
 
 
-class TestEnsureTunnel:
-    """Verify _ensure_tunnel behaviour."""
+class TestAppRegistration:
+    """Verify _ensure_app_registration calls register_app on the deployer."""
 
-    def test_starts_new_tunnel(self, provisioner, tunnel):
-        tunnel.is_active = False
-        tunnel.start.return_value = Result.ok("started", value="https://new.trycloudflare.com")
-
-        steps: list[dict] = []
-        url = provisioner._ensure_tunnel(steps)
-
-        assert url == "https://new.trycloudflare.com"
-        assert steps[0]["step"] == "tunnel"
-        assert steps[0]["status"] == "ok"
-
-    def test_reuses_active_tunnel(self, provisioner, tunnel):
-        """When tunnel is already active, return its URL without persisting."""
-        tunnel.is_active = True
-        tunnel.url = "https://active.trycloudflare.com"
+    def test_calls_register_app(self, provisioner, deployer, data_dir):
+        deployer.register_app.return_value = MagicMock(
+            ok=True, steps=[], app_id="test-app-id", error=""
+        )
+        bc = MagicMock(resource_group="rg", location="eastus", display_name="polyclaw", bot_handle="")
 
         steps: list[dict] = []
-        url = provisioner._ensure_tunnel(steps)
-
-        assert url == "https://active.trycloudflare.com"
-        tunnel.start.assert_not_called()
-
-    def test_returns_none_on_failure(self, provisioner, tunnel):
-        tunnel.is_active = False
-        tunnel.start.return_value = Result.fail("cloudflared not found")
-
-        steps: list[dict] = []
-        url = provisioner._ensure_tunnel(steps)
-
-        assert url is None
-        assert steps[0]["status"] == "failed"
-
-
-class TestEnsureBot:
-    """Verify _ensure_bot always deletes existing bot and deploys fresh."""
-
-    def test_deletes_existing_bot_before_deploying(self, provisioner, az, deployer, data_dir):
-        """Even when a bot exists, it must be deleted and redeployed from scratch."""
-        cfg.write_env(BOT_NAME="my-bot", BOT_RESOURCE_GROUP="my-rg")
-        deployer.delete.return_value = MagicMock(ok=True, steps=[])
-        deployer.deploy.return_value = MagicMock(ok=True, steps=[], bot_handle="new-bot", error="")
-        az.update_endpoint.return_value = Result.ok("Endpoint updated")
-        bc = MagicMock(resource_group="my-rg", location="eastus", display_name="oct", bot_handle="")
-
-        steps: list[dict] = []
-        result = provisioner._ensure_bot(bc, "https://new.trycloudflare.com", steps)
+        result = provisioner._ensure_app_registration(bc, steps)
 
         assert result is True
-        deployer.delete.assert_called_once()
-        deployer.deploy.assert_called_once()
-        assert any(s["step"] == "bot_cleanup" and s["status"] == "ok" for s in steps)
-        assert any(s["step"] == "bot_deploy" and s["status"] == "ok" for s in steps)
+        deployer.register_app.assert_called_once()
+        assert any(s["step"] == "app_registration" and s["status"] == "ok" for s in steps)
 
-    def test_deploys_when_no_existing_bot(self, provisioner, az, deployer, data_dir):
-        cfg.write_env(BOT_NAME="", BOT_RESOURCE_GROUP="")  # ensure clean state
-        deploy_result = MagicMock(ok=True, steps=[], bot_handle="new-bot", error="")
-        deployer.deploy.return_value = deploy_result
-        az.update_endpoint.return_value = Result.ok("Endpoint updated")
-        bc = MagicMock(resource_group="my-rg", location="eastus", display_name="oct", bot_handle="")
+    def test_returns_false_on_failure(self, provisioner, deployer, data_dir):
+        deployer.register_app.return_value = MagicMock(
+            ok=False, steps=[], app_id="", error="App registration failed"
+        )
+        bc = MagicMock(resource_group="rg", location="eastus", display_name="polyclaw", bot_handle="")
 
         steps: list[dict] = []
-        result = provisioner._ensure_bot(bc, "https://new.trycloudflare.com", steps)
+        result = provisioner._ensure_app_registration(bc, steps)
 
-        assert result is True
-        deployer.delete.assert_not_called()
-        deployer.deploy.assert_called_once()
+        assert result is False
+        assert any(s["step"] == "app_registration" and s["status"] == "failed" for s in steps)
 
 
 class TestProvision:
-    """Full provision flow."""
+    """Full provision flow -- registers Entra app + runtime identity, no bot service."""
 
     def test_skips_when_not_configured(self, provisioner, store):
         store.bot = MagicMock()
@@ -137,18 +95,29 @@ class TestProvision:
             steps = provisioner.provision()
             assert any(s["step"] == "bot_config" and s["status"] == "skip" for s in steps)
 
-    def test_full_provision_with_existing_bot(self, provisioner, tunnel, az, deployer, data_dir):
-        """Tunnel starts -> existing bot deleted -> fresh deploy -> channels configured."""
-        tunnel.is_active = False
-        tunnel.start.return_value = Result.ok("started", value="https://fresh.trycloudflare.com")
-        cfg.write_env(BOT_NAME="my-bot", BOT_RESOURCE_GROUP="my-rg")
-        deployer.delete.return_value = MagicMock(ok=True, steps=[])
-        deployer.deploy.return_value = MagicMock(ok=True, steps=[], bot_handle="new-bot", error="")
-        az.update_endpoint.return_value = Result.ok("Endpoint updated")
+    def test_registers_app_and_identity(self, provisioner, deployer, data_dir):
+        """Provision registers Entra app + runtime identity, no bot service."""
+        deployer.register_app.return_value = MagicMock(
+            ok=True, steps=[], app_id="test-app-id", error=""
+        )
 
         steps = provisioner.provision()
 
-        tunnel_steps = [s for s in steps if s["step"] == "tunnel"]
-        assert tunnel_steps[0]["status"] == "ok"
-        deployer.delete.assert_called_once()
-        deployer.deploy.assert_called_once()
+        deployer.register_app.assert_called_once()
+        # Bot service should NOT be created by admin provisioning
+        deployer.deploy.assert_not_called()
+        assert any(s["step"] == "app_registration" and s["status"] == "ok" for s in steps)
+
+
+class TestRecreateEndpoint:
+    """Verify recreate_endpoint creates bot service + channels (agent path)."""
+
+    def test_creates_bot_and_channels(self, provisioner, deployer, store, data_dir):
+        deployer.recreate.return_value = MagicMock(ok=True, steps=[])
+        store.save_telegram(token="123456:ABC", whitelist="")
+
+        steps = provisioner.recreate_endpoint("https://tunnel.example.com/api/messages")
+
+        deployer.recreate.assert_called_once_with("https://tunnel.example.com/api/messages")
+        assert any(s.get("step") == "bot_recreate" or s.get("step") == "telegram_channel"
+                   for s in steps)

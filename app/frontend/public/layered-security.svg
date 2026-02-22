@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420" fill="none">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3FB950" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#3FB950" stop-opacity="0.04"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#58A6FF" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#58A6FF" stop-opacity="0.04"/>
+    </linearGradient>
+    <linearGradient id="g3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#D29922" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#D29922" stop-opacity="0.04"/>
+    </linearGradient>
+    <linearGradient id="g4" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F85149" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#F85149" stop-opacity="0.04"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Layer 4 (outermost): Runtime Controls -->
+  <rect x="20" y="16" width="680" height="388" rx="18" fill="url(#g4)" stroke="#F85149" stroke-opacity="0.35" stroke-width="1.5"/>
+  <text x="52" y="46" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#F85149" letter-spacing="0.04em">LAYER 4 &#x2014; RUNTIME CONTROLS</text>
+  <text x="52" y="64" font-family="Inter, system-ui, sans-serif" font-size="11" fill="#8B949E">Per-tool guardrails: HITL, PITL, AITL, Deny, Filter, Content Safety</text>
+
+  <!-- Layer 3: Metaprompt / System Message -->
+  <rect x="56" y="82" width="608" height="304" rx="14" fill="url(#g3)" stroke="#D29922" stroke-opacity="0.35" stroke-width="1.5"/>
+  <text x="84" y="110" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#D29922" letter-spacing="0.04em">LAYER 3 &#x2014; METAPROMPT / SYSTEM MESSAGE</text>
+  <text x="84" y="128" font-family="Inter, system-ui, sans-serif" font-size="11" fill="#8B949E">Behavioral boundaries, persona constraints, output formatting rules</text>
+
+  <!-- Layer 2: Platform Safety -->
+  <rect x="92" y="146" width="536" height="222" rx="12" fill="url(#g2)" stroke="#58A6FF" stroke-opacity="0.35" stroke-width="1.5"/>
+  <text x="118" y="174" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#58A6FF" letter-spacing="0.04em">LAYER 2 &#x2014; PLATFORM SAFETY</text>
+  <text x="118" y="192" font-family="Inter, system-ui, sans-serif" font-size="11" fill="#8B949E">Azure AI Content Safety, Prompt Shields, input/output filtering</text>
+
+  <!-- Layer 1 (innermost): Model -->
+  <rect x="128" y="210" width="464" height="140" rx="10" fill="url(#g1)" stroke="#3FB950" stroke-opacity="0.35" stroke-width="1.5"/>
+  <text x="156" y="240" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#3FB950" letter-spacing="0.04em">LAYER 1 &#x2014; MODEL</text>
+  <text x="156" y="258" font-family="Inter, system-ui, sans-serif" font-size="11" fill="#8B949E">Built-in safety training, RLHF alignment, refusal behaviors</text>
+
+  <!-- Model icons inside Layer 1 -->
+  <rect x="156" y="274" width="120" height="56" rx="8" fill="#0D1117" stroke="#3FB950" stroke-opacity="0.2"/>
+  <text x="172" y="298" font-family="'JetBrains Mono', monospace" font-size="10" fill="#3FB950">claude-opus-4.6</text>
+  <text x="172" y="316" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#484F58">Tier 3 &#x2022; Safe</text>
+
+  <rect x="292" y="274" width="120" height="56" rx="8" fill="#0D1117" stroke="#D29922" stroke-opacity="0.2"/>
+  <text x="308" y="298" font-family="'JetBrains Mono', monospace" font-size="10" fill="#D29922">gpt-4.1</text>
+  <text x="308" y="316" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#484F58">Tier 2 &#x2022; Standard</text>
+
+  <rect x="428" y="274" width="120" height="56" rx="8" fill="#0D1117" stroke="#F85149" stroke-opacity="0.2"/>
+  <text x="444" y="298" font-family="'JetBrains Mono', monospace" font-size="10" fill="#F85149">gpt-5-mini</text>
+  <text x="444" y="316" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#484F58">Tier 1 &#x2022; Cautious</text>
+
+  <!-- Right side: annotations -->
+  <line x1="650" y1="280" x2="700" y2="280" stroke="#3FB950" stroke-opacity="0.4" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="650" y="298" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#3FB950" text-anchor="start" transform="rotate(-90,700,280)">Strongest</text>
+
+  <line x1="650" y1="46" x2="700" y2="46" stroke="#F85149" stroke-opacity="0.4" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="650" y="56" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#F85149" text-anchor="start" transform="rotate(-90,700,56)">Outermost</text>
+
+  <!-- Arrow on right edge: inner to outer -->
+  <line x1="698" y1="340" x2="698" y2="40" stroke="#8B949E" stroke-opacity="0.3" stroke-width="1"/>
+  <polygon points="698,36 694,44 702,44" fill="#8B949E" fill-opacity="0.4"/>
+  <text x="706" y="200" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#484F58" transform="rotate(-90,706,200)">Defense in Depth</text>
+</svg>

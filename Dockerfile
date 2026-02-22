@@ -35,6 +35,14 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # Azure CLI (for automated bot provisioning)
 RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash
 
+# Docker CLI only (no daemon) -- used to push the locally-built image to ACR
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Install Python deps first (cached unless pyproject.toml changes)
@@ -60,6 +68,9 @@ RUN ARCH=$(dpkg --print-architecture) \
 # Copy the backend from app/runtime/ into the polyclaw/ package directory
 # so existing entry points (polyclaw.server:main etc.) keep working.
 COPY app/runtime/ polyclaw/
+
+# Copy the single-command CLI so app.cli imports resolve in the container.
+COPY app/cli/ app/cli/
 
 # Reinstall so console-script entry points (polyclaw-admin etc.) are built
 # against the real source tree, not the stub __init__.py used for dep caching.

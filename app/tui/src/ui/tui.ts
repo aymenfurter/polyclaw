@@ -26,6 +26,7 @@ import {
 
 import { Colors, LogoColors, ShadowColor, GradientColors } from "../utils/theme.js";
 import { resetTerminal } from "../utils/terminal.js";
+import { getContainerStatuses, type ContainerHealth } from "../utils/containers.js";
 import { LOGO_TEXT, LOGO_DIVIDER, SPINNER_FRAMES, STARTUP_PHASES, STATUS_ITEMS, BAR_FILL, BAR_LIGHT, BAR_WIDTH, SLASH_COMMANDS, MAX_AC_VISIBLE } from "../config/constants.js";
 import type { DeployTarget } from "../deploy/target.js";
 import type { DeployResult, StatusResponse, ModelEntry, SessionPickerEntry } from "../config/types.js";
@@ -120,8 +121,8 @@ export async function launchTUI(
     resetTerminal();
   };
   process.on("exit", safeExit);
-  process.on("SIGTERM", () => { safeExit(); process.exit(0); });
-  process.on("SIGINT", () => { safeExit(); process.exit(0); });
+  process.on("SIGTERM", () => { shutdown(); });
+  process.on("SIGINT", () => { shutdown(); });
 
   // -- Renderer -------------------------------------------------------------
 
@@ -183,6 +184,23 @@ export async function launchTUI(
               return true;
             }
             if (sequence === "\x1b" || sequence === "\x1b\x1b") { closeSessionPicker(); return true; }
+            return true;
+          }
+
+          // Instant approval on single y/n keypress (no Enter needed)
+          if (approvalQueue.length > 0 && !pickerActive && !sessionPickerActive) {
+            const lower = sequence.toLowerCase();
+            if (lower === "y" || lower === "n") {
+              const pending = approvalQueue[0];
+              const approved = lower === "y";
+              if (chatWs && chatWs.readyState === WebSocket.OPEN) {
+                chatWs.send(JSON.stringify({ action: "approve_tool", call_id: pending.call_id, response: approved ? "y" : "n" }));
+              }
+              addMessage("user", approved ? "Approved" : "Denied", approved ? Colors.green : Colors.red);
+              clearInput(chatInput);
+              return true;
+            }
+            // Block all other keys while approval is pending (except Ctrl+C handled above)
             return true;
           }
 
@@ -333,6 +351,13 @@ export async function launchTUI(
     statusRow.add(dot);
     statusDots[item.key] = dot;
   }
+  // Container health indicators (admin + runtime)
+  const containerDots: Record<string, TextRenderable> = {};
+  for (const ctr of [{ key: "ctr-admin", label: "Admin" }, { key: "ctr-runtime", label: "Runtime" }]) {
+    const dot = new TextRenderable(renderer, { id: `dot-${ctr.key}`, content: `● ${ctr.label}  `, fg: Colors.dim });
+    statusRow.add(dot);
+    containerDots[ctr.key] = dot;
+  }
   const targetIndicator = new TextRenderable(renderer, { id: "target-indicator", content: `│ ${target.name} `, fg: Colors.purple });
   statusRow.add(targetIndicator);
   const modelActivity = new TextRenderable(renderer, { id: "model-activity", content: `│ ${currentModelName}`, fg: "#FFD700" });
@@ -418,6 +443,24 @@ export async function launchTUI(
       Bun.spawn(["open", adminUrl], { stdout: "ignore", stderr: "ignore" });
     }
     renderer.requestRender();
+  }
+
+  function containerHealthColor(h: ContainerHealth): string {
+    if (h === "running") return Colors.green;
+    if (h === "starting") return Colors.yellow;
+    if (h === "stopped" || h === "error") return Colors.red;
+    return Colors.dim;
+  }
+
+  async function refreshContainerDots(): Promise<void> {
+    try {
+      const cs = await getContainerStatuses();
+      const adminColor = containerHealthColor(cs.admin.health);
+      const runtimeColor = containerHealthColor(cs.runtime.health);
+      try { (containerDots["ctr-admin"] as unknown as { fg: string }).fg = adminColor; } catch { /* ignore */ }
+      try { (containerDots["ctr-runtime"] as unknown as { fg: string }).fg = runtimeColor; } catch { /* ignore */ }
+      renderer.requestRender();
+    } catch { /* Docker unavailable -- leave dots dim */ }
   }
 
   // -- Log panel (collapsible, above chat) --------------------------------
@@ -684,6 +727,10 @@ export async function launchTUI(
   let currentReplyText = "";
   const pendingToolIds = new Map<string, string>();
 
+  // -- HITL approval queue ------------------------------------------------
+  interface PendingApproval { call_id: string; tool: string; arguments: string }
+  const approvalQueue: PendingApproval[] = [];
+
   function addLine(text: string, color: string): string {
     const id = `msg-${++msgCounter}`;
     chatArea.add(new TextRenderable(renderer, { id, content: text, fg: color }));
@@ -911,7 +958,7 @@ export async function launchTUI(
       deployResult.reconnected
         ? `Reconnected to ${containerId}`
         : target.lifecycleTied
-          ? `Container started (${containerId.slice(0, 12)})`
+          ? `Compose stack started (admin + runtime)`
           : `Deployed to ${baseUrl}`,
     );
   } catch (err: unknown) {
@@ -943,9 +990,15 @@ export async function launchTUI(
     const m = line.match(/Admin\s+UI:\s+(https?:\/\/\S+)/i);
     if (m) {
       adminUrlFromLogs = m[1].trim();
+      const hadSecret = !!secret;
       try { const url = new URL(adminUrlFromLogs); secret = url.searchParams.get("secret") || ""; } catch { /* ignore */ }
       setContent(headerUrl, `  ${adminUrlFromLogs}`);
       renderer.requestRender();
+      // If the secret was just discovered, reconnect the WebSocket so it
+      // picks up the auth token instead of looping with 401.
+      if (!hadSecret && secret && chatWs) {
+        try { chatWs.close(); } catch { /* ignore */ }
+      }
     }
     if (/Resolved.*secret.*Key Vault|azure.*logged.in/i.test(line)) markPhase("azure", true);
     if (/copilot.*authenticated|gh.*logged.in/i.test(line)) markPhase("github", true);
@@ -972,19 +1025,29 @@ export async function launchTUI(
   // Minimize the log panel now that boot is complete
   if (logExpanded) toggleLogPanel();
 
-  // Fetch secret if not captured from logs
+  // Obtain the admin secret.  For non-lifecycle targets (ACA) the deploy
+  // target already resolved it -- ask it directly before falling back to
+  // parsing docker logs.
   if (!secret) {
     try {
-      const fetched = await target.getAdminSecret(containerId);
-      if (fetched && !fetched.startsWith("@kv:")) secret = fetched;
-      else if (fetched?.startsWith("@kv:")) secret = await target.resolveKvSecret(fetched, containerId);
-      if (secret) {
-        const fullUrl = `${baseUrl}/?secret=${secret}`;
-        setContent(headerUrl, `  ${fullUrl}`);
-        addLine(`Admin UI: ${fullUrl}`, Colors.green);
-        renderer.requestRender();
-      }
-    } catch { /* ignore */ }
+      secret = await target.getAdminSecret(containerId);
+    } catch { /* not available via target */ }
+  }
+  // Fallback: wait for the secret to appear in the log stream (the
+  // entrypoint prints "Admin UI: http://...?secret=XXX").
+  if (!secret) {
+    for (let attempt = 0; attempt < 15 && !secret; attempt++) {
+      await Bun.sleep(1000);
+    }
+    if (!secret) {
+      addLine("Warning: Admin secret not found in logs. Status polling may fail (401).", Colors.yellow);
+    }
+  }
+
+  // Update header URL to include the secret so `/setup` link works
+  if (secret) {
+    setContent(headerUrl, `  ${baseUrl}/?secret=${secret}`);
+    renderer.requestRender();
   }
 
   // Update input placeholder
@@ -1040,6 +1103,32 @@ export async function launchTUI(
             const toolName = pendingToolIds.get(callId);
             if (toolName) { pendingToolIds.delete(callId); activeTools = activeTools.filter((t) => t !== toolName); }
             refreshInfoBar();
+          } else if (evt === "approval_request") {
+            const callId = String(data.call_id || "");
+            const tool = String(data.tool || "unknown");
+            const args = String(data.arguments || "");
+            approvalQueue.push({ call_id: callId, tool, arguments: args });
+            addMessage("system", "\n--- APPROVAL REQUIRED ---", Colors.yellow);
+            addMessage("system", `Tool: ${tool}`, Colors.yellow);
+            if (args) addMessage("system", `Args: ${args}`, Colors.muted);
+            addMessage("system", "Press y to approve or n to deny", Colors.yellow);
+            try {
+              (chatInput as unknown as { placeholder: string }).placeholder = "[APPROVAL] press y = approve, n = deny";
+            } catch { /* ignore */ }
+          } else if (evt === "approval_resolved") {
+            const callId = String(data.call_id || "");
+            const approved = Boolean(data.approved);
+            const idx = approvalQueue.findIndex((a) => a.call_id === callId);
+            if (idx !== -1) approvalQueue.splice(idx, 1);
+            addMessage("system", approved ? "Approved." : "Denied.", approved ? Colors.green : Colors.red);
+            if (approvalQueue.length === 0) {
+              try {
+                const exitHint = target.lifecycleTied ? "Ctrl+C to quit" : "Ctrl+C to disconnect";
+                (chatInput as unknown as { placeholder: string }).placeholder = `Type a message and press Enter  (${exitHint})`;
+              } catch { /* ignore */ }
+            }
+          } else if (evt === "tool_denied") {
+            addMessage("system", `Tool denied: ${String(data.tool || "")} -- ${String(data.reason || "")}`, Colors.red);
           }
           break;
         }
@@ -1085,6 +1174,19 @@ export async function launchTUI(
       return;
     }
 
+    // -- HITL approval interception ------------------------------------
+    if (approvalQueue.length > 0) {
+      const lower = text.toLowerCase();
+      if (lower === "y" || lower === "yes" || lower === "n" || lower === "no") {
+        const pending = approvalQueue[0];
+        const approved = lower === "y" || lower === "yes";
+        chatWs.send(JSON.stringify({ action: "approve_tool", call_id: pending.call_id, response: approved ? "y" : "n" }));
+        addMessage("user", approved ? "Approved" : "Denied", approved ? Colors.green : Colors.red);
+        clearInput(chatInput);
+        return;
+      }
+    }
+
     if (text.toLowerCase() === "/quit" || text.toLowerCase() === "/exit") {
       addMessage("system", "Shutting down...", Colors.yellow);
       clearInput(chatInput);
@@ -1108,21 +1210,28 @@ export async function launchTUI(
   // =====================================================================
 
   async function refreshStatus(): Promise<void> {
+    // Container health is independent of the API status endpoint.
+    // Always update container dots even if the status fetch fails.
+    if (bootComplete) refreshContainerDots();
+
     try {
       const headers: Record<string, string> = {};
       if (secret) headers["Authorization"] = `Bearer ${secret}`;
-      const res = await fetch(`${baseUrl}/api/setup/status`, { headers, signal: AbortSignal.timeout(5000) });
-      if (!res.ok) return;
+      const res = await fetch(`${baseUrl}/api/setup/status`, { headers, signal: AbortSignal.timeout(15000) });
+      if (!res.ok) {
+        await logError("refreshStatus", new Error(`status endpoint returned ${res.status}`));
+        return;
+      }
       const s = (await res.json()) as StatusResponse;
       if (s.model && s.model !== currentModelName) { currentModelName = s.model; refreshInfoBar(); }
-      if (bootComplete) updateStatusDots(s);
+      if (bootComplete) { updateStatusDots(s); }
       else {
         markPhase("azure", s.azure?.logged_in ?? false);
         markPhase("github", s.copilot?.authenticated ?? false);
         markPhase("tunnel", s.tunnel?.active ?? false);
         markPhase("bot", s.bot_configured ?? false);
       }
-    } catch { /* ignore */ }
+    } catch (err) { await logError("refreshStatus", err); }
   }
 
   refreshStatus();

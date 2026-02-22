@@ -31,10 +31,16 @@ class EnvFile:
         return result
 
     def write(self, **kwargs: str) -> None:
-        """Merge *kwargs* into the env file, preserving existing entries."""
+        """Merge *kwargs* into the env file, preserving existing entries.
+
+        Values are wrapped in double-quotes so that ``bash source`` handles
+        special characters (``~``, ``!``, ``$``, spaces, etc.) safely.
+        """
         with self._lock:
             existing = self.read_all()
             existing.update(kwargs)
-            lines = [f"{k}={v}" for k, v in sorted(existing.items()) if v]
+            lines = [
+                f'{k}="{v}"' for k, v in sorted(existing.items()) if v
+            ]
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text("\n".join(lines) + "\n")

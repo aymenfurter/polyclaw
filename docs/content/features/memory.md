@@ -20,10 +20,13 @@ During conversations, each message exchange is buffered in memory. The buffer ac
 After `MEMORY_IDLE_MINUTES` (default: 5 minutes) of inactivity:
 
 1. The buffered chat turns are collected
-2. A dedicated LLM call (using `MEMORY_MODEL`) generates:
-   - A **daily log entry** summarizing the interaction
-   - **Topic notes** extracted from the conversation
-3. Results are written to the memory directory
+2. A dedicated LLM call (using `MEMORY_MODEL`) performs all of the following in a single pass:
+   - Appends a **daily log entry** to `memory/daily/YYYY-MM-DD.md`
+   - Creates or updates **topic notes** under `memory/topics/`
+   - Updates the **agent profile** (`agent_profile.json`) with the user's emotional tone and any new preferences or facts learned
+   - Increments **skill usage counters** (`skill_usage.json`) for every skill used during the conversation
+   - Rewrites **suggestion queries** (`suggestions.txt`) with 4-6 contextually relevant follow-up questions
+3. If proactive messaging is enabled, a **proactive follow-up** may be scheduled based on the conversation context
 4. The buffer is cleared
 
 ### Memory Storage
@@ -66,7 +69,7 @@ The proactive message generator uses memory context to generate relevant follow-
 
 | Variable | Default | Description |
 |---|---|---|
-| `MEMORY_MODEL` | `claude-sonnet-4-20250514` | Model for memory consolidation |
+| `MEMORY_MODEL` | `claude-sonnet-4.6` | Model for memory consolidation |
 | `MEMORY_IDLE_MINUTES` | `5` | Idle time before consolidation triggers |
 
 ## Foundry IQ Integration

@@ -100,26 +100,83 @@ class TestRealtimeMiddleTier:
         mid.set_pending_prompt("custom prompt", opening_message="Hello caller")
         assert mid._pending_prompt == "custom prompt"
         assert mid._pending_opening_message == "Hello caller"
+        assert mid._pending_tools is None
+        assert mid._pending_exclusive is False
 
-    def test_consume_pending_prompt_no_pending(self) -> None:
+    def test_set_pending_prompt_exclusive_with_tools(self) -> None:
         from azure.core.credentials import AzureKeyCredential
         mid = RealtimeMiddleTier(
             "https://endpoint.com", "deploy1",
             AzureKeyCredential("key"),
         )
-        result = mid._consume_pending_prompt()
-        assert result == mid.system_message
+        tools = [{"type": "function", "name": "accept"}]
+        mid.set_pending_prompt("verify", tools=tools, exclusive=True)
+        assert mid._pending_prompt == "verify"
+        assert mid._pending_tools == tools
+        assert mid._pending_exclusive is True
 
-    def test_consume_pending_prompt_with_prompt(self) -> None:
+    def test_consume_pending_no_pending(self) -> None:
         from azure.core.credentials import AzureKeyCredential
+        from app.runtime.realtime.tools import ALL_REALTIME_TOOL_SCHEMAS
+        mid = RealtimeMiddleTier(
+            "https://endpoint.com", "deploy1",
+            AzureKeyCredential("key"),
+        )
+        prompt, tools = mid._consume_pending()
+        assert prompt == mid.system_message
+        assert tools == ALL_REALTIME_TOOL_SCHEMAS
+
+    def test_consume_pending_with_prompt(self) -> None:
+        from azure.core.credentials import AzureKeyCredential
+        from app.runtime.realtime.tools import ALL_REALTIME_TOOL_SCHEMAS
         mid = RealtimeMiddleTier(
             "https://endpoint.com", "deploy1",
             AzureKeyCredential("key"),
         )
         mid.set_pending_prompt("test prompt")
-        result = mid._consume_pending_prompt()
-        assert mid.system_message in result
+        prompt, tools = mid._consume_pending()
+        assert mid.system_message in prompt
         assert mid._pending_prompt is None
+        assert tools == ALL_REALTIME_TOOL_SCHEMAS
+
+    def test_consume_pending_exclusive_replaces_prompt(self) -> None:
+        from azure.core.credentials import AzureKeyCredential
+        mid = RealtimeMiddleTier(
+            "https://endpoint.com", "deploy1",
+            AzureKeyCredential("key"),
+        )
+        custom_tools = [{"type": "function", "name": "accept"}]
+        mid.set_pending_prompt("VERIFY ONLY", tools=custom_tools, exclusive=True)
+        prompt, tools = mid._consume_pending()
+        # Exclusive prompt replaces the base system message entirely.
+        assert prompt == "VERIFY ONLY"
+        assert mid.system_message not in prompt
+        assert tools == custom_tools
+        # Pending state is cleared after consume.
+        assert mid._pending_prompt is None
+        assert mid._pending_tools is None
+        assert mid._pending_exclusive is False
+
+    def test_consume_pending_exclusive_with_opening_message(self) -> None:
+        from azure.core.credentials import AzureKeyCredential
+        mid = RealtimeMiddleTier(
+            "https://endpoint.com", "deploy1",
+            AzureKeyCredential("key"),
+        )
+        custom_tools = [{"type": "function", "name": "accept"}]
+        mid.set_pending_prompt(
+            "VERIFY ONLY",
+            opening_message="Hello, please confirm.",
+            tools=custom_tools,
+            exclusive=True,
+        )
+        prompt, tools = mid._consume_pending()
+        # Exclusive prompt contains the custom prompt and opening message.
+        assert "VERIFY ONLY" in prompt
+        assert "Hello, please confirm." in prompt
+        # Base system message must NOT be present.
+        assert mid.system_message not in prompt
+        assert tools == custom_tools
 
     def test_auth_headers_with_key(self) -> None:
         from azure.core.credentials import AzureKeyCredential

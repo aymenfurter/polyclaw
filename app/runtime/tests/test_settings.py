@@ -10,8 +10,8 @@ from app.runtime.config.settings import Settings
 class TestSettings:
     def test_defaults(self, data_dir: Path) -> None:
         s = Settings()
-        assert s.copilot_model == "claude-sonnet-4-20250514"
-        assert s.admin_port == 8000
+        assert s.copilot_model == "claude-sonnet-4.6"
+        assert s.admin_port == 9090
         assert s.bot_port == 3978
 
     def test_write_env_and_reload(self, data_dir: Path) -> None:
