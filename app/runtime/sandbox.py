@@ -33,6 +33,8 @@ MAX_ZIP_SIZE = 100 * 1024 * 1024
 
 _SHELL_TOOL_PATTERNS = ("terminal", "shell", "bash", "command")
 _SESSION_IDLE_TIMEOUT = 60
+_UPLOAD_MAX_RETRIES = 3
+_UPLOAD_BACKOFF_BASE = 1.0
 
 
 class SandboxExecutor:
@@ -261,17 +263,39 @@ class SandboxExecutor:
         filename: str, data: bytes, headers: dict[str, str],
     ) -> bool:
         url = f"{endpoint}/files/upload?api-version={API_VERSION}&identifier={session_id}"
-        form = aiohttp.FormData()
-        form.add_field("file", data, filename=filename, content_type="application/octet-stream")
-        try:
-            async with http.post(url, data=form, headers=headers, timeout=aiohttp.ClientTimeout(total=120)) as resp:
-                if resp.status not in (200, 201, 202):
-                    logger.error("Upload %s failed: %d", filename, resp.status)
-                    return False
-                return True
-        except Exception as exc:
-            logger.error("Upload %s error: %s", filename, exc)
-            return False
+        last_error = ""
+        for attempt in range(_UPLOAD_MAX_RETRIES):
+            form = aiohttp.FormData()
+            form.add_field(
+                "file", data, filename=filename, content_type="application/octet-stream",
+            )
+            try:
+                async with http.post(
+                    url, data=form, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    if resp.status in (200, 201, 202):
+                        return True
+                    body = await resp.text()
+                    last_error = f"HTTP {resp.status}: {body[:300]}"
+                    logger.warning(
+                        "Upload %s attempt %d/%d failed: %s",
+                        filename, attempt + 1, _UPLOAD_MAX_RETRIES, last_error,
+                    )
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning(
+                    "Upload %s attempt %d/%d error: %s",
+                    filename, attempt + 1, _UPLOAD_MAX_RETRIES, exc,
+                )
+            if attempt < _UPLOAD_MAX_RETRIES - 1:
+                delay = _UPLOAD_BACKOFF_BASE * (2 ** attempt)
+                await asyncio.sleep(delay)
+        logger.error(
+            "Upload %s failed after %d attempts: %s",
+            filename, _UPLOAD_MAX_RETRIES, last_error,
+        )
+        return False
 
     async def _execute_in_session(
         self, http: aiohttp.ClientSession, endpoint: str, session_id: str,

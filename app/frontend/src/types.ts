@@ -31,7 +31,7 @@ export interface ToolCall {
   call_id: string
   arguments?: string
   result?: string
-  status: 'running' | 'done'
+  status: 'running' | 'done' | 'pending_approval' | 'pending_phone' | 'denied'
 }
 
 export interface ChatMessage {
@@ -66,7 +66,7 @@ export type WsIncoming =
   | { type: 'done' }
   | { type: 'cards'; cards: AdaptiveCard[] }
   | { type: 'media'; files: MediaFile[] }
-  | { type: 'event'; event: string; tool?: string; call_id?: string; text?: string; arguments?: string; result?: string; name?: string; content?: string }
+  | { type: 'event'; event: string; tool?: string; call_id?: string; text?: string; arguments?: string; result?: string; name?: string; content?: string; approved?: boolean }
   | { type: 'error'; content: string }
   | { type: 'system'; content: string }
 
@@ -314,6 +314,14 @@ export interface SandboxConfig {
   blacklist?: string[]
 }
 
+// -- Content Safety ------------------------------------------------------
+
+export interface ContentSafetyConfig {
+  deployed: boolean
+  endpoint?: string
+  filter_mode?: string
+}
+
 // -- Workspace -----------------------------------------------------------
 
 export interface WorkspaceEntry {
@@ -366,13 +374,18 @@ export interface NetworkEndpoint {
   path: string
   category: string
   tunnel_exposed: boolean
+  container: 'admin' | 'runtime' | 'shared'
+  auth_type?: string
+  source?: 'admin' | 'runtime'
 }
 
 export interface ProbedEndpoint extends NetworkEndpoint {
   requires_auth: boolean | null
   tunnel_blocked: boolean | null
-  auth_type: 'admin_key' | 'bot_jwt' | 'acs_token' | 'health' | 'open' | null
+  auth_type: 'admin_key' | 'bot_jwt' | 'acs_token' | 'health' | 'open' | undefined
   framework_auth_ok: boolean | null
+  probe_error?: string | null
+  source: 'admin' | 'runtime'
 }
 
 export interface ProbeCounts {
@@ -388,7 +401,10 @@ export interface ProbeCounts {
 
 export interface ProbeResult {
   endpoints: ProbedEndpoint[]
+  admin: ProbeCounts
+  runtime: ProbeCounts
   counts: ProbeCounts
+  runtime_reachable: boolean
   tunnel_restricted_during_probe: boolean
 }
 
@@ -407,9 +423,20 @@ export interface NetworkComponent {
   deploy_mode?: string
 }
 
+export interface ContainerInfo {
+  role: 'admin' | 'runtime' | 'combined'
+  label: string
+  port: number
+  host: string
+  exposure: string
+  identity?: string
+  volumes?: string[]
+}
+
 export interface NetworkInfo {
   deploy_mode: 'docker' | 'aca' | 'local'
   admin_port: number
+  server_mode: 'combined' | 'admin' | 'runtime'
   tunnel: {
     active: boolean
     url: string | null
@@ -418,6 +445,7 @@ export interface NetworkInfo {
   lockdown_mode: boolean
   components: NetworkComponent[]
   endpoints: NetworkEndpoint[]
+  containers: ContainerInfo[]
 }
 
 // -- Resource Network Audit -----------------------------------------------
@@ -448,4 +476,137 @@ export interface ApiResponse {
   status: 'ok' | 'error'
   message?: string
   [key: string]: unknown
+}
+
+// -- Monitoring / OTel ---------------------------------------------------
+
+export interface MonitoringConfig {
+  enabled: boolean
+  connection_string_masked: string
+  connection_string_set: boolean
+  sampling_ratio: number
+  enable_live_metrics: boolean
+  instrumentation_options: Record<string, unknown>
+  otel_status: {
+    active: boolean
+    tracer_provider?: string
+  }
+  // Provisioning metadata
+  provisioned: boolean
+  app_insights_name?: string
+  workspace_name?: string
+  resource_group?: string
+  location?: string
+  subscription_id?: string
+  portal_url?: string
+  grafana_dashboard_url?: string
+}
+
+// -- Guardrails / HITL ---------------------------------------------------
+
+export type MitigationStrategy = 'allow' | 'deny' | 'hitl' | 'pitl' | 'aitl' | 'filter'
+
+export interface GuardrailsConfig {
+  enabled: boolean
+  default_strategy: MitigationStrategy
+  context_defaults: Record<string, MitigationStrategy>
+  tool_policies: Record<string, Record<string, MitigationStrategy>>
+  model_columns: string[]
+  model_policies: Record<string, Record<string, Record<string, MitigationStrategy>>>
+  hitl_channel: 'chat' | 'phone'
+  phone_number: string
+  aitl_model: string
+  aitl_spotlighting: boolean
+  filter_mode: 'prompt_shields'
+  content_safety_endpoint: string
+  // Backward-compat fields
+  hitl_enabled: boolean
+  default_action: string
+  default_channel: 'chat' | 'phone'
+  rules: GuardrailRule[]
+}
+
+export interface ToolInventoryItem {
+  id: string
+  name: string
+  category: 'sdk' | 'custom' | 'mcp' | 'skill'
+  source: string
+  description: string
+  enabled?: boolean
+  server_type?: string
+  builtin?: boolean
+}
+
+export interface StrategyInfo {
+  id: MitigationStrategy
+  label: string
+  description: string
+  color: string
+}
+
+export interface ContextInfo {
+  id: string
+  label: string
+  description: string
+}
+
+// Legacy aliases kept for backward compat
+export interface GuardrailRule {
+  id: string
+  name: string
+  pattern: string
+  scope: 'tool' | 'mcp'
+  action: 'allow' | 'deny' | 'ask'
+  enabled: boolean
+  description: string
+  contexts: string[]
+  models: string[]
+  hitl_channel: 'chat' | 'phone'
+}
+
+export interface ExecutionContextInfo {
+  id: string
+  label: string
+  description: string
+}
+
+export interface HitlChannelInfo {
+  id: string
+  label: string
+  description: string
+}
+
+export interface ToolInfo {
+  name: string
+  source: string
+  description: string
+}
+
+export interface McpServerInfo {
+  name: string
+  enabled: boolean
+  description: string
+  type: string
+  builtin: boolean
+}
+
+// -- Security Preflight --------------------------------------------------
+
+export interface PreflightCheck {
+  id: string
+  category: string
+  name: string
+  status: 'pending' | 'pass' | 'fail' | 'warn' | 'skip'
+  detail: string
+  evidence: string
+  command: string
+}
+
+export interface PreflightResult {
+  checks: PreflightCheck[]
+  run_at: string | null
+  passed: number
+  failed: number
+  warnings: number
+  skipped: number
 }

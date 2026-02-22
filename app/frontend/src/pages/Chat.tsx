@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useChat } from '../hooks/useChat'
 import { IconChevronDown, IconBrain, IconTerminal } from '../components/Icons'
 import AdaptiveCardRenderer from '../components/AdaptiveCardRenderer'
@@ -33,7 +34,7 @@ export default function Chat() {
   const {
     messages, connected, thinking, activeTools, monologue, reasoningWindow,
     suggestions, skills, models, currentModel, sendMessage, newSession, resumeSession,
-    feedReasoning, clearReasoning,
+    feedReasoning, clearReasoning, approveToolCall,
   } = useChat()
 
   const [input, setInput] = useState('')
@@ -45,13 +46,13 @@ export default function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
+  const [searchParams] = useSearchParams()
 
-  // Resume session from URL param
+  // Resume session from URL param (reacts to navigation changes)
+  const sessionParam = searchParams.get('session')
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const sid = params.get('session')
-    if (sid) resumeSession(sid)
-  }, [resumeSession])
+    if (sessionParam) resumeSession(sessionParam)
+  }, [sessionParam, resumeSession])
 
   // Auto-scroll
   useEffect(() => {
@@ -162,18 +163,15 @@ export default function Chat() {
             </Suspense>
           )}
           {messages.map(msg => (
-            <MessageBubble key={msg.id} msg={msg} />
+            <MessageBubble key={msg.id} msg={msg} onApproveToolCall={approveToolCall} />
           ))}
-          {thinking && (
-            <div className="thinking"><span /><span /><span /></div>
-          )}
           <div ref={messagesEndRef} />
           </div>
         </div>
       )}
 
       <div className="chat__composer">
-          <div className={`chat__input-box ${!connected ? 'chat__input-box--disconnected' : ''}`}>
+          <div className={`chat__input-box ${thinking ? 'chat__input-box--thinking' : ''} ${!connected ? 'chat__input-box--disconnected' : ''}`}>
           {showAc && (
             <div className="autocomplete">
               {acFiltered.slice(0, 10).map((c, i) => (
@@ -283,7 +281,7 @@ export default function Chat() {
   )
 }
 
-function MessageBubble({ msg }: { msg: ChatMessage }) {
+function MessageBubble({ msg, onApproveToolCall }: { msg: ChatMessage; onApproveToolCall?: (callId: string, approved: boolean) => void }) {
   const isUser = msg.role === 'user'
   const isError = msg.role === 'error'
   const isSystem = msg.role === 'system'
@@ -291,6 +289,8 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
   const [showTools, setShowTools] = useState(false)
   const hasReasoning = !!msg.reasoning
   const hasTools = !!(msg.toolCalls && msg.toolCalls.length > 0)
+  const pendingApprovals = msg.toolCalls?.filter(tc => tc.status === 'pending_approval' || tc.status === 'pending_phone') || []
+  const hasPendingApproval = pendingApprovals.length > 0
 
   return (
     <div className={`bubble bubble--${msg.role}`}>
@@ -325,6 +325,22 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
           ))}
         </div>
       )}
+      {/* Prominent approval banner -- always visible, not inside collapsed tools */}
+      {hasPendingApproval && pendingApprovals.map(tc => (
+        <div key={tc.call_id} className="bubble__approval-banner">
+          {tc.status === 'pending_phone' ? (
+            <span className="bubble__approval-label">Phone verification for <strong>{tc.tool}</strong> in progress...</span>
+          ) : (
+            <>
+              <span className="bubble__approval-label">Allow <strong>{tc.tool}</strong> to execute?</span>
+              <div className="bubble__approval-actions">
+                <button className="btn btn--primary btn--sm" onClick={() => onApproveToolCall?.(tc.call_id, true)}>Allow</button>
+                <button className="btn btn--danger btn--sm" onClick={() => onApproveToolCall?.(tc.call_id, false)}>Deny</button>
+              </div>
+            </>
+          )}
+        </div>
+      ))}
       {(hasReasoning || hasTools) && (
         <div className="bubble__actions">
           {hasReasoning && (
@@ -353,10 +369,10 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
           <div className="bubble__reasoning-text">{msg.reasoning}</div>
         </div>
       )}
-      {showTools && msg.toolCalls && msg.toolCalls.length > 0 && (
+      {(showTools || hasPendingApproval) && msg.toolCalls && msg.toolCalls.length > 0 && (
         <div className="bubble__tools">
           {msg.toolCalls.map(tc => (
-            <ToolCallRow key={tc.call_id} tc={tc} />
+            <ToolCallRow key={tc.call_id} tc={tc} onApprove={onApproveToolCall} />
           ))}
         </div>
       )}
@@ -364,18 +380,31 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
   )
 }
 
-function ToolCallRow({ tc }: { tc: ToolCall }) {
+function ToolCallRow({ tc, onApprove }: { tc: ToolCall; onApprove?: (callId: string, approved: boolean) => void }) {
   const [expanded, setExpanded] = useState(false)
   const argsShort = tc.arguments && tc.arguments.length > 60 ? tc.arguments.slice(0, 57) + '...' : tc.arguments
+
+  const statusClass =
+    tc.status === 'done' ? 'tool-call__status--done'
+    : tc.status === 'pending_approval' ? 'tool-call__status--pending'
+    : tc.status === 'pending_phone' ? 'tool-call__status--pending'
+    : tc.status === 'denied' ? 'tool-call__status--denied'
+    : 'tool-call__status--running'
 
   return (
     <div className="tool-call">
       <button className="tool-call__header" onClick={() => setExpanded(v => !v)}>
-        <span className={`tool-call__status ${tc.status === 'done' ? 'tool-call__status--done' : 'tool-call__status--running'}`} />
+        <span className={`tool-call__status ${statusClass}`} />
         <span className="tool-call__name">{tc.tool}</span>
         {argsShort && <span className="tool-call__args">{argsShort}</span>}
         <span className="tool-call__chevron">{expanded ? '\u25B4' : '\u25BE'}</span>
       </button>
+
+      {tc.status === 'denied' && (
+        <div className="tool-call__denied">
+          <span className="tool-call__denied-label">Denied by user</span>
+        </div>
+      )}
       {expanded && (
         <div className="tool-call__detail">
           {tc.arguments && (
@@ -532,8 +561,47 @@ function renderMarkdown(text: string): string {
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
   html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+  html = renderTables(html)
   html = html.replace(/\n/g, '<br/>')
   return html
+}
+
+/** Convert markdown tables (pipe-delimited rows) to HTML <table> elements. */
+function renderTables(html: string): string {
+  return html.replace(
+    /(^|\n)(\|.+\|[ ]*\n\|[ :\-|]+\|[ ]*\n(?:\|.+\|[ ]*(?:\n|$))+)/g,
+    (_match, prefix, table) => {
+      const rows: string[] = table.trim().split('\n')
+      if (rows.length < 2) return prefix + table
+
+      // Parse alignment from separator row
+      const sepCells = rows[1].split('|').filter((_: string, i: number, a: string[]) => i > 0 && i < a.length - 1)
+      const aligns = sepCells.map((c: string) => {
+        const t = c.trim()
+        if (t.startsWith(':') && t.endsWith(':')) return 'center'
+        if (t.endsWith(':')) return 'right'
+        return 'left'
+      })
+
+      const parseRow = (row: string) =>
+        row.split('|').filter((_: string, i: number, a: string[]) => i > 0 && i < a.length - 1).map((c: string) => c.trim())
+
+      const headCells = parseRow(rows[0])
+      const thead = '<thead><tr>' + headCells.map((c: string, i: number) =>
+        `<th style="text-align:${aligns[i] || 'left'}">${c}</th>`
+      ).join('') + '</tr></thead>'
+
+      const bodyRows = rows.slice(2).filter((r: string) => r.trim())
+      const tbody = '<tbody>' + bodyRows.map((r: string) => {
+        const cells = parseRow(r)
+        return '<tr>' + cells.map((c: string, i: number) =>
+          `<td style="text-align:${aligns[i] || 'left'}">${c}</td>`
+        ).join('') + '</tr>'
+      }).join('') + '</tbody>'
+
+      return prefix + '<div class="bubble__table-wrap"><table class="bubble__table">' + thead + tbody + '</table></div>'
+    }
+  )
 }
 
 function escapeHtml(text: string): string {

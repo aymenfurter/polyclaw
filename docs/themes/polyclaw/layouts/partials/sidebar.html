@@ -10,6 +10,28 @@
     <a href="{{ "getting-started/setup-wizard/" | relURL }}" class="sidebar__link sidebar__link--child{{ if eq .RelPermalink "/getting-started/setup-wizard/" }} sidebar__link--active{{ end }}">Setup Wizard</a>
   </div>
 
+  {{/* Hardening */}}
+  <div class="sidebar__section">
+    <div class="sidebar__heading">Hardening</div>
+    <a href="{{ "features/guardrails/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/guardrails/" }} sidebar__link--active{{ end }}">Guardrails & HITL</a>
+    <a href="{{ "features/agent-identity/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/agent-identity/" }} sidebar__link--active{{ end }}">Agent Identity</a>
+    <a href="{{ "features/tool-activity/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/tool-activity/" }} sidebar__link--active{{ end }}">Tool Activity</a>
+    <a href="{{ "deployment/runtime-isolation/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/deployment/runtime-isolation/" }} sidebar__link--active{{ end }}">Runtime Isolation</a>
+    <a href="{{ "features/monitoring/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/monitoring/" }} sidebar__link--active{{ end }}">Monitoring</a>
+  </div>
+
+  {{/* Features */}}
+  <div class="sidebar__section">
+    <div class="sidebar__heading">Features</div>
+    <a href="{{ "features/messaging/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/messaging/" }} sidebar__link--active{{ end }}">Messaging & Bot</a>
+    <a href="{{ "features/voice/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/voice/" }} sidebar__link--active{{ end }}">Realtime Voice</a>
+    <a href="{{ "features/scheduler/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/scheduler/" }} sidebar__link--active{{ end }}">Scheduler & Proactive</a>
+    <a href="{{ "features/media/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/media/" }} sidebar__link--active{{ end }}">Media Handling</a>
+    <a href="{{ "features/sandbox/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/sandbox/" }} sidebar__link--active{{ end }}">Sandbox Execution</a>
+    <a href="{{ "features/memory/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/memory/" }} sidebar__link--active{{ end }}">Memory System</a>
+    <a href="{{ "features/commands/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/commands/" }} sidebar__link--active{{ end }}">Slash Commands</a>
+  </div>
+
   {{/* Architecture */}}
   <div class="sidebar__section">
     <div class="sidebar__heading">Architecture</div>
@@ -32,18 +54,6 @@
     <a href="{{ "configuration/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/configuration/" }} sidebar__link--active{{ end }}">Environment Variables</a>
     <a href="{{ "configuration/keyvault/" | relURL }}" class="sidebar__link sidebar__link--child{{ if eq .RelPermalink "/configuration/keyvault/" }} sidebar__link--active{{ end }}">Key Vault Integration</a>
     <a href="{{ "configuration/security/" | relURL }}" class="sidebar__link sidebar__link--child{{ if eq .RelPermalink "/configuration/security/" }} sidebar__link--active{{ end }}">Security & Auth</a>
-  </div>
-
-  {{/* Features */}}
-  <div class="sidebar__section">
-    <div class="sidebar__heading">Features</div>
-    <a href="{{ "features/messaging/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/messaging/" }} sidebar__link--active{{ end }}">Messaging & Bot</a>
-    <a href="{{ "features/voice/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/voice/" }} sidebar__link--active{{ end }}">Realtime Voice</a>
-    <a href="{{ "features/scheduler/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/scheduler/" }} sidebar__link--active{{ end }}">Scheduler & Proactive</a>
-    <a href="{{ "features/media/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/media/" }} sidebar__link--active{{ end }}">Media Handling</a>
-    <a href="{{ "features/sandbox/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/sandbox/" }} sidebar__link--active{{ end }}">Sandbox Execution</a>
-    <a href="{{ "features/memory/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/memory/" }} sidebar__link--active{{ end }}">Memory System</a>
-    <a href="{{ "features/commands/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/features/commands/" }} sidebar__link--active{{ end }}">Slash Commands</a>
   </div>
 
   {{/* Plugins & MCP */}}
@@ -78,5 +88,6 @@
     <a href="{{ "deployment/" | relURL }}" class="sidebar__link{{ if eq .RelPermalink "/deployment/" }} sidebar__link--active{{ end }}">Overview</a>
     <a href="{{ "deployment/docker/" | relURL }}" class="sidebar__link sidebar__link--child{{ if eq .RelPermalink "/deployment/docker/" }} sidebar__link--active{{ end }}">Docker</a>
     <a href="{{ "deployment/azure/" | relURL }}" class="sidebar__link sidebar__link--child{{ if eq .RelPermalink "/deployment/azure/" }} sidebar__link--active{{ end }}">Azure</a>
+    <a href="{{ "deployment/runtime-isolation/" | relURL }}" class="sidebar__link sidebar__link--child{{ if eq .RelPermalink "/deployment/runtime-isolation/" }} sidebar__link--active{{ end }}">Runtime Isolation</a>
   </div>
 </aside>

@@ -16,6 +16,7 @@ import {
 } from "@opentui/core";
 import { ApiClient } from "../api/client.js";
 import { Colors } from "../utils/theme.js";
+import { getContainerStatuses, type ContainerHealth } from "../utils/containers.js";
 import { TAB_LABELS } from "../config/constants.js";
 import type { Screen } from "../screens/screen.js";
 import { DashboardScreen } from "../screens/dashboard.js";
@@ -196,10 +197,13 @@ export class App {
       flexDirection: "column",
     });
 
-    const serverUrl = this.cfg.url || `http://localhost:${this.cfg.port}`;
+    // Compose admin port for display
+    const displayPort = 9090;
+    const serverUrl = this.cfg.url || `http://localhost:${displayPort}`;
     this.startupConfigText = new TextRenderable(this.renderer, {
       content: [
-        `  Port:        ${this.cfg.port}`,
+        `  Admin:       http://localhost:${displayPort}`,
+        `  Runtime:     http://localhost:8080`,
         `  Server URL:  ${serverUrl}`,
         `  Secret:      ${this.cfg.secret ? "(provided)" : "(auto-detect)"}`,
         `  Project:     ${this.cfg.projectRoot}`,
@@ -236,11 +240,13 @@ export class App {
   // -----------------------------------------------------------------------
 
   private async runStartupSequence(): Promise<void> {
-    const serverUrl = this.cfg.url || `http://localhost:${this.cfg.port}`;
+    // Compose admin listens on 9090 (docker-compose.yml), not cfg.port
+    const composeAdminPort = 9090;
+    let serverUrl = this.cfg.url || `http://localhost:${composeAdminPort}`;
 
     // 1) Build
-    this.setStatus("\x1b[33m●\x1b[0m Building Docker image...");
-    this.appendLog("$ docker build --progress=plain -t polyclaw .");
+    this.setStatus("\x1b[33m●\x1b[0m Building Docker images...");
+    this.appendLog("$ docker compose build");
 
     const buildOk = await buildImage((line) => this.appendLog(line));
     if (!buildOk) {
@@ -254,22 +260,22 @@ export class App {
     let secret = this.cfg.secret;
     if (!secret) secret = await getAdminSecret();
 
-    // 3) Start container
-    this.setStatus("\x1b[33m●\x1b[0m Starting container...");
-    this.appendLog("Starting container (detached)...");
+    // 3) Start compose stack (admin + runtime)
+    this.setStatus("\x1b[33m●\x1b[0m Starting compose stack...");
+    this.appendLog("Starting admin + runtime containers...");
     try {
       this.containerId = await startContainer(this.cfg.port, 3978, "admin");
-      this.appendLog(`Container: ${this.containerId.slice(0, 12)}`);
+      this.appendLog(`Compose stack started (${this.containerId})`);
     } catch (err: unknown) {
-      this.setStatus("\x1b[31m●\x1b[0m Failed to start container. Press q to quit.");
+      this.setStatus("\x1b[31m●\x1b[0m Failed to start containers. Press q to quit.");
       this.appendLog(`Error: ${err instanceof Error ? err.message : err}`);
       return;
     }
 
     this.startupConfigText.content = [
-      `  Port:        ${this.cfg.port}`,
+      `  Admin:       http://localhost:${composeAdminPort}`,
+      `  Runtime:     http://localhost:8080`,
       `  Server URL:  ${serverUrl}`,
-      `  Container:   ${this.containerId.slice(0, 12)}`,
     ].join("\n");
 
     // 4) Wait for health
@@ -304,8 +310,8 @@ export class App {
     }
 
     this.startupConfigText.content = [
-      `  Port:        ${this.cfg.port}`,
-      `  Server URL:  ${serverUrl}`,
+      `  Admin:       http://localhost:${composeAdminPort}`,
+      `  Runtime:     http://localhost:8080`,
       `  Web UI:      ${secret ? `${serverUrl}/?secret=${secret}` : serverUrl}`,
       `  Container:   ${this.containerId.slice(0, 12)}`,
     ].join("\n");
@@ -429,6 +435,28 @@ export class App {
   }
 
   private async refreshStatus(): Promise<void> {
+    // Container health is independent -- always poll even if API fails
+    try {
+      const cs = await getContainerStatuses();
+      const cColor = (h: ContainerHealth) => {
+        if (h === "running") return "\x1b[32m";
+        if (h === "starting") return "\x1b[33m";
+        return "\x1b[31m";
+      };
+      const cLabel = (h: ContainerHealth) => {
+        if (h === "running") return "OK";
+        if (h === "starting") return "..";
+        if (h === "not_found") return "--";
+        return "!!";
+      };
+      const ctrPieces = [
+        `Admin: ${cColor(cs.admin.health)}${cLabel(cs.admin.health)}\x1b[0m`,
+        `Runtime: ${cColor(cs.runtime.health)}${cLabel(cs.runtime.health)}\x1b[0m`,
+      ];
+      // Update title bar with at least container info on API failure
+      this.titleBar.content = ` \x1b[33m●\x1b[0m polyclaw v3  |  ${ctrPieces.join("  ")}`;
+    } catch { /* Docker unavailable */ }
+
     try {
       const status = await this.api.getSetupStatus();
       const azOk = status.azure?.logged_in ?? false;
@@ -439,10 +467,29 @@ export class App {
         `GitHub: ${ghOk ? "\x1b[32mOK\x1b[0m" : "\x1b[31m--\x1b[0m"}`,
         `Tunnel: ${tunnelOk ? "\x1b[32mOK\x1b[0m" : "\x1b[90m--\x1b[0m"}`,
       ];
+
+      // Append container health
+      try {
+        const cs = await getContainerStatuses();
+        const cColor = (h: ContainerHealth) => {
+          if (h === "running") return "\x1b[32m";
+          if (h === "starting") return "\x1b[33m";
+          return "\x1b[31m";
+        };
+        const cLabel = (h: ContainerHealth) => {
+          if (h === "running") return "OK";
+          if (h === "starting") return "..";
+          if (h === "not_found") return "--";
+          return "!!";
+        };
+        pieces.push(`Admin: ${cColor(cs.admin.health)}${cLabel(cs.admin.health)}\x1b[0m`);
+        pieces.push(`Runtime: ${cColor(cs.runtime.health)}${cLabel(cs.runtime.health)}\x1b[0m`);
+      } catch { /* Docker unavailable */ }
+
       const dot = azOk && ghOk ? "\x1b[32m●\x1b[0m" : "\x1b[33m●\x1b[0m";
       this.titleBar.content = ` ${dot} polyclaw v3  |  ${pieces.join("  ")}`;
     } catch {
-      this.titleBar.content = " \x1b[31m●\x1b[0m polyclaw v3  |  Server unreachable";
+      // Leave whatever container info was written above
     }
   }
 }

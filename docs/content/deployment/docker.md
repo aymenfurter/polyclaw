@@ -5,14 +5,14 @@ weight: 1
 
 # Local Docker Deployment
 
-When you select **Local Docker** in the TUI target picker, the TUI builds the Docker image, starts a container, and connects to it automatically. The container lifecycle is tied to the TUI process -- it stops when you exit.
+When you select **Local Docker** in the TUI target picker, the TUI builds the Docker image, starts both admin and runtime containers via `docker compose`, and connects automatically. The container lifecycle is tied to the TUI process -- both containers stop when you exit.
 
 ## How It Works
 
 1. **Launch the TUI** with `./scripts/run-tui.sh` (see [Quickstart](/getting-started/quickstart/))
 2. **Select "Local Docker"** from the target picker
-3. The TUI builds the image and starts a container
-4. Once the health check passes, you land in the TUI dashboard
+3. The TUI builds the image and starts both containers via `docker compose up -d`
+4. Once the admin health check passes, you land in the TUI dashboard
 
 ![TUI deployment target selection](/screenshots/tui-deployoptions.png)
 
@@ -41,37 +41,36 @@ The image includes everything the agent needs to operate:
 
 ### Ports
 
-| Port | Service |
-|---|---|
-| `8080` | Admin server (configurable via `ADMIN_PORT`) |
-| `3978` | Bot Framework endpoint |
+| Port | Container | Service |
+|---|---|---|
+| `9090` | admin | Admin server and web dashboard (configurable via `ADMIN_PORT`) |
+| `3978` | runtime | Bot Framework webhook endpoint |
 
 ## Persistent Data
 
-The TUI creates a Docker named volume (`polyclaw-data`) mounted at `/data` inside the container. This volume persists across container restarts and stores:
+The TUI creates two Docker named volumes that persist across restarts:
 
-- Agent configuration and `.env` file
-- GitHub and Azure CLI authentication state
-- Skills, plugins, and MCP server configs
-- Memory, conversation history, and scheduler state
-- Key Vault cache
+| Volume | Mount | Container | Contents |
+|---|---|---|---|
+| `polyclaw-data` | `/data` | both | Agent config, `.env`, skills, plugins, memory, scheduler state |
+| `polyclaw-admin-home` | `/admin-home` | admin only | GitHub and Azure CLI authentication state |
 
-Because the volume is a named Docker volume, your data survives even when the container is stopped and recreated on the next TUI launch.
+Because these are named Docker volumes, your data survives even when the containers are stopped and recreated on the next TUI launch.
 
 ## Container Entrypoint
 
-When the container starts, the entrypoint script runs the following sequence automatically:
+Each container runs the same entrypoint script, which branches on `POLYCLAW_MODE`:
 
-1. Sets `HOME` to the data directory for consistent tool configuration
+1. Sets `HOME` based on container mode: `/admin-home` (admin container) or `/runtime-home` (runtime container)
 2. Cleans stale Copilot CLI runtime cache (keeps only the matching version)
-3. Loads environment variables from the persisted `.env` file
+3. Loads environment variables from the shared persisted `.env` file
 4. Resolves any `@kv:` Key Vault secret references (if configured)
-5. Checks GitHub authentication state (token, cached session, or deferred to web UI)
-6. Starts the server (`polyclaw-admin`)
+5. Authenticates the runtime container's Azure identity (service principal or managed identity)
+6. Starts the server: `polyclaw-admin --admin-only` (admin) or `polyclaw-admin --runtime-only` (runtime)
 
 ## What Happens on Exit
 
-When you exit the TUI (Ctrl+C or `/quit`), the container is stopped and removed. The named volume is preserved, so the next launch picks up where you left off -- same configuration, same auth state, same data.
+When you exit the TUI (Ctrl+C or `/quit`), both containers are stopped via `docker compose down`. The named volumes are preserved, so the next launch picks up where you left off -- same configuration, same auth state, same data.
 
 ## Integrations Deployed Automatically
 

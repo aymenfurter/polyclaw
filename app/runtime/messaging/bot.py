@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+import uuid
+from typing import TYPE_CHECKING, Any
 
 from botbuilder.core import ActivityHandler, BotFrameworkAdapter, TurnContext
 from botbuilder.schema import Activity, ActivityTypes, ChannelAccount
@@ -16,12 +17,17 @@ from botbuilder.schema import Activity, ActivityTypes, ChannelAccount
 from ..agent.agent import Agent
 from ..config.settings import cfg
 from ..media import build_media_prompt, download_attachment
+from ..services.otel import agent_span, set_span_attribute
 from ..state.memory import get_memory
 from ..state.profile import log_interaction
 from ..state.session_store import SessionStore
 from .commands import CommandDispatcher
 from .message_processor import MessageProcessor
 from .proactive import ConversationReferenceStore
+
+if TYPE_CHECKING:
+    from ..agent.hitl import HitlInterceptor
+    from ..scheduler import Scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +50,16 @@ class _BotChannelContext:
 
 
 class Bot(ActivityHandler):
-    def __init__(self, agent: Agent, conv_store: ConversationReferenceStore) -> None:
+    def __init__(
+        self,
+        agent: Agent,
+        conv_store: ConversationReferenceStore,
+        hitl: HitlInterceptor | None = None,
+    ) -> None:
         self._agent = agent
         self._conv_store = conv_store
+        self._hitl = hitl
+        self._scheduler: Scheduler | None = None
         self.adapter: BotFrameworkAdapter | None = None
         self._memory = get_memory()
         self.session_store = SessionStore()
@@ -56,9 +69,17 @@ class Bot(ActivityHandler):
             self.adapter,
             self._memory,
             self.session_store,
+            hitl=hitl,
         )
 
     async def on_message_activity(self, turn_context: TurnContext) -> None:
+        with agent_span(
+            "bot.message",
+            attributes={"bot.channel": (turn_context.activity.channel_id or "unknown").lower()},
+        ):
+            await self._handle_message(turn_context)
+
+    async def _handle_message(self, turn_context: TurnContext) -> None:
         if not _is_authorized(turn_context):
             await _reply(turn_context, "You are not authorized to use this bot.")
             return
@@ -75,6 +96,28 @@ class Bot(ActivityHandler):
 
         if not user_text and not media_attachments:
             return
+
+        # If there is a pending HITL approval from a scheduled task,
+        # resolve it first so the background session can continue.
+        if self._scheduler and self._scheduler.has_pending_approval and user_text:
+            resolved = self._scheduler.resolve_pending_approval(user_text)
+            if resolved:
+                logger.info(
+                    "[bot] resolved pending SCHEDULER approval with text=%r",
+                    user_text[:60],
+                )
+                return
+
+        # If there is a pending HITL approval, resolve it with the user's text
+        # instead of starting a new agent turn.
+        if self._hitl and self._hitl.has_pending_approval and user_text:
+            resolved = self._hitl.resolve_bot_reply(user_text)
+            if resolved:
+                logger.info(
+                    "[bot] resolved pending HITL approval with text=%r",
+                    user_text[:60],
+                )
+                return
 
         channel = (turn_context.activity.channel_id or "unknown").lower()
 
@@ -93,10 +136,19 @@ class Bot(ActivityHandler):
         ]
         prompt = build_media_prompt(user_text, saved_files)
 
+        # Auto-create a session if none is active so messages are persisted.
+        if not self.session_store.current_session_id:
+            auto_id = str(uuid.uuid4())
+            logger.info("[bot] auto-creating session %s for channel=%s", auto_id, channel)
+            self.session_store.start_session(auto_id, model=cfg.copilot_model)
+
         self._memory.record("user", user_text)
         self.session_store.record("user", user_text, channel=channel)
         log_interaction("user", channel=channel)
 
+        # Ensure the processor uses the same session store instance
+        # (app.py may override self.session_store after __init__).
+        self._processor.session_store = self.session_store
         self._processor.adapter = self.adapter
         asyncio.create_task(self._processor.process(ref, prompt, channel))
 

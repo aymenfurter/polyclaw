@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 
 from app.runtime.sandbox import (
@@ -337,3 +338,95 @@ class TestSandboxToolInterceptor:
         interceptor._pending_result = {"success": True, "stdout": "", "stderr": ""}
         result = await interceptor.on_post_tool_use({}, {})
         assert "(no output)" in result["modifiedResult"]
+
+
+class TestUploadBytesRetry:
+    """Tests for _upload_bytes retry logic with exponential backoff."""
+
+    @pytest.mark.asyncio
+    @patch("app.runtime.sandbox._UPLOAD_BACKOFF_BASE", 0.0)
+    async def test_upload_succeeds_on_first_attempt(self) -> None:
+        store = MagicMock()
+        executor = SandboxExecutor(config_store=store)
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        http = MagicMock(spec=aiohttp.ClientSession)
+        http.post = MagicMock(return_value=mock_resp)
+
+        result = await executor._upload_bytes(
+            http, "https://endpoint", "sess-1", "file.zip", b"data", {},
+        )
+        assert result is True
+        assert http.post.call_count == 1
+
+    @pytest.mark.asyncio
+    @patch("app.runtime.sandbox._UPLOAD_BACKOFF_BASE", 0.0)
+    async def test_upload_retries_on_http_error_then_succeeds(self) -> None:
+        store = MagicMock()
+        executor = SandboxExecutor(config_store=store)
+
+        fail_resp = AsyncMock()
+        fail_resp.status = 500
+        fail_resp.text = AsyncMock(return_value="Internal Server Error")
+        fail_resp.__aenter__ = AsyncMock(return_value=fail_resp)
+        fail_resp.__aexit__ = AsyncMock(return_value=False)
+
+        ok_resp = AsyncMock()
+        ok_resp.status = 200
+        ok_resp.__aenter__ = AsyncMock(return_value=ok_resp)
+        ok_resp.__aexit__ = AsyncMock(return_value=False)
+
+        http = MagicMock(spec=aiohttp.ClientSession)
+        http.post = MagicMock(side_effect=[fail_resp, ok_resp])
+
+        result = await executor._upload_bytes(
+            http, "https://endpoint", "sess-1", "file.zip", b"data", {},
+        )
+        assert result is True
+        assert http.post.call_count == 2
+
+    @pytest.mark.asyncio
+    @patch("app.runtime.sandbox._UPLOAD_BACKOFF_BASE", 0.0)
+    async def test_upload_retries_on_exception_then_succeeds(self) -> None:
+        store = MagicMock()
+        executor = SandboxExecutor(config_store=store)
+
+        ok_resp = AsyncMock()
+        ok_resp.status = 201
+        ok_resp.__aenter__ = AsyncMock(return_value=ok_resp)
+        ok_resp.__aexit__ = AsyncMock(return_value=False)
+
+        http = MagicMock(spec=aiohttp.ClientSession)
+        http.post = MagicMock(
+            side_effect=[aiohttp.ClientError("connection reset"), ok_resp],
+        )
+
+        result = await executor._upload_bytes(
+            http, "https://endpoint", "sess-1", "data.zip", b"data", {},
+        )
+        assert result is True
+        assert http.post.call_count == 2
+
+    @pytest.mark.asyncio
+    @patch("app.runtime.sandbox._UPLOAD_BACKOFF_BASE", 0.0)
+    async def test_upload_fails_after_all_retries(self) -> None:
+        store = MagicMock()
+        executor = SandboxExecutor(config_store=store)
+
+        fail_resp = AsyncMock()
+        fail_resp.status = 503
+        fail_resp.text = AsyncMock(return_value="Service Unavailable")
+        fail_resp.__aenter__ = AsyncMock(return_value=fail_resp)
+        fail_resp.__aexit__ = AsyncMock(return_value=False)
+
+        http = MagicMock(spec=aiohttp.ClientSession)
+        http.post = MagicMock(return_value=fail_resp)
+
+        result = await executor._upload_bytes(
+            http, "https://endpoint", "sess-1", "file.zip", b"data", {},
+        )
+        assert result is False
+        assert http.post.call_count == 3

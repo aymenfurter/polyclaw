@@ -23,6 +23,8 @@ const Environments = lazy(() => import('./pages/Environments'))
 const FoundryIQ = lazy(() => import('./pages/FoundryIQ'))
 const Workspace = lazy(() => import('./pages/Workspace'))
 const Customization = lazy(() => import('./pages/Customization'))
+const Guardrails = lazy(() => import('./pages/Guardrails'))
+const ToolActivity = lazy(() => import('./pages/ToolActivity'))
 
 function Loader() {
   return <div className="page-loader"><div className="spinner" /></div>
@@ -75,6 +77,9 @@ export default function App() {
               <Route path="/foundry-iq" element={<Navigate to="/infrastructure" replace />} />
               <Route path="/workspace" element={<Workspace />} />
               <Route path="/customization" element={<Customization />} />
+              <Route path="/guardrails" element={<Guardrails />} />
+              <Route path="/tool-activity" element={<ToolActivity />} />
+              <Route path="/identity" element={<Navigate to="/guardrails" replace />} />
               <Route path="*" element={<Navigate to="/chat" replace />} />
             </Routes>
           </Suspense>

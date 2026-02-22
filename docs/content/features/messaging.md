@@ -88,6 +88,8 @@ Stored in `~/.polyclaw/conversation_refs.json`. Each channel/conversation pair i
 - User ID whitelisting via `TELEGRAM_WHITELIST`
 - Media attachments are handled differently from Teams
 
+> **Note:** After a container restart or fresh deployment, it may take a few minutes for the Telegram channel to become fully operational. During this window the runtime is starting a Cloudflare tunnel, recreating the Bot Service resource, and reconfiguring the Telegram channel. Messages sent by users during this period will be received by Azure Bot Service but may fail to reach the agent (you may see HTTP 530 errors or "Failed to validate incoming Telegram message" in the Bot Service logs). Once the tunnel is up and the channel is configured, normal message delivery resumes automatically. No action is required -- just wait for the startup sequence to complete.
+
 ## Default Model
 
 The web dashboard lets you set the default Copilot model used for new chat sessions across all channels.

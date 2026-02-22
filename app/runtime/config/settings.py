@@ -1,11 +1,8 @@
-"""Application settings -- reads from environment and ``.env`` file.
-
-All configuration is consolidated here.  Grouped dataclasses keep
-related settings together without creating separate modules.
-"""
+"""Application settings -- reads from environment and ``.env`` file."""
 
 from __future__ import annotations
 
+import enum
 import os
 import secrets
 from dataclasses import dataclass, field
@@ -22,6 +19,18 @@ SECRET_ENV_KEYS: frozenset[str] = frozenset({
     "ACS_CONNECTION_STRING",
     "AZURE_OPENAI_API_KEY",
 })
+
+_BOOTSTRAP_PLAINTEXT_KEYS: frozenset[str] = frozenset({
+    "RUNTIME_SP_APP_ID",
+    "RUNTIME_SP_PASSWORD",
+    "RUNTIME_SP_TENANT",
+})
+
+
+class ServerMode(enum.Enum):
+    combined = "combined"
+    admin = "admin"
+    runtime = "runtime"
 
 
 @dataclass
@@ -53,17 +62,15 @@ class AdminConfig:
 
 @dataclass
 class ModelConfig:
-    copilot_model: str = "claude-sonnet-4-20250514"
+    copilot_model: str = "claude-sonnet-4.6"
     copilot_agent: str = ""
 
 
 class Settings:
-    """Runtime configuration sourced from environment variables and ``.env``."""
 
     _DATA_DIR_ENV: ClassVar[str] = "POLYCLAW_DATA_DIR"
 
     def __init__(self) -> None:
-        # Resolve .env path: explicit DOTENV_PATH > data_dir/.env > CWD/.env
         dotenv = os.getenv("DOTENV_PATH")
         if not dotenv:
             data_dir = os.getenv(self._DATA_DIR_ENV)
@@ -76,8 +83,13 @@ class Settings:
         self.reload()
 
     def reload(self) -> None:
-        """Re-read the ``.env`` file and environment variables."""
         e = self._read
+
+        raw_mode = os.getenv("POLYCLAW_SERVER_MODE", "combined").lower()
+        try:
+            self.server_mode: ServerMode = ServerMode(raw_mode)
+        except ValueError:
+            self.server_mode = ServerMode.combined
 
         self.bot_app_id: str = e("BOT_APP_ID")
         self.bot_app_password: str = e("BOT_APP_PASSWORD")
@@ -86,10 +98,10 @@ class Settings:
 
         self.github_token: str = e("GITHUB_TOKEN")
 
-        self.copilot_model: str = e("COPILOT_MODEL") or "claude-sonnet-4-20250514"
+        self.copilot_model: str = e("COPILOT_MODEL") or "claude-sonnet-4.6"
         self.copilot_agent: str = e("COPILOT_AGENT") or ""
 
-        self.admin_port: int = int(e("ADMIN_PORT") or "8000")
+        self.admin_port: int = int(e("ADMIN_PORT") or "9090")
         self.lockdown_mode: bool = bool(e("LOCKDOWN_MODE"))
         self.tunnel_restricted: bool = bool(e("TUNNEL_RESTRICTED"))
 
@@ -107,16 +119,25 @@ class Settings:
 
         self.admin_secret: str = e("ADMIN_SECRET")
 
-        self.memory_model: str = e("MEMORY_MODEL") or "claude-sonnet-4-20250514"
+        self.memory_model: str = e("MEMORY_MODEL") or "claude-sonnet-4.6"
         self.memory_idle_minutes: int = int(e("MEMORY_IDLE_MINUTES") or "5")
         self.proactive_enabled: bool = e("PROACTIVE_ENABLED").lower() in ("1", "true", "yes") if e("PROACTIVE_ENABLED") else False
+
+        self.runtime_sp_app_id: str = e("RUNTIME_SP_APP_ID")
+        self.runtime_sp_password: str = e("RUNTIME_SP_PASSWORD")
+        self.runtime_sp_tenant: str = e("RUNTIME_SP_TENANT")
+
+        self.aca_runtime_fqdn: str = e("ACA_RUNTIME_FQDN")
+        self.aca_acr_name: str = e("ACA_ACR_NAME")
+        self.aca_env_name: str = e("ACA_ENV_NAME")
+        self.aca_storage_account: str = e("ACA_STORAGE_ACCOUNT")
+        self.aca_mi_resource_id: str = e("ACA_MI_RESOURCE_ID")
+        self.aca_mi_client_id: str = e("ACA_MI_CLIENT_ID")
 
         raw_wl = e("TELEGRAM_WHITELIST")
         self.telegram_whitelist: frozenset[str] = frozenset(
             uid.strip() for uid in raw_wl.split(",") if uid.strip()
         ) if raw_wl else frozenset()
-
-    # -- derived paths -----------------------------------------------------
 
     @property
     def data_dir(self) -> Path:
@@ -183,13 +204,11 @@ class Settings:
         env_root = os.getenv("POLYCLAW_PROJECT_ROOT")
         if env_root:
             return Path(env_root)
-        # Walk up from this file until we find a directory containing plugins/ or pyproject.toml
         p = Path(__file__).resolve().parent
         for _ in range(6):
             p = p.parent
             if (p / "plugins").is_dir() or (p / "pyproject.toml").is_file():
                 return p
-        # Fallback: 4 parents up (local dev layout)
         return Path(__file__).resolve().parent.parent.parent.parent
 
     @property
@@ -215,8 +234,6 @@ class Settings:
     @property
     def acs_callback_token(self) -> str:
         return self._acs_callback_token
-
-    # -- helpers -----------------------------------------------------------
 
     def _read(self, key: str) -> str:
         raw = self.env.read(key) or os.getenv(key, "")
@@ -247,6 +264,8 @@ class Settings:
         secured = dict(kwargs)
         if kv.enabled:
             for key, value in kwargs.items():
+                if key in _BOOTSTRAP_PLAINTEXT_KEYS:
+                    continue
                 if key in SECRET_ENV_KEYS and value and not is_kv_ref(value):
                     try:
                         secured[key] = kv.store(env_key_to_secret_name(key), value)
@@ -260,12 +279,6 @@ class Settings:
         self.reload()
 
     def _derive_acs_resource_id(self) -> str:
-        """Return the ACS resource ID.
-
-        Prefers the auto-learned value from JWT validation (which is the
-        correct immutable GUID-based ID). Falls back to empty string;
-        the auth module will auto-learn from the first valid JWT.
-        """
         try:
             from ..realtime.auth import get_learned_audience
             learned = get_learned_audience()
@@ -276,7 +289,6 @@ class Settings:
         return ""
 
 
-# Module-level singleton
 cfg = Settings()
 
 

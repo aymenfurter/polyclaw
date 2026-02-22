@@ -23,7 +23,7 @@
     </section>
 
     <div class="callout callout--warning" style="max-width:800px;margin:0 auto 32px">
-      <p>Polyclaw is an independent, community-built tool -- not an official GitHub product. It operates under your identity with a high degree of autonomy, meaning it can take actions on your behalf (GitHub, Azure, phone calls, code execution). Misconfiguration or unattended use can have real consequences. This project is intended for developers and technical users who understand the risks of running an autonomous agent with access to their accounts and infrastructure.</p>
+      <p>Polyclaw is an independent, community-built tool -- not an official GitHub product. The agent runtime operates under its own Azure identity with least-privilege RBAC, but still uses your GitHub identity for the Copilot SDK. It acts with a high degree of autonomy -- executing code, managing Azure resources, sending messages, and making phone calls within the scope of its assigned roles. A built-in <a href="{{ "features/guardrails/" | relURL }}">guardrails system</a> lets you control what the agent can do, but it requires careful configuration to match your use case and risk appetite. Misconfiguration or unattended use can have real consequences. This project is intended for developers and technical users who understand the risks of running an autonomous agent.</p>
     </div>
 
     <section class="features">

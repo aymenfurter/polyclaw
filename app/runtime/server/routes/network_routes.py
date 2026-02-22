@@ -11,7 +11,6 @@ from aiohttp import ClientSession, ClientTimeout, web
 
 from ...config.settings import cfg
 from ...services.azure import AzureCLI
-from ...services.tunnel import CloudflareTunnel
 from ...state.foundry_iq_config import FoundryIQConfigStore
 from ...state.sandbox_config import SandboxConfigStore
 
@@ -30,7 +29,7 @@ _TUNNEL_ALLOWED_PREFIXES = (
 
 def _detect_deploy_mode() -> str:
     """Return 'docker', 'aca', or 'local' based on runtime environment."""
-    if os.getenv("WEBSITE_SITE_NAME") or os.getenv("CONTAINER_APP_NAME"):
+    if os.getenv("POLYCLAW_USE_MI"):
         return "aca"
     if os.getenv("POLYCLAW_CONTAINER") == "1":
         return "docker"
@@ -65,12 +64,59 @@ def _is_tunnel_exposed(path: str) -> bool:
     return any(path.startswith(pfx) for pfx in _TUNNEL_ALLOWED_PREFIXES)
 
 
+# Prefixes that live on the runtime (agent) container in split deployments.
+_RUNTIME_PREFIXES = (
+    "/api/chat/",
+    "/api/models",
+    "/api/messages",
+    "/api/sessions",
+    "/api/schedules",
+    "/api/proactive",
+    "/api/skills",
+    "/api/plugins",
+    "/api/mcp/",
+    "/api/guardrails/",
+    "/api/tool-activity",
+    "/api/profile",
+    "/api/voice/",
+    "/api/internal/",
+    "/acs",
+    "/realtime-acs",
+)
+
+# Prefixes that live on the admin (control-plane) container.
+_ADMIN_PREFIXES = (
+    "/api/setup/",
+    "/api/workspace/",
+    "/api/environments",
+    "/api/sandbox/",
+    "/api/foundry-iq/",
+    "/api/network/",
+    "/api/monitoring/",
+    "/api/guardrails/preflight",
+    "/api/content-safety/",
+)
+
+
+def _endpoint_container(path: str) -> str:
+    """Return which container an endpoint belongs to: 'runtime', 'admin', or 'shared'."""
+    # Check admin prefixes first -- more specific paths (e.g.
+    # /api/guardrails/preflight) must win over broader runtime prefixes.
+    if any(path.startswith(pfx) for pfx in _ADMIN_PREFIXES):
+        return "admin"
+    if any(path.startswith(pfx) or path == pfx.rstrip("/") for pfx in _RUNTIME_PREFIXES):
+        return "runtime"
+    if path == "/health" or path == "/api/auth/check" or path.startswith("/api/media/"):
+        return "shared"
+    return "shared"
+
+
 class NetworkRoutes:
     """Provides runtime network info: endpoints, components, tunnel mode."""
 
     def __init__(
         self,
-        tunnel: CloudflareTunnel,
+        tunnel: object | None,
         az: AzureCLI | None = None,
         sandbox_store: SandboxConfigStore | None = None,
         foundry_iq_store: FoundryIQConfigStore | None = None,
@@ -88,35 +134,80 @@ class NetworkRoutes:
 
     async def _info(self, req: web.Request) -> web.Response:
         """Return full network topology info."""
+        from ..tunnel_status import resolve_tunnel_info
+
         cfg.reload()
         deploy_mode = _detect_deploy_mode()
         admin_port = cfg.admin_port
+        server_mode = cfg.server_mode.value
 
         # Collect registered endpoints from the live app router
         endpoints = self._collect_endpoints(req.app)
 
-        # Build component info (what network connections are configured)
-        components = self._build_components(deploy_mode)
+        # Tag local endpoints with source
+        for ep in endpoints:
+            ep["source"] = "admin"
 
-        tunnel_info: dict[str, Any] = {
-            "active": self._tunnel.is_active,
-            "url": self._tunnel.url,
-            "restricted": cfg.tunnel_restricted,
-        }
+        # In admin-only mode, also fetch runtime endpoints via RUNTIME_URL
+        runtime_endpoints: list[dict[str, Any]] = []
+        runtime_url = os.getenv("RUNTIME_URL", "")
+        if server_mode == "admin" and runtime_url:
+            runtime_endpoints = await self._fetch_runtime_endpoints(runtime_url)
+            # Merge: add runtime endpoints that don't already exist locally
+            local_keys = {(e["method"], e["path"]) for e in endpoints}
+            for rep in runtime_endpoints:
+                if (rep["method"], rep["path"]) not in local_keys:
+                    rep["source"] = "runtime"
+                    endpoints.append(rep)
+            endpoints.sort(key=lambda e: (e["category"], e["path"], e["method"]))
+
+        tunnel_info = await resolve_tunnel_info(self._tunnel, self._az)
+
+        # Build component info (what network connections are configured)
+        components = self._build_components(deploy_mode, tunnel_info)
+
+        # Build container topology for dual-container deployments
+        containers = self._build_containers(deploy_mode, server_mode, admin_port)
 
         return web.json_response({
             "deploy_mode": deploy_mode,
             "admin_port": admin_port,
+            "server_mode": server_mode,
             "tunnel": tunnel_info,
             "lockdown_mode": cfg.lockdown_mode,
             "components": components,
             "endpoints": endpoints,
+            "containers": containers,
         })
 
     async def _endpoints(self, req: web.Request) -> web.Response:
         """Return just the list of registered endpoints."""
         endpoints = self._collect_endpoints(req.app)
         return web.json_response(endpoints)
+
+    async def _fetch_runtime_endpoints(self, runtime_url: str) -> list[dict[str, Any]]:
+        """Fetch the endpoint list from the runtime container via its API."""
+        url = f"{runtime_url.rstrip('/')}/api/network/endpoints"
+        timeout = ClientTimeout(total=3)
+        try:
+            headers: dict[str, str] = {}
+            if cfg.admin_secret:
+                headers["Authorization"] = f"Bearer {cfg.admin_secret}"
+            async with ClientSession() as session:
+                async with session.get(url, timeout=timeout, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if isinstance(data, list):
+                            return data
+                    logger.warning(
+                        "[network.runtime_endpoints] status=%s from %s",
+                        resp.status, url,
+                    )
+        except Exception:
+            logger.warning(
+                "[network.runtime_endpoints] failed to reach %s", url, exc_info=True,
+            )
+        return []
 
     # ------------------------------------------------------------------
     # Endpoint probing – actual HTTP calls to verify auth / tunnel
@@ -136,30 +227,33 @@ class NetworkRoutes:
     async def _probe(self, req: web.Request) -> web.Response:
         """Probe every registered endpoint with real HTTP calls.
 
-        Three test phases per endpoint:
+        In admin-only mode the probe runs in two phases:
 
-        1. **Admin-key probe** – unauthenticated GET to ``127.0.0.1``.
-           *401* → endpoint requires the admin secret.
-        2. **Tunnel probe** – GET with Cloudflare headers.
-           *403* → endpoint blocked for tunnel traffic.
-        3. **Framework auth probe** – for bot / ACS category endpoints
-           only: an unauthenticated POST with a minimal JSON body.
-           *401* → the handler's own JWT / token validation is active.
+        1. **Local probe** -- tests endpoints registered on this (admin)
+           container against ``127.0.0.1:{admin_port}``.
+        2. **Cross-container probe** -- fetches the runtime container's
+           endpoint list via ``RUNTIME_URL`` and probes those endpoints
+           against the runtime's address.
 
-        Each endpoint gets an ``auth_type`` label:
+        Each endpoint receives three checks:
 
-        * ``"admin_key"``    – protected by the admin secret middleware
-        * ``"bot_jwt"``      – protected by Bot Framework JWT
-        * ``"acs_token"``    – protected by ACS callback token + JWT
-        * ``"health"``       – unauthenticated health / info endpoint
-        * ``"open"``         – no auth detected (potential concern)
+        * **Auth probe** -- unauthenticated GET. 401 = auth required.
+        * **Tunnel probe** -- GET with Cloudflare headers.  403 = tunnel
+          restriction middleware blocked the request.  Only meaningful on
+          the runtime container where tunnel middleware runs.
+        * **Framework auth probe** -- for bot/ACS endpoints: unauthenticated
+          POST to check framework-level auth (Bot JWT / ACS token).
         """
         cfg.reload()
-        endpoints = self._collect_endpoints(req.app)
-        port = cfg.admin_port
-        base = f"http://127.0.0.1:{port}"
+        local_endpoints = self._collect_endpoints(req.app)
+        admin_port = cfg.admin_port
+        admin_base = f"http://127.0.0.1:{admin_port}"
+
+        runtime_url = os.getenv("RUNTIME_URL", "")
+        server_mode = cfg.server_mode.value
+
         sem = asyncio.Semaphore(20)
-        timeout = ClientTimeout(total=2)
+        timeout = ClientTimeout(total=3)
 
         cf_headers = {
             "cf-connecting-ip": "198.51.100.1",
@@ -167,8 +261,6 @@ class NetworkRoutes:
             "cf-ipcountry": "US",
         }
 
-        # Minimal Bot Framework activity body – enough for the adapter
-        # to attempt JWT validation without executing handler logic.
         _bot_probe_body = {
             "type": "message",
             "text": "",
@@ -178,7 +270,13 @@ class NetworkRoutes:
             "conversation": {"id": "probe"},
         }
 
-        async def _test(session: ClientSession, ep: dict[str, Any]) -> dict[str, Any]:
+        async def _test(
+            session: ClientSession,
+            ep: dict[str, Any],
+            base: str,
+            *,
+            tunnel_probe_meaningful: bool = False,
+        ) -> dict[str, Any]:
             path: str = ep["path"]
             url = f"{base}{path}"
             out: dict[str, Any] = {
@@ -187,34 +285,38 @@ class NetworkRoutes:
                 "tunnel_blocked": None,
                 "auth_type": None,
                 "framework_auth_ok": None,
+                "probe_error": None,
             }
             async with sem:
-                # 1. Admin-key probe – unauthenticated GET
+                # 1. Auth probe -- unauthenticated GET
                 try:
                     async with session.get(
                         url, timeout=timeout, allow_redirects=False,
                     ) as r:
                         out["requires_auth"] = r.status == 401
-                except Exception:
-                    pass
+                except Exception as exc:
+                    out["probe_error"] = str(exc)
 
-                # 2. Tunnel probe – GET with CF headers
-                try:
-                    async with session.get(
-                        url,
-                        headers=cf_headers,
-                        timeout=timeout,
-                        allow_redirects=False,
-                    ) as r:
-                        out["tunnel_blocked"] = r.status == 403
-                except Exception:
-                    pass
+                # 2. Tunnel probe -- only meaningful on runtime container
+                if tunnel_probe_meaningful:
+                    try:
+                        async with session.get(
+                            url, headers=cf_headers,
+                            timeout=timeout, allow_redirects=False,
+                        ) as r:
+                            out["tunnel_blocked"] = r.status == 403
+                    except Exception:
+                        pass
 
-                # 3. Framework auth probe – POST for bot/acs endpoints
-                is_bot = any(path == p or path.startswith(p + "/")
-                             for p in self._BOT_FRAMEWORK_PATHS)
-                is_acs = any(path == p or path.startswith(p + "/")
-                             for p in self._ACS_AUTH_PATHS)
+                # 3. Framework auth probe -- POST for bot/acs endpoints
+                is_bot = any(
+                    path == p or path.startswith(p + "/")
+                    for p in self._BOT_FRAMEWORK_PATHS
+                )
+                is_acs = any(
+                    path == p or path.startswith(p + "/")
+                    for p in self._ACS_AUTH_PATHS
+                )
 
                 if is_bot:
                     try:
@@ -225,18 +327,12 @@ class NetworkRoutes:
                             out["framework_auth_ok"] = r.status == 401
                             out["auth_type"] = "bot_jwt" if r.status == 401 else "open"
                     except Exception:
-                        out["auth_type"] = "bot_jwt"  # connection error = likely blocked
+                        out["auth_type"] = "bot_jwt"
                 elif is_acs:
-                    try:
-                        # ACS endpoints check ?token= param – omit it
-                        async with session.post(
-                            url, json=[{}],
-                            timeout=timeout, allow_redirects=False,
-                        ) as r:
-                            out["framework_auth_ok"] = r.status == 401
-                            out["auth_type"] = "acs_token" if r.status == 401 else "open"
-                    except Exception:
-                        out["auth_type"] = "acs_token"
+                    # ACS endpoints use event-grid / ACS-token auth, not
+                    # standard HTTP 401.  Mark the type but leave
+                    # framework_auth_ok as None (not applicable).
+                    out["auth_type"] = "acs_token"
                 elif out.get("requires_auth"):
                     out["auth_type"] = "admin_key"
                 elif path == "/health":
@@ -249,46 +345,73 @@ class NetworkRoutes:
             return out
 
         async with ClientSession() as session:
-            raw = await asyncio.gather(
-                *(_test(session, ep) for ep in endpoints),
-                return_exceptions=True,
-            )
+            # Phase 1: probe local (admin) endpoints
+            local_tasks = [
+                _test(session, ep, admin_base, tunnel_probe_meaningful=False)
+                for ep in local_endpoints
+            ]
+            local_raw = await asyncio.gather(*local_tasks, return_exceptions=True)
+            local_probed = [r for r in local_raw if isinstance(r, dict)]
 
-        probed = [r for r in raw if isinstance(r, dict)]
+            # Phase 2: cross-probe runtime endpoints (if in admin-only mode)
+            runtime_probed: list[dict[str, Any]] = []
+            runtime_reachable = False
+            if server_mode == "admin" and runtime_url:
+                runtime_endpoints = await self._fetch_runtime_endpoints(runtime_url)
+                if runtime_endpoints:
+                    runtime_reachable = True
+                    runtime_base = runtime_url.rstrip("/")
+                    # Tunnel probe is meaningful on runtime (that's where
+                    # the restriction middleware runs)
+                    runtime_tasks = [
+                        _test(
+                            session, ep, runtime_base,
+                            tunnel_probe_meaningful=True,
+                        )
+                        for ep in runtime_endpoints
+                    ]
+                    runtime_raw = await asyncio.gather(
+                        *runtime_tasks, return_exceptions=True,
+                    )
+                    runtime_probed = [r for r in runtime_raw if isinstance(r, dict)]
+                    for ep in runtime_probed:
+                        ep["source"] = "runtime"
 
-        total = len(probed)
-        auth_required = sum(1 for e in probed if e.get("requires_auth") is True)
-        public_no_auth = sum(1 for e in probed if e.get("requires_auth") is False)
-        tunnel_accessible = sum(
-            1 for e in probed if e.get("tunnel_blocked") is False
-        )
-        tunnel_blocked = sum(
-            1 for e in probed if e.get("tunnel_blocked") is True
-        )
+        # Mark local endpoints with source
+        for ep in local_probed:
+            ep.setdefault("source", "admin")
 
-        # Count by auth type
-        auth_type_counts: dict[str, int] = {}
-        for e in probed:
-            at = e.get("auth_type") or "unknown"
-            auth_type_counts[at] = auth_type_counts.get(at, 0) + 1
+        all_probed = local_probed + runtime_probed
 
-        # Framework auth probe summary
-        framework_probed = [e for e in probed if e.get("framework_auth_ok") is not None]
-        framework_ok = sum(1 for e in framework_probed if e["framework_auth_ok"])
-        framework_fail = len(framework_probed) - framework_ok
+        # --- Compute summary counts per source ---
+        def _counts(eps: list[dict[str, Any]]) -> dict[str, Any]:
+            total = len(eps)
+            auth_required = sum(1 for e in eps if e.get("requires_auth") is True)
+            public_no_auth = sum(1 for e in eps if e.get("requires_auth") is False)
+            tunnel_blocked = sum(1 for e in eps if e.get("tunnel_blocked") is True)
+            tunnel_accessible = sum(1 for e in eps if e.get("tunnel_blocked") is False)
+            auth_types: dict[str, int] = {}
+            for e in eps:
+                at = e.get("auth_type") or "unknown"
+                auth_types[at] = auth_types.get(at, 0) + 1
+            fw = [e for e in eps if e.get("framework_auth_ok") is not None]
+            return {
+                "total": total,
+                "auth_required": auth_required,
+                "public_no_auth": public_no_auth,
+                "tunnel_blocked": tunnel_blocked,
+                "tunnel_accessible": tunnel_accessible,
+                "auth_types": auth_types,
+                "framework_auth_ok": sum(1 for e in fw if e["framework_auth_ok"]),
+                "framework_auth_fail": sum(1 for e in fw if not e["framework_auth_ok"]),
+            }
 
         return web.json_response({
-            "endpoints": probed,
-            "counts": {
-                "total": total,
-                "public_no_auth": public_no_auth,
-                "auth_required": auth_required,
-                "tunnel_accessible": tunnel_accessible,
-                "tunnel_blocked": tunnel_blocked,
-                "auth_types": auth_type_counts,
-                "framework_auth_ok": framework_ok,
-                "framework_auth_fail": framework_fail,
-            },
+            "endpoints": all_probed,
+            "admin": _counts(local_probed),
+            "runtime": _counts(runtime_probed),
+            "counts": _counts(all_probed),
+            "runtime_reachable": runtime_reachable,
             "tunnel_restricted_during_probe": cfg.tunnel_restricted,
         })
 
@@ -318,19 +441,90 @@ class NetworkRoutes:
 
                 category = _classify_endpoint(method, path)
                 tunnel_exposed = _is_tunnel_exposed(path)
+                container = _endpoint_container(path)
 
                 results.append({
                     "method": method,
                     "path": path,
                     "category": category,
                     "tunnel_exposed": tunnel_exposed,
+                    "container": container,
                 })
 
         # Sort by category then path
         results.sort(key=lambda e: (e["category"], e["path"], e["method"]))
         return results
 
-    def _build_components(self, deploy_mode: str) -> list[dict[str, Any]]:
+    def _build_containers(
+        self,
+        deploy_mode: str,
+        server_mode: str,
+        admin_port: int,
+    ) -> list[dict[str, Any]]:
+        """Build container topology for the network diagram.
+
+        Only states facts that can be read from the current environment
+        or configuration.  Identity and volume claims are intentionally
+        omitted -- those are verified by the probe endpoint.
+        """
+        if deploy_mode == "docker":
+            runtime_port = int(os.getenv("RUNTIME_PORT", "8080"))
+            runtime_url = os.getenv("RUNTIME_URL", "http://runtime:8080")
+            # Parse actual port from RUNTIME_URL if set
+            if ":" in runtime_url.rsplit("/", 1)[-1]:
+                try:
+                    runtime_port = int(runtime_url.rsplit(":", 1)[-1].rstrip("/"))
+                except ValueError:
+                    pass
+            return [
+                {
+                    "role": "admin",
+                    "label": "Admin Container",
+                    "port": admin_port,
+                    "host": "127.0.0.1",
+                    "exposure": "localhost-only",
+                },
+                {
+                    "role": "runtime",
+                    "label": "Agent Container",
+                    "port": runtime_port,
+                    "host": "runtime",
+                    "exposure": "tunnel (Cloudflare)",
+                },
+            ]
+        if deploy_mode == "aca":
+            aca_name = os.getenv("ACA_ENV_NAME", "polyclaw")
+            runtime_port = int(os.getenv("RUNTIME_PORT", "8080"))
+            return [
+                {
+                    "role": "admin",
+                    "label": "Admin Container",
+                    "port": admin_port,
+                    "host": "internal",
+                    "exposure": "internal-only",
+                },
+                {
+                    "role": "runtime",
+                    "label": "Agent Container",
+                    "port": runtime_port,
+                    "host": aca_name,
+                    "exposure": "ACA ingress",
+                },
+            ]
+        # local / combined -- single process
+        return [
+            {
+                "role": "combined",
+                "label": "Polyclaw Server",
+                "port": admin_port,
+                "host": "localhost",
+                "exposure": "localhost",
+            },
+        ]
+
+    def _build_components(
+        self, deploy_mode: str, tunnel_info: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Build the list of network-connected components."""
         components: list[dict[str, Any]] = []
 
@@ -364,14 +558,23 @@ class NetworkRoutes:
                 "source_number": cfg.acs_source_number or None,
             })
 
-        # Cloudflare Tunnel
-        components.append({
-            "name": "Cloudflare Tunnel",
-            "type": "tunnel",
-            "status": "active" if self._tunnel.is_active else "inactive",
-            "url": self._tunnel.url,
-            "restricted": cfg.tunnel_restricted,
-        })
+        # Cloudflare Tunnel -- use pre-resolved tunnel_info when available
+        if tunnel_info is not None:
+            components.append({
+                "name": "Cloudflare Tunnel",
+                "type": "tunnel",
+                "status": "active" if tunnel_info["active"] else "inactive",
+                "url": tunnel_info["url"],
+                "restricted": tunnel_info["restricted"],
+            })
+        else:
+            components.append({
+                "name": "Cloudflare Tunnel",
+                "type": "tunnel",
+                "status": "active" if getattr(self._tunnel, "is_active", False) else "inactive",
+                "url": getattr(self._tunnel, "url", None),
+                "restricted": cfg.tunnel_restricted,
+            })
 
         # Azure Bot Service
         if cfg.bot_app_id:

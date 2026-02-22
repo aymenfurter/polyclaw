@@ -16,11 +16,14 @@ from ..config.settings import cfg
 from ..media.outgoing import collect_pending_outgoing
 from ..messaging.cards import attachment_to_dict, drain_pending_cards
 from ..messaging.commands import CommandDispatcher
+from ..services.otel import agent_span, record_event, set_span_attribute
 from ..state.memory import get_memory
 from ..state.session_store import SessionStore
+from ..state.tool_activity_store import ToolActivityStore, get_tool_activity_store
 
 if TYPE_CHECKING:
     from ..agent.agent import Agent
+    from ..agent.hitl import HitlInterceptor
     from ..sandbox import SandboxToolInterceptor
 
 logger = logging.getLogger(__name__)
@@ -36,10 +39,14 @@ class ChatHandler:
         agent: Agent,
         session_store: SessionStore,
         sandbox_interceptor: SandboxToolInterceptor | None = None,
+        hitl_interceptor: HitlInterceptor | None = None,
+        tool_activity_store: ToolActivityStore | None = None,
     ) -> None:
         self._agent = agent
         self._sessions = session_store
         self._sandbox = sandbox_interceptor
+        self._hitl = hitl_interceptor
+        self._tool_activity = tool_activity_store or get_tool_activity_store()
         self._commands = CommandDispatcher(agent, session_store=session_store)
         self._suggestions = self._load_suggestions()
 
@@ -54,12 +61,23 @@ class ChatHandler:
         await ws.prepare(req)
         logger.info("[chat.handle] WebSocket connected from %s", req.remote)
 
+        # Track the current send task so approve_tool can arrive while
+        # agent.send() is blocked waiting for HITL approval.
+        send_task: asyncio.Task[None] | None = None
+
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 logger.debug("[chat.handle] received: %s", msg.data[:200])
                 try:
                     data = json.loads(msg.data)
-                    await self._dispatch(ws, data)
+                    action = data.get("action", "")
+                    if action == "send":
+                        if send_task and not send_task.done():
+                            logger.warning("[chat.handle] send already in progress, ignoring")
+                            continue
+                        send_task = asyncio.create_task(self._dispatch(ws, data))
+                    else:
+                        await self._dispatch(ws, data)
                 except json.JSONDecodeError:
                     logger.warning("[chat.handle] invalid JSON: %s", msg.data[:100])
                     await ws.send_json({"type": "error", "content": "Invalid JSON"})
@@ -69,6 +87,9 @@ class ChatHandler:
             elif msg.type == aiohttp.WSMsgType.ERROR:
                 logger.error("[chat.handle] WebSocket error: %s", ws.exception())
 
+        # Cancel inflight send on disconnect
+        if send_task and not send_task.done():
+            send_task.cancel()
         logger.info("[chat.handle] WebSocket disconnected")
         return ws
 
@@ -98,6 +119,8 @@ class ChatHandler:
             await self._resume_session(ws, data.get("session_id", ""))
         elif action == "send":
             await self._send_prompt(ws, data)
+        elif action == "approve_tool":
+            await self._handle_tool_approval(ws, data)
         else:
             logger.warning("[chat.dispatch] unknown action: %s", action)
             await ws.send_json({"type": "error", "content": f"Unknown action: {action}"})
@@ -143,21 +166,84 @@ class ChatHandler:
                 result = await self._sandbox.intercept({"type": event_type, **event})
                 if result:
                     await ws.send_json({"type": "sandbox_result", **result})
+            # Record tool activity for audit
+            if event_type == "tool_start":
+                mcp_server = event.get("mcp_server", "")
+                category = "mcp" if mcp_server else ""
+                tool_name = event.get("tool", "unknown")
+                interaction_type = ""
+                if self._hitl:
+                    interaction_type = self._hitl.pop_resolved_strategy(tool_name)
+                self._tool_activity.record_start(
+                    session_id=self._sessions.current_session_id,
+                    tool=tool_name,
+                    call_id=event.get("call_id", ""),
+                    arguments=event.get("arguments", ""),
+                    model=cfg.copilot_model,
+                    category=category,
+                    interaction_type=interaction_type,
+                )
+            elif event_type == "tool_done":
+                self._tool_activity.record_complete(
+                    call_id=event.get("call_id", ""),
+                    result=event.get("result", ""),
+                )
             await ws.send_json({"type": "event", "event": event_type, **event})
 
-        logger.info("[chat.send_prompt] calling agent.send() ...")
-        try:
-            response = await self._agent.send(
-                text,
-                on_delta=lambda d: asyncio.ensure_future(on_delta(d)),
-                on_event=lambda t, d: asyncio.ensure_future(on_event({"type": t, **d})),
+        # Bind the HITL emitter so approval requests reach the WebSocket
+        if self._hitl:
+            def hitl_emit(etype: str, payload: dict[str, Any]) -> None:
+                logger.info(
+                    "[chat.hitl_emit] sending event=%s payload_keys=%s",
+                    etype, list(payload.keys()),
+                )
+                asyncio.ensure_future(ws.send_json({"type": "event", "event": etype, **payload}))
+            self._hitl.set_emit(hitl_emit)
+            self._hitl.set_execution_context("interactive")
+            self._hitl.set_model(cfg.copilot_model)
+            self._hitl.set_tool_activity(self._tool_activity)
+            self._hitl.set_session_id(self._sessions.current_session_id)
+            logger.info(
+                "[chat.send_prompt] HITL emitter bound: model=%s",
+                cfg.copilot_model,
             )
-        except Exception:
-            logger.exception("[chat.send_prompt] agent.send() raised")
-            await ws.send_json({"type": "error", "content": "Agent error -- check server logs"})
-            return
-        full_text = "".join(chunks) or response or ""
+        else:
+            logger.info("[chat.send_prompt] no HITL interceptor available")
+
+        logger.info("[chat.send_prompt] calling agent.send() ...")
+        with agent_span(
+            "chat.agent_turn",
+            attributes={"chat.prompt_length": len(text), "chat.session_id": session_id or ""},
+        ):
+            try:
+                response = await self._agent.send(
+                    text,
+                    on_delta=lambda d: asyncio.ensure_future(on_delta(d)),
+                    on_event=lambda t, d: asyncio.ensure_future(on_event({"type": t, **d})),
+                )
+            except Exception:
+                logger.exception("[chat.send_prompt] agent.send() raised")
+                record_event("agent_error")
+                await ws.send_json({"type": "error", "content": "Agent error -- check server logs"})
+                return
+            finally:
+                if self._hitl:
+                    self._hitl.clear_emit()
+            full_text = "".join(chunks) or response or ""
+            set_span_attribute("chat.response_length", len(full_text))
+            set_span_attribute("chat.chunk_count", len(chunks))
         logger.info("[chat.send_prompt] response complete, len=%d, chunks=%d", len(full_text), len(chunks))
+
+        if not full_text:
+            logger.warning("[chat.send_prompt] empty response -- model may have timed out")
+            await ws.send_json({
+                "type": "error",
+                "content": (
+                    "The model did not respond. "
+                    "This can happen when the model is overloaded or the session "
+                    "is stale. Please try again."
+                ),
+            })
 
         self._sessions.record("assistant", full_text)
         memory.record("assistant", full_text)
@@ -182,6 +268,31 @@ class ChatHandler:
             await ws.send_json({"type": "done"})
 
         return await self._commands.try_handle(text, reply, channel="web")
+
+    async def _handle_tool_approval(
+        self, ws: web.WebSocketResponse, data: dict
+    ) -> None:
+        """Handle an approve_tool action from the frontend."""
+        call_id = data.get("call_id", "")
+        response_text = (data.get("response") or "").strip().lower()
+        approved = response_text in ("y", "yes")
+
+        if not self._hitl:
+            logger.warning("[chat.approve_tool] no HITL interceptor configured")
+            await ws.send_json({"type": "event", "event": "approval_resolved", "call_id": call_id, "approved": False})
+            return
+
+        resolved = self._hitl.resolve_approval(call_id, approved)
+        logger.info(
+            "[chat.approve_tool] call_id=%s approved=%s resolved=%s",
+            call_id, approved, resolved,
+        )
+        await ws.send_json({
+            "type": "event",
+            "event": "approval_resolved",
+            "call_id": call_id,
+            "approved": approved,
+        })
 
     async def _resume_session(
         self, ws: web.WebSocketResponse, session_id: str

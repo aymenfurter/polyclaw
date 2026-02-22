@@ -1,5 +1,5 @@
 /**
- * Dashboard screen -- overview of system status.
+ * Dashboard screen -- overview of system status and container health.
  */
 
 import {
@@ -9,9 +9,11 @@ import {
 } from "@opentui/core";
 import { Screen } from "./screen.js";
 import { Colors } from "../utils/theme.js";
+import { getContainerStatuses, type ContainerHealth } from "../utils/containers.js";
 
 export class DashboardScreen extends Screen {
   private statusText!: TextRenderable;
+  private containerText!: TextRenderable;
   private modelText!: TextRenderable;
   private tunnelText!: TextRenderable;
 
@@ -42,6 +44,24 @@ export class DashboardScreen extends Screen {
     });
     statusBox.add(this.statusText);
     this.container.add(statusBox);
+
+    const containerBox = new BoxRenderable(this.renderer, {
+      border: true,
+      borderColor: Colors.border,
+      title: " Containers ",
+      backgroundColor: Colors.surface,
+      width: "100%",
+      padding: 1,
+      flexDirection: "column",
+    });
+
+    this.containerText = new TextRenderable(this.renderer, {
+      content: "Loading...",
+      fg: Colors.muted,
+      width: "100%",
+    });
+    containerBox.add(this.containerText);
+    this.container.add(containerBox);
 
     const modelBox = new BoxRenderable(this.renderer, {
       border: true,
@@ -82,6 +102,7 @@ export class DashboardScreen extends Screen {
 
   refresh(): void {
     this.loadStatus();
+    this.loadContainerStatus();
   }
 
   private async loadStatus(): Promise<void> {
@@ -110,6 +131,35 @@ export class DashboardScreen extends Screen {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.statusText.content = `\x1b[31m  Error: ${msg}\x1b[0m`;
+    }
+  }
+
+  private async loadContainerStatus(): Promise<void> {
+    try {
+      const cs = await getContainerStatuses();
+
+      const icon = (h: ContainerHealth) => {
+        if (h === "running") return "\x1b[32m●\x1b[0m";
+        if (h === "starting") return "\x1b[33m●\x1b[0m";
+        return "\x1b[31m●\x1b[0m";
+      };
+
+      const label = (h: ContainerHealth, uptime: string) => {
+        if (h === "running") return `Running${uptime ? ` (${uptime})` : ""}`;
+        if (h === "starting") return "Starting...";
+        if (h === "stopped") return "Stopped";
+        if (h === "not_found") return "Not deployed";
+        return "Error";
+      };
+
+      const portInfo = (ports: string) => ports ? `  ${ports}` : "";
+
+      this.containerText.content = [
+        `  ${icon(cs.admin.health)} Admin     ${label(cs.admin.health, cs.admin.uptime)}${portInfo(cs.admin.ports)}`,
+        `  ${icon(cs.runtime.health)} Runtime   ${label(cs.runtime.health, cs.runtime.uptime)}${portInfo(cs.runtime.ports)}`,
+      ].join("\n");
+    } catch {
+      this.containerText.content = "  Could not query container status (Docker unavailable?)";
     }
   }
 }

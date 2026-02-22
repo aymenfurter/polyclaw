@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createChatSocket, api, type ChatSocket } from '../api'
-import type { ChatMessage, WsIncoming, Suggestion, Skill, ToolCall, WindowWord, ModelInfo } from '../types'
+import type { ChatMessage, ChatMessageRole, WsIncoming, Suggestion, Skill, ToolCall, WindowWord, ModelInfo, SessionDetail } from '../types'
 
 let msgId = 0
 const nextId = () => `msg-${++msgId}`
@@ -94,6 +94,7 @@ export function useChat() {
   const skillRef = useRef('')
   const pendingModelRefresh = useRef(false)
   const streamRef = useRef<ReasoningStream | null>(null)
+  const pendingResumeRef = useRef<string | null>(null)
   // Fetch suggestions + installed skills + models
   useEffect(() => {
     api<{ suggestions: (Suggestion | string)[] }>('chat/suggestions')
@@ -126,7 +127,15 @@ export function useChat() {
     const sock = createChatSocket()
     socketRef.current = sock
 
-    sock.onOpen(() => setConnected(true))
+    sock.onOpen(() => {
+      setConnected(true)
+      // Send any queued resume that was attempted before the socket opened
+      const pendingSid = pendingResumeRef.current
+      if (pendingSid) {
+        pendingResumeRef.current = null
+        sock.send('resume_session', { session_id: pendingSid })
+      }
+    })
     sock.onClose(() => setConnected(false))
 
     sock.onMessage((raw) => {
@@ -200,7 +209,7 @@ export function useChat() {
           break
         }
         case 'event': {
-          const evt = data as { event: string; tool?: string; call_id?: string; text?: string; arguments?: string; result?: string; name?: string }
+          const evt = data as { event: string; tool?: string; call_id?: string; text?: string; arguments?: string; result?: string; name?: string; approved?: boolean }
           if (evt.event === 'reasoning' && evt.text) {
             reasoningRef.current += evt.text
             // Feed words into the sliding-window reasoning stream
@@ -208,6 +217,83 @@ export function useChat() {
               streamRef.current = new ReasoningStream(w => setReasoningWindow(w))
             }
             streamRef.current.feed(evt.text)
+          } else if (evt.event === 'approval_request' && evt.call_id) {
+            // HITL: a tool needs user approval before running
+            setMonologue(`Approval needed: ${evt.tool || 'unknown'}`)
+            // Ensure assistant message exists
+            if (!replyRef.current) {
+              const id = nextId()
+              replyRef.current = { id, text: '' }
+              setMessages(prev => [...prev, { id, role: 'assistant', content: '', timestamp: Date.now() }])
+            }
+            // Deduplicate: the SDK fires a separate tool_start event
+            // with its own call_id before the HITL hook emits this
+            // approval_request with a different call_id. Merge into
+            // the existing entry so we don't show the tool twice.
+            const approvalIdx = toolCallsRef.current.findIndex(tc =>
+              tc.tool === (evt.tool || 'unknown') && tc.status !== 'done'
+            )
+            if (approvalIdx >= 0) {
+              toolCallsRef.current = toolCallsRef.current.map((tc, i) =>
+                i === approvalIdx
+                  ? { ...tc, call_id: evt.call_id!, arguments: evt.arguments ?? tc.arguments, status: 'pending_approval' as const }
+                  : tc
+              )
+            } else {
+              toolCallsRef.current = [...toolCallsRef.current, {
+                tool: evt.tool || 'unknown',
+                call_id: evt.call_id,
+                arguments: evt.arguments,
+                status: 'pending_approval' as const,
+              }]
+            }
+            updateReplyMeta(m => ({ ...m, toolCalls: [...toolCallsRef.current] }))
+          } else if (evt.event === 'approval_resolved' && evt.call_id) {
+            // HITL: user responded to approval request
+            const newStatus = evt.approved ? 'running' as const : 'denied' as const
+            toolCallsRef.current = toolCallsRef.current.map(tc =>
+              tc.call_id === evt.call_id ? { ...tc, status: newStatus } : tc
+            )
+            updateReplyMeta(m => ({ ...m, toolCalls: [...toolCallsRef.current] }))
+            if (!evt.approved) {
+              setActiveTools(prev => prev.filter(t => t !== evt.tool))
+            }
+          } else if (evt.event === 'phone_verification_started' && evt.call_id) {
+            // PITL: phone verification call in progress
+            setMonologue(`Phone verification: ${evt.tool || 'unknown'}`)
+            if (!replyRef.current) {
+              const id = nextId()
+              replyRef.current = { id, text: '' }
+              setMessages(prev => [...prev, { id, role: 'assistant', content: '', timestamp: Date.now() }])
+            }
+            const approvalIdx = toolCallsRef.current.findIndex(tc =>
+              tc.tool === (evt.tool || 'unknown') && tc.status !== 'done'
+            )
+            if (approvalIdx >= 0) {
+              toolCallsRef.current = toolCallsRef.current.map((tc, i) =>
+                i === approvalIdx
+                  ? { ...tc, call_id: evt.call_id!, arguments: evt.arguments ?? tc.arguments, status: 'pending_phone' as const }
+                  : tc
+              )
+            } else {
+              toolCallsRef.current = [...toolCallsRef.current, {
+                tool: evt.tool || 'unknown',
+                call_id: evt.call_id,
+                arguments: evt.arguments,
+                status: 'pending_phone' as const,
+              }]
+            }
+            updateReplyMeta(m => ({ ...m, toolCalls: [...toolCallsRef.current] }))
+          } else if (evt.event === 'phone_verification_complete' && evt.call_id) {
+            // PITL: phone verification resolved
+            const newStatus = evt.approved ? 'running' as const : 'denied' as const
+            toolCallsRef.current = toolCallsRef.current.map(tc =>
+              tc.call_id === evt.call_id ? { ...tc, status: newStatus } : tc
+            )
+            updateReplyMeta(m => ({ ...m, toolCalls: [...toolCallsRef.current] }))
+            if (!evt.approved) {
+              setActiveTools(prev => prev.filter(t => t !== evt.tool))
+            }
           } else if (evt.event === 'tool_start' && evt.tool) {
             setActiveTools(prev => [...prev, evt.tool!])
             const args = evt.arguments && evt.arguments.length > 60 ? evt.arguments.slice(0, 57) + '...' : evt.arguments
@@ -218,18 +304,51 @@ export function useChat() {
               replyRef.current = { id, text: '' }
               setMessages(prev => [...prev, { id, role: 'assistant', content: '', timestamp: Date.now() }])
             }
-            toolCallsRef.current = [...toolCallsRef.current, {
-              tool: evt.tool,
-              call_id: evt.call_id || '',
-              arguments: evt.arguments,
-              status: 'running',
-            }]
+            // Deduplicate: if a tool call with the same call_id already
+            // exists (from approval_request or a duplicate SDK event),
+            // update it in place instead of adding a new entry.
+            let existingIdx = evt.call_id
+              ? toolCallsRef.current.findIndex(tc => tc.call_id === evt.call_id)
+              : toolCallsRef.current.findIndex(tc => tc.tool === evt.tool && tc.status !== 'done' && !tc.result)
+            // Fallback: match by tool name + arguments to catch SDK events
+            // with different call_ids for the same logical tool invocation.
+            if (existingIdx < 0) {
+              existingIdx = toolCallsRef.current.findIndex(tc =>
+                tc.tool === evt.tool && tc.arguments === evt.arguments
+              )
+            }
+            if (existingIdx >= 0) {
+              toolCallsRef.current = toolCallsRef.current.map((tc, i) =>
+                // Preserve the HITL call_id when merging -- resolve_approval
+                // uses the HITL-assigned call_id, not the SDK's.
+                i === existingIdx ? { ...tc, status: 'running' as const, call_id: tc.call_id || evt.call_id || '', arguments: evt.arguments ?? tc.arguments } : tc
+              )
+            } else {
+              toolCallsRef.current = [...toolCallsRef.current, {
+                tool: evt.tool,
+                call_id: evt.call_id || '',
+                arguments: evt.arguments,
+                status: 'running',
+              }]
+            }
             updateReplyMeta(m => ({ ...m, toolCalls: [...toolCallsRef.current] }))
           } else if (evt.event === 'tool_done') {
             setActiveTools(prev => prev.slice(0, -1))
-            if (evt.call_id) {
-              toolCallsRef.current = toolCallsRef.current.map(tc =>
-                tc.call_id === evt.call_id ? { ...tc, result: evt.result, status: 'done' as const } : tc
+            // Match by call_id first, then fall back to tool name +
+            // running status. The HITL flow replaces the SDK call_id
+            // with its own, so the tool_done's SDK call_id may differ
+            // from the stored entry's HITL call_id.
+            let doneIdx = evt.call_id
+              ? toolCallsRef.current.findIndex(tc => tc.call_id === evt.call_id)
+              : -1
+            if (doneIdx < 0) {
+              doneIdx = toolCallsRef.current.findIndex(tc =>
+                tc.tool === evt.tool && tc.status === 'running'
+              )
+            }
+            if (doneIdx >= 0) {
+              toolCallsRef.current = toolCallsRef.current.map((tc, i) =>
+                i === doneIdx ? { ...tc, result: evt.result, status: 'done' as const, call_id: evt.call_id || tc.call_id } : tc
               )
               updateReplyMeta(m => ({ ...m, toolCalls: [...toolCallsRef.current] }))
             }
@@ -328,8 +447,24 @@ export function useChat() {
   }, [])
 
   const resumeSession = useCallback((sessionId: string) => {
+    // Load session history via REST and display prior messages
+    api<SessionDetail>(`sessions/${sessionId}`)
+      .then(detail => {
+        const history: ChatMessage[] = (detail.messages || []).map((m, i) => ({
+          id: `hist-${i}`,
+          role: (['user', 'assistant', 'system', 'error'].includes(m.role)
+            ? m.role : 'system') as ChatMessageRole,
+          content: m.content,
+          timestamp: m.timestamp,
+        }))
+        setMessages(history)
+      })
+      .catch(() => {})
+
+    // Queue the resume so onOpen sends it if the socket isn't ready yet
+    pendingResumeRef.current = sessionId
     socketRef.current?.send('resume_session', { session_id: sessionId })
-    setMessages([])
+
     replyRef.current = null
     reasoningRef.current = ''
     toolCallsRef.current = []
@@ -356,6 +491,14 @@ export function useChat() {
     setThinking(false)
   }, [])
 
+  /** Send a tool approval decision (HITL). */
+  const approveToolCall = useCallback((callId: string, approved: boolean) => {
+    socketRef.current?.send('approve_tool', {
+      call_id: callId,
+      response: approved ? 'yes' : 'no',
+    })
+  }, [])
+
   return {
     messages,
     connected,
@@ -373,5 +516,6 @@ export function useChat() {
     setMessages,
     feedReasoning,
     clearReasoning,
+    approveToolCall,
   }
 }

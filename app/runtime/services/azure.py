@@ -46,16 +46,13 @@ class AzureCLI:
                 now = _time()
                 if now >= next_heartbeat:
                     elapsed = now - t0
+                    mins_e, secs_e = divmod(int(elapsed), 60)
                     if self.TIMEOUT:
                         remaining = max(0, self.TIMEOUT - elapsed)
                         mins_r, secs_r = divmod(int(remaining), 60)
-                        pct = min(100, elapsed / self.TIMEOUT * 100)
-                        filled = int(20 * pct / 100)
-                        bar = "=" * filled + "-" * (20 - filled)
                         logger.info(
-                            "[az] [%s] %3.0f%% | %dm %02ds elapsed | %dm %02ds remaining | az %s",
-                            bar, pct,
-                            int(elapsed) // 60, int(elapsed) % 60,
+                            "[az] %dm %02ds elapsed | timeout %dm %02ds | az %s",
+                            mins_e, secs_e,
                             mins_r, secs_r,
                             cmd_summary,
                         )
@@ -89,7 +86,7 @@ class AzureCLI:
         if result.returncode != 0:
             logger.warning(
                 "[az] FAILED (%.1fs, rc=%d): az %s -- %s",
-                elapsed, result.returncode, cmd_summary, self.last_stderr[:300],
+                elapsed, result.returncode, cmd_summary, self.last_stderr[:800],
             )
             return None
         _log("[az] OK (%.1fs): az %s", elapsed, cmd_summary)
@@ -165,6 +162,18 @@ class AzureCLI:
             "pid": proc.pid,
         }
 
+    def get_bot_endpoint(self) -> str | None:
+        """Read the messaging endpoint URL from the deployed Azure Bot Service."""
+        rg = cfg.env.read("BOT_RESOURCE_GROUP")
+        name = cfg.env.read("BOT_NAME")
+        if not (rg and name):
+            return None
+        bot = self.json("bot", "show", "--resource-group", rg, "--name", name, quiet=True)
+        if not bot:
+            return None
+        endpoint = (bot.get("properties") or {}).get("endpoint") or ""
+        return endpoint or None
+
     def update_endpoint(self, endpoint: str) -> Result:
         rg = cfg.env.read("BOT_RESOURCE_GROUP")
         name = cfg.env.read("BOT_NAME")
@@ -173,8 +182,16 @@ class AzureCLI:
         bot = self.json("bot", "show", "--resource-group", rg, "--name", name)
         if not bot:
             return Result.fail("Bot resource not found")
+        # NOTE: `az bot update --endpoint` silently succeeds without
+        # persisting the messaging endpoint.  Use `az resource update`
+        # to patch the ARM resource directly -- this reliably updates
+        # the endpoint that channels actually use.
         result = self.json(
-            "bot", "update", "--resource-group", rg, "--name", name, "--endpoint", endpoint,
+            "resource", "update",
+            "--resource-group", rg,
+            "--name", name,
+            "--resource-type", "Microsoft.BotService/botServices",
+            "--set", f"properties.endpoint={endpoint}",
         )
         if not result:
             return Result.fail(f"Endpoint update failed: {self.last_stderr}")

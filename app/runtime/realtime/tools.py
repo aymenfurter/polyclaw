@@ -6,12 +6,17 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from ..config.settings import cfg
+
 logger = logging.getLogger(__name__)
+
+_REALTIME_MODEL = "gpt-4.1"
 
 
 class TaskStatus(StrEnum):
@@ -158,7 +163,10 @@ async def handle_invoke_agent(args: dict[str, Any], agent: Any) -> str:
 
     logger.info("Realtime sync invoke: %s", prompt[:100])
     try:
-        result = await asyncio.wait_for(agent.send(prompt), timeout=60.0)
+        result = await asyncio.wait_for(
+            _run_one_shot_realtime(prompt, agent),
+            timeout=60.0,
+        )
         return result or "(no response from agent)"
     except TimeoutError:
         return "Agent task timed out after 60 seconds."
@@ -180,7 +188,7 @@ async def handle_invoke_agent_async(args: dict[str, Any], agent: Any) -> str:
 
     async def _run() -> None:
         try:
-            result = await agent.send(prompt)
+            result = await _run_one_shot_realtime(prompt, agent)
             store.complete(task.id, result or "(no response from agent)")
             logger.info("Async task %s completed", task.id)
         except Exception as exc:
@@ -211,3 +219,61 @@ async def handle_check_agent_task(args: dict[str, Any]) -> str:
     elif task.status == TaskStatus.FAILED:
         response["error"] = task.error
     return json.dumps(response)
+
+
+# ------------------------------------------------------------------
+# One-shot session runner with realtime HITL hook
+# ------------------------------------------------------------------
+
+
+def _make_realtime_hook(
+    agent: Any,
+) -> Callable[[dict, Any], Awaitable[dict]]:
+    """Build a guardrails-aware pre-tool-use hook for realtime sessions.
+
+    Creates a fresh ``HitlInterceptor`` with ``execution_context`` set to
+    ``"realtime"``.  AITL, Prompt Shields, and phone verifier are forwarded
+    from the shared interceptor on the agent (if available).
+
+    This mirrors the scheduler's ``_make_background_hook`` pattern so that
+    guardrails policies are respected during voice-initiated tasks.
+    """
+    from ..agent.hitl import HitlInterceptor
+    from ..state.guardrails_config import get_guardrails_config
+
+    store = get_guardrails_config()
+    interceptor = HitlInterceptor(store)
+    interceptor.set_execution_context("realtime")
+    interceptor.set_model(_REALTIME_MODEL)
+
+    # Forward AITL / Prompt Shield / phone from the shared interceptor.
+    shared_hitl = getattr(agent, "hitl_interceptor", None)
+    if shared_hitl:
+        if getattr(shared_hitl, "_aitl_reviewer", None):
+            interceptor.set_aitl_reviewer(shared_hitl._aitl_reviewer)
+        if getattr(shared_hitl, "_prompt_shield", None):
+            interceptor.set_prompt_shield(shared_hitl._prompt_shield)
+        if getattr(shared_hitl, "_phone_verifier", None):
+            interceptor.set_phone_verifier(shared_hitl._phone_verifier)
+
+    return interceptor.on_pre_tool_use
+
+
+async def _run_one_shot_realtime(prompt: str, agent: Any) -> str | None:
+    """Spawn an ephemeral Copilot session with realtime guardrails.
+
+    Uses ``run_one_shot`` with the full tool set and a HITL hook that has
+    ``execution_context="realtime"`` so guardrails policies can distinguish
+    voice-initiated tool calls from interactive or background ones.
+    """
+    from ..agent import one_shot as one_shot_mod
+    from ..agent.tools import get_all_tools
+
+    hook = _make_realtime_hook(agent)
+
+    return await one_shot_mod.run_one_shot(
+        prompt,
+        model=cfg.copilot_model,
+        tools=get_all_tools(),
+        on_pre_tool_use=hook,
+    )

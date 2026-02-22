@@ -5,9 +5,9 @@ import { showToast } from '../components/Toast'
 import { EnvironmentsContent } from './Environments'
 import { WorkspaceContent } from './Workspace'
 import { FoundryIQContent } from './FoundryIQ'
-import type { SetupStatus, SandboxConfig, FoundryIQConfig, NetworkInfo, NetworkEndpoint, NetworkComponent, ResourceAudit, ResourceAuditResponse, ProbeResult, ProbedEndpoint } from '../types'
+import type { SetupStatus, FoundryIQConfig, MonitoringConfig } from '../types'
 
-type Tab = 'overview' | 'preflight' | 'infrastructure' | 'network' | 'sandbox' | 'environments' | 'voice' | 'memory' | 'workspace'
+type Tab = 'overview' | 'environments' | 'voice' | 'memory' | 'workspace' | 'monitoring'
 
 interface PreflightCheck {
   check: string
@@ -37,7 +37,6 @@ export default function InfrastructureSettings() {
   const navigate = useNavigate()
   const [tab, setTab] = useState<Tab>('overview')
   const [status, setStatus] = useState<SetupStatus | null>(null)
-  const [sandbox, setSandbox] = useState<SandboxConfig | null>(null)
   const [preflight, setPreflight] = useState<PreflightResult | null>(null)
   const [loading, setLoading] = useState<Record<string, boolean>>({})
 
@@ -45,10 +44,6 @@ export default function InfrastructureSettings() {
     try {
       const s = await api<SetupStatus>('setup/status')
       setStatus(s)
-    } catch { /* ignore */ }
-    try {
-      const sb = await api<SandboxConfig>('sandbox/config')
-      setSandbox(sb)
     } catch { /* ignore */ }
   }, [])
 
@@ -104,20 +99,43 @@ export default function InfrastructureSettings() {
     setLoading(p => ({ ...p, decommission: false }))
   }
 
+  const restartContainer = async () => {
+    if (!confirm('Restart the agent container? This will briefly interrupt active sessions.')) return
+    setLoading(p => ({ ...p, containerRestart: true }))
+    try {
+      const res = await api<{ message: string }>('setup/container/restart', { method: 'POST' })
+      showToast(res.message || 'Agent container restarted', 'success')
+    } catch (e: any) { showToast(e.message, 'error') }
+    setLoading(p => ({ ...p, containerRestart: false }))
+  }
+
 
   return (
     <div className="page">
       <div className="page__header">
         <h1>Infrastructure</h1>
-        {status && (
-          <div className="page__status-dots">
-            <StatusBadge ok={status.azure?.logged_in} label="Azure" />
-            <StatusBadge ok={status.copilot?.authenticated} label="GitHub" />
-            <StatusBadge ok={status.tunnel?.active} label="Tunnel" />
-            <StatusBadge ok={status.bot_configured} label="Bot" />
-          </div>
-        )}
+        <div className="page__actions">
+          {status && (
+            <div className="page__status-dots">
+              <StatusBadge ok={status.azure?.logged_in} label="Azure" />
+              <StatusBadge ok={status.copilot?.authenticated} label="GitHub" />
+              <StatusBadge ok={status.tunnel?.active} label="Tunnel" />
+              <StatusBadge ok={status.bot_configured} label="Bot" />
+            </div>
+          )}
+          <button
+            className="btn btn--outline btn--sm"
+            onClick={restartContainer}
+            disabled={loading.containerRestart}
+            title="Restart the agent container to apply configuration changes"
+          >
+            {loading.containerRestart ? 'Restarting...' : 'Restart Agent Container'}
+          </button>
+        </div>
       </div>
+      <p className="text-muted" style={{ marginTop: -16, marginBottom: 16, fontSize: 13 }}>
+        Configuration changes require a container restart to take effect.
+      </p>
 
       <div className="settings__actions">
         <button className="btn btn--outline" onClick={() => navigate('/setup')}>
@@ -128,14 +146,11 @@ export default function InfrastructureSettings() {
       <div className="tabs">
         {([
           ['overview', 'Overview'],
-          ['preflight', 'Preflight'],
-          ['infrastructure', 'Provisioning'],
-          ['network', 'Network'],
-          ['sandbox', 'Sandbox (Experimental)'],
           ['memory', 'Memory / Foundry IQ'],
           ['environments', 'Environments'],
           ['voice', 'Voice'],
           ['workspace', 'Workspace'],
+          ['monitoring', 'Monitoring'],
         ] as [Tab, string][]).map(([t, label]) => (
           <button key={t} className={`tab ${tab === t ? 'tab--active' : ''}`} onClick={() => setTab(t)}>
             {label}
@@ -143,8 +158,10 @@ export default function InfrastructureSettings() {
         ))}
       </div>
 
-      {/* Overview */}
-      {tab === 'overview' && status && (
+      {/* Overview: Platform Status + Preflight + Provisioning */}
+      {tab === 'overview' && (
+        <>
+        {status && (
         <div className="card">
           <h3>Platform Status</h3>
           <div className="detail-grid">
@@ -155,10 +172,8 @@ export default function InfrastructureSettings() {
             <div><strong>Voice:</strong> {status.voice_call_configured ? 'Configured' : 'Not configured'}</div>
           </div>
         </div>
-      )}
+        )}
 
-      {/* Preflight Checks */}
-      {tab === 'preflight' && (
         <div className="card">
           <h3>Preflight Checks</h3>
           <p className="text-muted">Security and readiness checks for your deployment.</p>
@@ -218,10 +233,7 @@ export default function InfrastructureSettings() {
             </div>
           )}
         </div>
-      )}
 
-      {/* Infrastructure Provisioning */}
-      {tab === 'infrastructure' && (
         <div className="infra">
           {/* Tunnel Card */}
           <div className="infra__card">
@@ -303,16 +315,7 @@ export default function InfrastructureSettings() {
             </div>
           )}
         </div>
-      )}
-
-      {/* Network */}
-      {tab === 'network' && (
-        <NetworkTab tunnelRestricted={!!status?.tunnel?.restricted} onReload={loadAll} />
-      )}
-
-      {/* Sandbox */}
-      {tab === 'sandbox' && sandbox && (
-        <SandboxTab sandbox={sandbox} setSandbox={setSandbox} azureLoggedIn={!!status?.azure?.logged_in} onReload={loadAll} />
+        </>
       )}
 
       {/* Environments */}
@@ -330,6 +333,9 @@ export default function InfrastructureSettings() {
 
       {/* Workspace */}
       {tab === 'workspace' && <WorkspaceContent />}
+
+      {/* Monitoring */}
+      {tab === 'monitoring' && <MonitoringTab />}
     </div>
   )
 }
@@ -343,129 +349,589 @@ function StatusBadge({ ok, label }: { ok?: boolean; label: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Sandbox Tab -- deploy new or connect existing session pool
+// Monitoring Tab -- OpenTelemetry / Application Insights configuration
 // ---------------------------------------------------------------------------
 
-type SandboxMode = 'deploy' | 'connect'
+type MonitoringMode = 'deploy' | 'connect'
 
-function SandboxTab({
-  sandbox, setSandbox, azureLoggedIn, onReload,
-}: {
-  sandbox: SandboxConfig
-  setSandbox: React.Dispatch<React.SetStateAction<SandboxConfig | null>>
-  azureLoggedIn: boolean
-  onReload: () => void
-}) {
+/** Map Azure region prefixes to country flag emoji. */
+const AZURE_REGION_FLAGS: Record<string, string> = {
+  eastus: '\u{1F1FA}\u{1F1F8}',
+  eastus2: '\u{1F1FA}\u{1F1F8}',
+  westus: '\u{1F1FA}\u{1F1F8}',
+  westus2: '\u{1F1FA}\u{1F1F8}',
+  westus3: '\u{1F1FA}\u{1F1F8}',
+  centralus: '\u{1F1FA}\u{1F1F8}',
+  northcentralus: '\u{1F1FA}\u{1F1F8}',
+  southcentralus: '\u{1F1FA}\u{1F1F8}',
+  westcentralus: '\u{1F1FA}\u{1F1F8}',
+  canadacentral: '\u{1F1E8}\u{1F1E6}',
+  canadaeast: '\u{1F1E8}\u{1F1E6}',
+  brazilsouth: '\u{1F1E7}\u{1F1F7}',
+  northeurope: '\u{1F1EE}\u{1F1EA}',
+  westeurope: '\u{1F1F3}\u{1F1F1}',
+  uksouth: '\u{1F1EC}\u{1F1E7}',
+  ukwest: '\u{1F1EC}\u{1F1E7}',
+  francecentral: '\u{1F1EB}\u{1F1F7}',
+  francesouth: '\u{1F1EB}\u{1F1F7}',
+  germanywestcentral: '\u{1F1E9}\u{1F1EA}',
+  switzerlandnorth: '\u{1F1E8}\u{1F1ED}',
+  switzerlandwest: '\u{1F1E8}\u{1F1ED}',
+  norwayeast: '\u{1F1F3}\u{1F1F4}',
+  norwaywest: '\u{1F1F3}\u{1F1F4}',
+  swedencentral: '\u{1F1F8}\u{1F1EA}',
+  polandcentral: '\u{1F1F5}\u{1F1F1}',
+  italynorth: '\u{1F1EE}\u{1F1F9}',
+  spaincentral: '\u{1F1EA}\u{1F1F8}',
+  eastasia: '\u{1F1ED}\u{1F1F0}',
+  southeastasia: '\u{1F1F8}\u{1F1EC}',
+  japaneast: '\u{1F1EF}\u{1F1F5}',
+  japanwest: '\u{1F1EF}\u{1F1F5}',
+  koreacentral: '\u{1F1F0}\u{1F1F7}',
+  koreasouth: '\u{1F1F0}\u{1F1F7}',
+  australiaeast: '\u{1F1E6}\u{1F1FA}',
+  australiasoutheast: '\u{1F1E6}\u{1F1FA}',
+  australiacentral: '\u{1F1E6}\u{1F1FA}',
+  centralindia: '\u{1F1EE}\u{1F1F3}',
+  southindia: '\u{1F1EE}\u{1F1F3}',
+  westindia: '\u{1F1EE}\u{1F1F3}',
+  southafricanorth: '\u{1F1FF}\u{1F1E6}',
+  southafricawest: '\u{1F1FF}\u{1F1E6}',
+  uaenorth: '\u{1F1E6}\u{1F1EA}',
+  uaecentral: '\u{1F1E6}\u{1F1EA}',
+  qatarcentral: '\u{1F1F6}\u{1F1E6}',
+  israelcentral: '\u{1F1EE}\u{1F1F1}',
+  mexicocentral: '\u{1F1F2}\u{1F1FD}',
+  newzealandnorth: '\u{1F1F3}\u{1F1FF}',
+}
+
+/** Friendly display names for Azure regions. */
+const AZURE_REGION_LABELS: Record<string, string> = {
+  eastus: 'East US',
+  eastus2: 'East US 2',
+  westus: 'West US',
+  westus2: 'West US 2',
+  westus3: 'West US 3',
+  centralus: 'Central US',
+  northcentralus: 'North Central US',
+  southcentralus: 'South Central US',
+  westcentralus: 'West Central US',
+  canadacentral: 'Canada Central',
+  canadaeast: 'Canada East',
+  brazilsouth: 'Brazil South',
+  northeurope: 'North Europe',
+  westeurope: 'West Europe',
+  uksouth: 'UK South',
+  ukwest: 'UK West',
+  francecentral: 'France Central',
+  francesouth: 'France South',
+  germanywestcentral: 'Germany West Central',
+  switzerlandnorth: 'Switzerland North',
+  switzerlandwest: 'Switzerland West',
+  norwayeast: 'Norway East',
+  norwaywest: 'Norway West',
+  swedencentral: 'Sweden Central',
+  polandcentral: 'Poland Central',
+  italynorth: 'Italy North',
+  spaincentral: 'Spain Central',
+  eastasia: 'East Asia',
+  southeastasia: 'Southeast Asia',
+  japaneast: 'Japan East',
+  japanwest: 'Japan West',
+  koreacentral: 'Korea Central',
+  koreasouth: 'Korea South',
+  australiaeast: 'Australia East',
+  australiasoutheast: 'Australia Southeast',
+  australiacentral: 'Australia Central',
+  centralindia: 'Central India',
+  southindia: 'South India',
+  westindia: 'West India',
+  southafricanorth: 'South Africa North',
+  southafricawest: 'South Africa West',
+  uaenorth: 'UAE North',
+  uaecentral: 'UAE Central',
+  qatarcentral: 'Qatar Central',
+  israelcentral: 'Israel Central',
+  mexicocentral: 'Mexico Central',
+  newzealandnorth: 'New Zealand North',
+}
+
+function getRegionFlag(location: string): string {
+  const key = location.toLowerCase().replace(/[\s-_]/g, '')
+  return AZURE_REGION_FLAGS[key] || '\u{1F30D}'
+}
+
+function getRegionLabel(location: string): string {
+  const key = location.toLowerCase().replace(/[\s-_]/g, '')
+  return AZURE_REGION_LABELS[key] || location
+}
+
+interface ProvisionStepResult {
+  step: string
+  status: string
+  detail: string
+}
+
+function PipelineFlow({ active }: { active: boolean }) {
+  const nodeClass = active ? 'mon__pipeline-node mon__pipeline-node--active' : 'mon__pipeline-node'
+  const arrow = (
+    <span className="mon__pipeline-arrow">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+    </span>
+  )
+  return (
+    <div className="mon__pipeline">
+      <span className={nodeClass}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
+        Agent Runtime
+      </span>
+      {arrow}
+      <span className={nodeClass}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="M9 9h6v6"/></svg>
+        OTel Distro
+      </span>
+      {arrow}
+      <span className={nodeClass}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M12 12v9"/></svg>
+        App Insights
+      </span>
+      {arrow}
+      <span className={nodeClass}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+        Log Analytics
+      </span>
+    </div>
+  )
+}
+
+function TelemetryFeatureCards() {
+  return (
+    <div className="mon__features">
+      <div className="mon__feature-card">
+        <div className="mon__feature-icon mon__feature-icon--traces">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        </div>
+        <div className="mon__feature-text">
+          <h5>Traces</h5>
+          <p>HTTP requests, outgoing calls, Azure SDK operations</p>
+        </div>
+      </div>
+      <div className="mon__feature-card">
+        <div className="mon__feature-icon mon__feature-icon--metrics">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
+        </div>
+        <div className="mon__feature-text">
+          <h5>Metrics</h5>
+          <p>Request duration, count, error rate, performance counters</p>
+        </div>
+      </div>
+      <div className="mon__feature-card">
+        <div className="mon__feature-icon mon__feature-icon--logs">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
+        </div>
+        <div className="mon__feature-text">
+          <h5>Logs</h5>
+          <p>Python logging (WARNING+), exceptions with stack traces</p>
+        </div>
+      </div>
+      <div className="mon__feature-card">
+        <div className="mon__feature-icon mon__feature-icon--deps">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M6 9v12"/></svg>
+        </div>
+        <div className="mon__feature-text">
+          <h5>Dependencies</h5>
+          <p>Azure services, external APIs, databases tracked automatically</p>
+        </div>
+      </div>
+      <div className="mon__feature-card">
+        <div className="mon__feature-icon mon__feature-icon--live">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+        </div>
+        <div className="mon__feature-text">
+          <h5>Live Metrics</h5>
+          <p>Real-time request rate, failure rate, and performance data</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DeployArchPreview() {
+  const arrow = (
+    <span className="mon__arch-connector">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+    </span>
+  )
+  return (
+    <div className="mon__arch-preview">
+      <div className="mon__arch-step">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <span>Resource Group</span>
+      </div>
+      {arrow}
+      <div className="mon__arch-step">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+        <span>Log Analytics Workspace</span>
+      </div>
+      {arrow}
+      <div className="mon__arch-step">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        <span>Application Insights</span>
+      </div>
+      {arrow}
+      <div className="mon__arch-step">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="M9 9h6v6"/></svg>
+        <span>OTel Auto-Instrument</span>
+      </div>
+    </div>
+  )
+}
+
+function ProvisionSteps({ steps }: { steps: ProvisionStepResult[] }) {
+  if (!steps.length) return null
+  const labels: Record<string, string> = {
+    cli_extension: 'Install CLI extension',
+    resource_group: 'Resource group',
+    create_workspace: 'Log Analytics workspace',
+    create_app_insights: 'Application Insights',
+    save_config: 'Save configuration',
+    otel_bootstrap: 'Activate OTel export',
+  }
+  return (
+    <div className="mon__steps">
+      {steps.map((s, i) => (
+        <div key={i} className="mon__step">
+          <span className={`mon__step-icon mon__step-icon--${s.status === 'ok' ? 'ok' : 'fail'}`}>
+            {s.status === 'ok' ? '\u2713' : '\u2717'}
+          </span>
+          <span className="mon__step-label">{labels[s.step] || s.step}</span>
+          <span className="mon__step-detail">{s.detail}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function MonitoringTab() {
+  const [config, setConfig] = useState<MonitoringConfig | null>(null)
   const [loading, setLoading] = useState<Record<string, boolean>>({})
-  const [mode, setMode] = useState<SandboxMode>('deploy')
-  const [deployLocation, setDeployLocation] = useState('eastus')
-  const [deployRg, setDeployRg] = useState('polyclaw-sandbox-rg')
+  const [mode, setMode] = useState<MonitoringMode>('deploy')
 
-  const saveSandbox = async () => {
+  // Connect-existing state
+  const [connectionString, setConnectionString] = useState('')
+  const [enabled, setEnabled] = useState(false)
+  const [samplingRatio, setSamplingRatio] = useState(1.0)
+  const [enableLiveMetrics, setEnableLiveMetrics] = useState(false)
+  const [testResult, setTestResult] = useState<{ status: string; message: string; instrumentation_key?: string; ingestion_endpoint?: string } | null>(null)
+
+  // Deploy-new state
+  const [deployLocation, setDeployLocation] = useState('eastus')
+  const [deployRg, setDeployRg] = useState('polyclaw-monitoring-rg')
+  const [provisionSteps, setProvisionSteps] = useState<ProvisionStepResult[]>([])
+
+  const loadConfig = useCallback(async () => {
+    try {
+      const cfg = await api<MonitoringConfig>('monitoring/config')
+      setConfig(cfg)
+      setEnabled(cfg.enabled)
+      setSamplingRatio(cfg.sampling_ratio)
+      setEnableLiveMetrics(cfg.enable_live_metrics)
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => { loadConfig() }, [loadConfig])
+
+  const handleSave = async () => {
     setLoading(p => ({ ...p, save: true }))
     try {
-      await api('sandbox/config', {
+      const body: Record<string, unknown> = {
+        enabled,
+        sampling_ratio: samplingRatio,
+        enable_live_metrics: enableLiveMetrics,
+      }
+      if (connectionString) {
+        body.connection_string = connectionString
+      }
+      const res = await api<{ status: string; message: string }>('monitoring/config', {
         method: 'POST',
-        body: JSON.stringify({
-          enabled: sandbox.enabled,
-          sync_data: sandbox.sync_data,
-          session_pool_endpoint: sandbox.session_pool_endpoint,
-        }),
+        body: JSON.stringify(body),
       })
-      showToast('Sandbox config saved', 'success')
-    } catch (e: any) { showToast(e.message, 'error') }
+      showToast(res.message, res.status === 'ok' ? 'success' : 'error')
+      setConnectionString('')
+      await loadConfig()
+    } catch (e: unknown) { showToast(e instanceof Error ? e.message : String(e), 'error') }
     setLoading(p => ({ ...p, save: false }))
+  }
+
+  const handleTest = async () => {
+    const cs = connectionString || ''
+    if (!cs) {
+      showToast('Enter a connection string to test', 'error')
+      return
+    }
+    setLoading(p => ({ ...p, test: true }))
+    setTestResult(null)
+    try {
+      const res = await api<{ status: string; message: string; instrumentation_key?: string; ingestion_endpoint?: string }>('monitoring/test', {
+        method: 'POST',
+        body: JSON.stringify({ connection_string: cs }),
+      })
+      setTestResult(res)
+    } catch (e: unknown) {
+      setTestResult({ status: 'error', message: e instanceof Error ? e.message : String(e) })
+    }
+    setLoading(p => ({ ...p, test: false }))
   }
 
   const handleProvision = async () => {
     setLoading(p => ({ ...p, deploy: true }))
+    setProvisionSteps([])
     try {
-      await api('sandbox/provision', {
+      const res = await api<{ status: string; message: string; steps?: ProvisionStepResult[] }>('monitoring/provision', {
         method: 'POST',
         body: JSON.stringify({ location: deployLocation, resource_group: deployRg }),
       })
-      showToast('Sandbox session pool provisioned', 'success')
-      onReload()
-    } catch (e: any) { showToast(e.message, 'error') }
+      if (res.steps) setProvisionSteps(res.steps)
+      showToast(res.message, res.status === 'ok' ? 'success' : 'error')
+      await loadConfig()
+    } catch (e: unknown) { showToast(e instanceof Error ? e.message : String(e), 'error') }
     setLoading(p => ({ ...p, deploy: false }))
   }
 
   const handleDecommission = async () => {
-    if (!confirm('Remove sandbox session pool? This will delete the Azure resource.')) return
+    if (!confirm('Decommission Application Insights? This will delete the App Insights resource, Log Analytics workspace, and stop telemetry export.')) return
     setLoading(p => ({ ...p, decommission: true }))
     try {
-      await api('sandbox/provision', { method: 'DELETE' })
-      showToast('Sandbox session pool removed', 'success')
-      onReload()
-    } catch (e: any) { showToast(e.message, 'error') }
+      const res = await api<{ status: string; message: string }>('monitoring/provision', {
+        method: 'DELETE',
+      })
+      showToast(res.message, res.status === 'ok' ? 'success' : 'error')
+      await loadConfig()
+    } catch (e: unknown) { showToast(e instanceof Error ? e.message : String(e), 'error') }
     setLoading(p => ({ ...p, decommission: false }))
   }
 
-  // -- Already provisioned view --
-  if (sandbox.is_provisioned) {
+  if (!config) return <div className="spinner" />
+
+  const otelActive = config.otel_status?.active
+
+  // -- Already provisioned or configured view --
+  if (config.provisioned || config.connection_string_set) {
     return (
       <div className="voice">
+        {/* Status card */}
         <div className="voice__status-card">
           <div className="voice__status-header">
-            <h3>Agent Sandbox</h3>
-            <span className="badge badge--accent">Experimental</span>
-            <span className="badge badge--ok">Provisioned</span>
+            <h3>OpenTelemetry Monitoring</h3>
+            <span className={`badge ${otelActive ? 'badge--ok' : config.enabled ? 'badge--warn' : 'badge--muted'}`}>
+              {otelActive ? 'Active' : config.enabled ? 'Enabled (not exporting)' : 'Disabled'}
+            </span>
+            {config.provisioned && <span className="badge badge--ok">Provisioned</span>}
           </div>
 
-          <div className="voice__resource-grid">
-            {sandbox.pool_name && (
-              <div className="voice__resource-item">
-                <label>Session Pool</label>
-                <span>{sandbox.pool_name}</span>
+          <PipelineFlow active={!!otelActive} />
+
+          <div className="mon__info-grid" style={{ marginTop: 14 }}>
+            {/* Status */}
+            <div className="mon__info-card">
+              <div className="mon__info-icon">
+                <span className={`status-dot__indicator ${otelActive ? 'status-dot__indicator--ok' : 'status-dot__indicator--err'}`} style={{ width: 10, height: 10 }} />
+              </div>
+              <div className="mon__info-body">
+                <label>Status</label>
+                <span>{otelActive ? 'Exporting telemetry' : 'Not exporting'}</span>
+              </div>
+            </div>
+
+            {/* App Insights */}
+            {config.app_insights_name && (
+              <div className="mon__info-card">
+                <div className="mon__info-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M12 12v9"/></svg>
+                </div>
+                <div className="mon__info-body">
+                  <label>App Insights</label>
+                  {config.portal_url ? (
+                    <a href={config.portal_url} target="_blank" rel="noopener noreferrer" className="mon__info-link">
+                      {config.app_insights_name}
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                    </a>
+                  ) : (
+                    <span>{config.app_insights_name}</span>
+                  )}
+                </div>
               </div>
             )}
-            {sandbox.resource_group && (
-              <div className="voice__resource-item">
-                <label>Resource Group</label>
-                <span>{sandbox.resource_group}</span>
+
+            {/* Log Analytics */}
+            {config.workspace_name && (
+              <div className="mon__info-card">
+                <div className="mon__info-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+                </div>
+                <div className="mon__info-body">
+                  <label>Log Analytics Workspace</label>
+                  <span>{config.workspace_name}</span>
+                </div>
               </div>
             )}
-            {sandbox.location && (
-              <div className="voice__resource-item">
-                <label>Location</label>
-                <span>{sandbox.location}</span>
+
+            {/* Resource Group */}
+            {config.resource_group && (
+              <div className="mon__info-card">
+                <div className="mon__info-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div className="mon__info-body">
+                  <label>Resource Group</label>
+                  <span>{config.resource_group}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Location with flag */}
+            {config.location && (
+              <div className="mon__info-card">
+                <div className="mon__info-icon mon__info-icon--flag">
+                  {getRegionFlag(config.location)}
+                </div>
+                <div className="mon__info-body">
+                  <label>Location</label>
+                  <span>{getRegionLabel(config.location)}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Connection String -- masked */}
+            {config.connection_string_set && (
+              <div className="mon__info-card mon__info-card--wide">
+                <div className="mon__info-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                </div>
+                <div className="mon__info-body">
+                  <label>Connection String</label>
+                  <span className="mon__secret-value">{config.connection_string_masked}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Tracer Provider */}
+            {otelActive && config.otel_status?.tracer_provider && (
+              <div className="mon__info-card">
+                <div className="mon__info-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                </div>
+                <div className="mon__info-body">
+                  <label>Tracer Provider</label>
+                  <span>{config.otel_status.tracer_provider}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Grafana Agent Dashboard */}
+            {config.grafana_dashboard_url && (
+              <div className="mon__info-card mon__info-card--wide mon__info-card--action">
+                <div className="mon__info-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
+                </div>
+                <div className="mon__info-body">
+                  <label>Agent Dashboard</label>
+                  <span>Performance, tokens, cost, errors, and traces</span>
+                </div>
+                <a
+                  href={config.grafana_dashboard_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn--primary btn--sm"
+                >
+                  Open in Grafana
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: 4 }}><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                </a>
               </div>
             )}
           </div>
         </div>
 
-        {/* Configuration */}
+        {/* Configuration panel */}
         <div className="voice__panel">
           <div className="voice__panel-header">
             <div>
               <h4>Configuration</h4>
-              <p className="text-muted">Sandbox settings for code execution.</p>
+              <p className="text-muted">Adjust monitoring settings. Changes take effect immediately.</p>
             </div>
           </div>
           <div className="voice__panel-body">
             <div className="form">
               <label className="form__check">
-                <input type="checkbox" checked={sandbox.enabled} onChange={e => setSandbox(s => s ? { ...s, enabled: e.target.checked } : s)} />
-                Enable sandbox mode
+                <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
+                Enable OpenTelemetry monitoring
               </label>
-              <label className="form__check">
-                <input type="checkbox" checked={sandbox.sync_data !== false} onChange={e => setSandbox(s => s ? { ...s, sync_data: e.target.checked } : s)} />
-                Sync data to sandbox
-              </label>
-              <div className="form__group">
-                <label className="form__label">Session Pool Endpoint</label>
-                <input className="input" value={sandbox.session_pool_endpoint || ''} onChange={e => setSandbox(s => s ? { ...s, session_pool_endpoint: e.target.value } : s)} />
-              </div>
-              {sandbox.whitelist && sandbox.whitelist.length > 0 && (
-                <div className="mt-1">
-                  <label className="form__label">Whitelist</label>
-                  <div className="tag-list">
-                    {sandbox.whitelist.map(item => <span key={item} className="tag">{item}</span>)}
-                  </div>
+
+              {!config.provisioned && (
+                <div className="form__group">
+                  <label className="form__label">Application Insights Connection String</label>
+                  <input
+                    className="input"
+                    value={connectionString}
+                    onChange={e => setConnectionString(e.target.value)}
+                    placeholder={config.connection_string_set ? '(configured -- enter new value to replace)' : 'InstrumentationKey=...;IngestionEndpoint=...'}
+                    type="password"
+                  />
+                  <span className="form__hint">
+                    Find this in the Azure portal under your Application Insights resource &gt; Overview &gt; Connection String.
+                  </span>
                 </div>
               )}
+
+              {connectionString && (
+                <div style={{ marginBottom: 12 }}>
+                  <button className="btn btn--outline btn--sm" onClick={handleTest} disabled={loading.test}>
+                    {loading.test ? 'Validating...' : 'Validate Connection String'}
+                  </button>
+                  {testResult && (
+                    <div style={{ marginTop: 8 }}>
+                      <span className={`badge ${testResult.status === 'ok' ? 'badge--ok' : 'badge--err'}`}>
+                        {testResult.message}
+                      </span>
+                      {testResult.instrumentation_key && (
+                        <div className="text-muted" style={{ fontSize: 12, marginTop: 4 }}>
+                          Key: {testResult.instrumentation_key} | Endpoint: {testResult.ingestion_endpoint}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="form__group">
+                <label className="form__label">Sampling Ratio</label>
+                <div className="mon__sampling-value">
+                  {(samplingRatio * 100).toFixed(0)}<small>% of traces exported</small>
+                </div>
+                <div className="mon__sampling-bar">
+                  <div className="mon__sampling-fill" style={{ width: `${samplingRatio * 100}%` }} />
+                </div>
+                <input
+                  type="range"
+                  min="0.01"
+                  max="1"
+                  step="0.01"
+                  value={samplingRatio}
+                  onChange={e => setSamplingRatio(parseFloat(e.target.value))}
+                  style={{ width: '100%', marginTop: 4 }}
+                />
+                <span className="form__hint">
+                  100% = all traces, 5% = 1 in 20. Lower values reduce cost and noise. Metrics and logs are unaffected.
+                </span>
+              </div>
+
+              <label className="form__check">
+                <input type="checkbox" checked={enableLiveMetrics} onChange={e => setEnableLiveMetrics(e.target.checked)} />
+                Enable Live Metrics (real-time dashboard in Azure portal)
+              </label>
+
               <div className="form__actions">
-                <button className="btn btn--primary btn--sm" onClick={saveSandbox} disabled={loading.save}>
+                <button className="btn btn--primary" onClick={handleSave} disabled={loading.save}>
                   {loading.save ? 'Saving...' : 'Save Configuration'}
                 </button>
               </div>
@@ -473,18 +939,33 @@ function SandboxTab({
           </div>
         </div>
 
-        {/* Decommission */}
-        <div className="voice__danger-strip">
-          <p>Remove sandbox session pool and clear configuration.</p>
-          <button className="btn btn--danger btn--sm" onClick={handleDecommission} disabled={loading.decommission}>
-            {loading.decommission ? 'Removing...' : 'Decommission'}
-          </button>
+        {/* What gets collected */}
+        <div className="voice__panel">
+          <div className="voice__panel-header">
+            <div>
+              <h4>What Gets Collected</h4>
+              <p className="text-muted">The Azure Monitor OpenTelemetry Distro automatically instruments these signals.</p>
+            </div>
+          </div>
+          <div className="voice__panel-body">
+            <TelemetryFeatureCards />
+          </div>
         </div>
+
+        {/* Decommission (only for provisioned resources) */}
+        {config.provisioned && (
+          <div className="voice__danger-strip">
+            <p>Remove Application Insights and Log Analytics resources and stop telemetry export.</p>
+            <button className="btn btn--danger btn--sm" onClick={handleDecommission} disabled={loading.decommission}>
+              {loading.decommission ? 'Decommissioning...' : 'Decommission'}
+            </button>
+          </div>
+        )}
       </div>
     )
   }
 
-  // -- Not provisioned: setup view --
+  // -- Not provisioned: setup view with deploy/connect mode --
   return (
     <div className="voice">
       {/* Mode selector bar */}
@@ -498,7 +979,7 @@ function SandboxTab({
           </div>
           <div>
             <h4>Deploy New</h4>
-            <p>Provision a new Azure Container Apps session pool</p>
+            <p>Provision Application Insights + Log Analytics workspace</p>
           </div>
         </button>
         <button
@@ -510,7 +991,7 @@ function SandboxTab({
           </div>
           <div>
             <h4>Connect Existing</h4>
-            <p>Provide an existing session pool endpoint</p>
+            <p>Provide a connection string from an existing Application Insights resource</p>
           </div>
         </button>
       </div>
@@ -520,33 +1001,31 @@ function SandboxTab({
         <div className="voice__panel">
           <div className="voice__panel-header">
             <div>
-              <h4>Deploy New Session Pool</h4>
-              <p className="text-muted">Creates an Azure Container Apps Dynamic Sessions pool for sandboxed code execution.</p>
+              <h4>Deploy New Application Insights</h4>
+              <p className="text-muted">Provisions the full monitoring stack in a single step. The runtime is automatically instrumented to export telemetry.</p>
             </div>
           </div>
           <div className="voice__panel-body">
-            {!azureLoggedIn ? (
-              <p className="text-muted">Sign in to Azure first (Overview tab) to provision resources.</p>
-            ) : (
-              <div className="form">
-                <div className="form__row">
-                  <div className="form__group">
-                    <label className="form__label">Resource Group</label>
-                    <input className="input" value={deployRg} onChange={e => setDeployRg(e.target.value)} />
-                  </div>
-                  <div className="form__group">
-                    <label className="form__label">Location</label>
-                    <input className="input" value={deployLocation} onChange={e => setDeployLocation(e.target.value)} />
-                    <span className="form__hint">Must support Container Apps Dynamic Sessions (e.g. eastus, westeurope).</span>
-                  </div>
+            <DeployArchPreview />
+            <div className="form">
+              <div className="form__row">
+                <div className="form__group">
+                  <label className="form__label">Resource Group</label>
+                  <input className="input" value={deployRg} onChange={e => setDeployRg(e.target.value)} />
                 </div>
-                <div className="form__actions">
-                  <button className="btn btn--primary" onClick={handleProvision} disabled={loading.deploy}>
-                    {loading.deploy ? 'Provisioning...' : 'Provision Session Pool'}
-                  </button>
+                <div className="form__group">
+                  <label className="form__label">Location</label>
+                  <input className="input" value={deployLocation} onChange={e => setDeployLocation(e.target.value)} />
+                  <span className="form__hint">Azure region (e.g. eastus, westeurope, swedencentral).</span>
                 </div>
               </div>
-            )}
+              <div className="form__actions">
+                <button className="btn btn--primary" onClick={handleProvision} disabled={loading.deploy}>
+                  {loading.deploy ? 'Provisioning...' : 'Deploy Application Insights'}
+                </button>
+              </div>
+              <ProvisionSteps steps={provisionSteps} />
+            </div>
           </div>
         </div>
       )}
@@ -556,34 +1035,80 @@ function SandboxTab({
         <div className="voice__panel">
           <div className="voice__panel-header">
             <div>
-              <h4>Connect to Existing Session Pool</h4>
-              <p className="text-muted">Enter the management endpoint of an existing Azure Container Apps session pool.</p>
+              <h4>Connect to Existing Application Insights</h4>
+              <p className="text-muted">Provide the connection string from an existing Application Insights resource in the Azure portal.</p>
             </div>
           </div>
           <div className="voice__panel-body">
             <div className="form">
               <label className="form__check">
-                <input type="checkbox" checked={sandbox.enabled} onChange={e => setSandbox(s => s ? { ...s, enabled: e.target.checked } : s)} />
-                Enable sandbox mode
+                <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
+                Enable OpenTelemetry monitoring
               </label>
-              <label className="form__check">
-                <input type="checkbox" checked={sandbox.sync_data !== false} onChange={e => setSandbox(s => s ? { ...s, sync_data: e.target.checked } : s)} />
-                Sync data to sandbox
-              </label>
+
               <div className="form__group">
-                <label className="form__label">Session Pool Endpoint</label>
-                <input className="input" value={sandbox.session_pool_endpoint || ''} onChange={e => setSandbox(s => s ? { ...s, session_pool_endpoint: e.target.value } : s)} placeholder="https://<region>.dynamicsessions.io/subscriptions/pools/<pool>" />
+                <label className="form__label">Application Insights Connection String</label>
+                <input
+                  className="input"
+                  value={connectionString}
+                  onChange={e => setConnectionString(e.target.value)}
+                  placeholder="InstrumentationKey=...;IngestionEndpoint=..."
+                  type="password"
+                />
+                <span className="form__hint">
+                  Find this in the Azure portal under your Application Insights resource &gt; Overview &gt; Connection String.
+                </span>
               </div>
-              {sandbox.whitelist && sandbox.whitelist.length > 0 && (
-                <div className="mt-1">
-                  <label className="form__label">Whitelist</label>
-                  <div className="tag-list">
-                    {sandbox.whitelist.map(item => <span key={item} className="tag">{item}</span>)}
-                  </div>
+
+              {connectionString && (
+                <div style={{ marginBottom: 12 }}>
+                  <button className="btn btn--outline btn--sm" onClick={handleTest} disabled={loading.test}>
+                    {loading.test ? 'Validating...' : 'Validate Connection String'}
+                  </button>
+                  {testResult && (
+                    <div style={{ marginTop: 8 }}>
+                      <span className={`badge ${testResult.status === 'ok' ? 'badge--ok' : 'badge--err'}`}>
+                        {testResult.message}
+                      </span>
+                      {testResult.instrumentation_key && (
+                        <div className="text-muted" style={{ fontSize: 12, marginTop: 4 }}>
+                          Key: {testResult.instrumentation_key} | Endpoint: {testResult.ingestion_endpoint}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
+
+              <div className="form__group">
+                <label className="form__label">Sampling Ratio</label>
+                <div className="mon__sampling-value">
+                  {(samplingRatio * 100).toFixed(0)}<small>% of traces exported</small>
+                </div>
+                <div className="mon__sampling-bar">
+                  <div className="mon__sampling-fill" style={{ width: `${samplingRatio * 100}%` }} />
+                </div>
+                <input
+                  type="range"
+                  min="0.01"
+                  max="1"
+                  step="0.01"
+                  value={samplingRatio}
+                  onChange={e => setSamplingRatio(parseFloat(e.target.value))}
+                  style={{ width: '100%', marginTop: 4 }}
+                />
+                <span className="form__hint">
+                  100% = all traces, 5% = 1 in 20. Lower values reduce cost and noise. Metrics and logs are unaffected.
+                </span>
+              </div>
+
+              <label className="form__check">
+                <input type="checkbox" checked={enableLiveMetrics} onChange={e => setEnableLiveMetrics(e.target.checked)} />
+                Enable Live Metrics (real-time dashboard in Azure portal)
+              </label>
+
               <div className="form__actions">
-                <button className="btn btn--primary" onClick={saveSandbox} disabled={loading.save}>
+                <button className="btn btn--primary" onClick={handleSave} disabled={loading.save}>
                   {loading.save ? 'Saving...' : 'Save Configuration'}
                 </button>
               </div>
@@ -591,6 +1116,19 @@ function SandboxTab({
           </div>
         </div>
       )}
+
+      {/* Telemetry overview (always visible) */}
+      <div className="voice__panel">
+        <div className="voice__panel-header">
+          <div>
+            <h4>What Gets Collected</h4>
+            <p className="text-muted">The Azure Monitor OpenTelemetry Distro automatically instruments these signals.</p>
+          </div>
+        </div>
+        <div className="voice__panel-body">
+          <TelemetryFeatureCards />
+        </div>
+      </div>
     </div>
   )
 }
@@ -1261,547 +1799,3 @@ function VoiceTab({ status, onReload }: { status: SetupStatus | null; onReload: 
   )
 }
 
-// ---------------------------------------------------------------------------
-// Network Tab -- network topology, tunnel exposure, and endpoint listing
-// ---------------------------------------------------------------------------
-
-const CATEGORY_LABELS: Record<string, string> = {
-  bot: 'Bot / Messaging',
-  voice: 'Voice / ACS',
-  chat: 'Chat / Models',
-  setup: 'Setup / Config',
-  admin: 'Admin API',
-  'foundry-iq': 'Foundry IQ',
-  sandbox: 'Sandbox',
-  network: 'Network',
-  health: 'Health',
-  frontend: 'Frontend',
-}
-
-const CATEGORY_ORDER = ['bot', 'voice', 'chat', 'admin', 'setup', 'foundry-iq', 'sandbox', 'network', 'health', 'frontend']
-
-const MODE_LABELS: Record<string, string> = {
-  local: 'Local Development',
-  docker: 'Docker Container',
-  aca: 'Azure Container Apps',
-}
-
-const COMPONENT_ICONS: Record<string, string> = {
-  ai: 'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5',
-  tunnel: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
-  bot: 'M12 8V4H8',
-  communication: 'M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z',
-  search: 'M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM21 21l-4.35-4.35',
-  storage: 'M22 12H2M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z',
-}
-
-const RESOURCE_AUDIT_ICONS: Record<string, string> = {
-  storage: 'M22 12H2M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z',
-  keyvault: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
-  ai: 'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5',
-  search: 'M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM21 21l-4.35-4.35',
-  acr: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z',
-  sandbox: 'M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1zM4 22v-7',
-  communication: 'M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z',
-}
-
-function NetworkTab({ tunnelRestricted, onReload }: { tunnelRestricted: boolean; onReload: () => void }) {
-  const [info, setInfo] = useState<NetworkInfo | null>(null)
-  const [loading, setLoading] = useState<Record<string, boolean>>({})
-  const [filter, setFilter] = useState('')
-  const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
-  const [showTunnelOnly, setShowTunnelOnly] = useState(false)
-  const [auditResources, setAuditResources] = useState<ResourceAudit[]>([])
-  const [auditLoading, setAuditLoading] = useState(false)
-  const [auditLoaded, setAuditLoaded] = useState(false)
-  const [probe, setProbe] = useState<ProbeResult | null>(null)
-  const [probing, setProbing] = useState(false)
-
-  const loadInfo = useCallback(async () => {
-    try {
-      const data = await api<NetworkInfo>('network/info')
-      setInfo(data)
-    } catch { /* ignore */ }
-  }, [])
-
-  useEffect(() => { loadInfo() }, [loadInfo])
-
-  const runProbe = useCallback(async () => {
-    setProbing(true)
-    try {
-      const data = await api<ProbeResult>('network/probe')
-      setProbe(data)
-    } catch { /* ignore */ }
-    setProbing(false)
-  }, [])
-
-  useEffect(() => { runProbe() }, [runProbe])
-
-  const loadAudit = async () => {
-    setAuditLoading(true)
-    try {
-      const data = await api<ResourceAuditResponse>('network/resource-audit')
-      setAuditResources(data.resources || [])
-      setAuditLoaded(true)
-    } catch { /* ignore */ }
-    setAuditLoading(false)
-  }
-
-  const toggleTunnelRestriction = async () => {
-    const newState = !info?.tunnel.restricted
-    setLoading(p => ({ ...p, restrict: true }))
-    try {
-      await api('setup/tunnel/restrict', {
-        method: 'POST',
-        body: JSON.stringify({ restricted: newState }),
-      })
-      showToast(
-        newState
-          ? 'Tunnel restricted: only bot + ACS endpoints exposed'
-          : 'Tunnel unrestricted: all endpoints exposed',
-        'success',
-      )
-      await loadInfo()
-      onReload()
-    } catch (e: any) { showToast(e.message, 'error') }
-    setLoading(p => ({ ...p, restrict: false }))
-  }
-
-  if (!info) return <div className="spinner" />
-
-  // Use probed endpoint data when available, fall back to static info
-  const endpointSource: (NetworkEndpoint | ProbedEndpoint)[] = probe ? probe.endpoints : info.endpoints
-
-  // Group endpoints by category
-  const grouped: Record<string, (NetworkEndpoint | ProbedEndpoint)[]> = {}
-  for (const ep of endpointSource) {
-    if (showTunnelOnly && !ep.tunnel_exposed) continue
-    if (filter && !ep.path.toLowerCase().includes(filter.toLowerCase()) && !ep.method.toLowerCase().includes(filter.toLowerCase())) continue
-    if (categoryFilter && ep.category !== categoryFilter) continue
-    if (!grouped[ep.category]) grouped[ep.category] = []
-    grouped[ep.category].push(ep)
-  }
-
-  const sortedCategories = CATEGORY_ORDER.filter(c => grouped[c])
-  const extraCategories = Object.keys(grouped).filter(c => !CATEGORY_ORDER.includes(c))
-  const allCategories = [...sortedCategories, ...extraCategories]
-
-  const totalEndpoints = endpointSource.length
-  const tunnelExposed = endpointSource.filter(e => e.tunnel_exposed).length
-
-  return (
-    <div className="network">
-      {/* Deploy mode & topology card */}
-      <div className="network__topo-card">
-        <div className="network__topo-header">
-          <h3>Network Topology</h3>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button className="btn btn--secondary btn--sm" onClick={runProbe} disabled={probing} title="Re-probe all endpoints">
-              {probing ? 'Probing...' : 'Re-probe'}
-            </button>
-            <span className={`badge ${info.deploy_mode === 'aca' ? 'badge--ok' : info.deploy_mode === 'docker' ? 'badge--warn' : 'badge--muted'}`}>
-              {MODE_LABELS[info.deploy_mode] || info.deploy_mode}
-            </span>
-          </div>
-        </div>
-
-        <div className="network__topo-grid">
-          {/* The Server */}
-          <div className="network__topo-node network__topo-node--server">
-            <div className="network__topo-node-icon">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="2" y="2" width="20" height="8" rx="2" ry="2" />
-                <rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
-                <line x1="6" y1="6" x2="6.01" y2="6" />
-                <line x1="6" y1="18" x2="6.01" y2="18" />
-              </svg>
-            </div>
-            <div className="network__topo-node-label">
-              <strong>Polyclaw Server</strong>
-              <span>Port {info.admin_port}</span>
-              {info.deploy_mode === 'docker' && <span className="text-muted">Container</span>}
-              {info.deploy_mode === 'aca' && <span className="text-muted">Azure Container Apps</span>}
-              {info.deploy_mode === 'local' && <span className="text-muted">localhost</span>}
-              <span className="network__topo-count">
-                {probe ? `${probe.counts.total} endpoints` : probing ? '...' : ''}
-              </span>
-            </div>
-          </div>
-
-          {/* Arrow */}
-          <div className="network__topo-arrow">
-            <svg width="40" height="24" viewBox="0 0 40 24">
-              <line x1="0" y1="12" x2="32" y2="12" stroke="var(--text-3)" strokeWidth="2" />
-              <polygon points="32,6 40,12 32,18" fill="var(--text-3)" />
-            </svg>
-          </div>
-
-          {/* Tunnel */}
-          <div className={`network__topo-node ${info.tunnel.active ? 'network__topo-node--active' : 'network__topo-node--inactive'}`}>
-            <div className="network__topo-node-icon">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-              </svg>
-            </div>
-            <div className="network__topo-node-label">
-              <strong>Cloudflare Tunnel</strong>
-              {info.tunnel.active ? (
-                <>
-                  <span className="network__topo-url">{info.tunnel.url}</span>
-                  <span className={info.tunnel.restricted ? 'text-warn' : 'text-ok'}>
-                    {info.tunnel.restricted ? 'Restricted' : 'Full Access'}
-                  </span>
-                </>
-              ) : (
-                <span className="text-muted">Inactive</span>
-              )}
-              <span className="network__topo-count">
-                {probe ? `${probe.counts.tunnel_accessible} exposed` : probing ? '...' : ''}
-              </span>
-            </div>
-          </div>
-
-          {/* Arrow */}
-          <div className="network__topo-arrow">
-            <svg width="40" height="24" viewBox="0 0 40 24">
-              <line x1="0" y1="12" x2="32" y2="12" stroke="var(--text-3)" strokeWidth="2" />
-              <polygon points="32,6 40,12 32,18" fill="var(--text-3)" />
-            </svg>
-          </div>
-
-          {/* Internet / Azure */}
-          <div className="network__topo-node network__topo-node--cloud">
-            <div className="network__topo-node-icon">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
-              </svg>
-            </div>
-            <div className="network__topo-node-label">
-              <strong>{info.deploy_mode === 'aca' ? 'Azure' : 'Internet'}</strong>
-              <span className="text-muted">Bot Service, Teams, Telegram</span>
-              <span className="network__topo-count">
-                {probe ? `${probe.counts.public_no_auth} public` : probing ? '...' : ''}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Connected components */}
-      <div className="network__components">
-        <h4>Connected Components</h4>
-        <div className="network__comp-grid">
-          {info.components.map(comp => (
-            <div key={comp.name} className={`network__comp-item ${comp.status === 'active' || comp.status === 'configured' ? '' : 'network__comp-item--inactive'}`}>
-              <div className="network__comp-icon">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d={COMPONENT_ICONS[comp.type] || COMPONENT_ICONS.storage} />
-                </svg>
-              </div>
-              <div className="network__comp-info">
-                <strong>{comp.name}</strong>
-                {comp.endpoint && <span className="network__comp-detail">{comp.endpoint}</span>}
-                {comp.url && <span className="network__comp-detail">{comp.url}</span>}
-                {comp.model && <span className="network__comp-detail">Model: {comp.model}</span>}
-                {comp.deployment && <span className="network__comp-detail">Deployment: {comp.deployment}</span>}
-                {comp.source_number && <span className="network__comp-detail">Number: {comp.source_number}</span>}
-                {comp.path && <span className="network__comp-detail">{comp.path}</span>}
-              </div>
-              <span className={`badge ${comp.status === 'active' || comp.status === 'configured' ? 'badge--ok' : 'badge--muted'}`}>
-                {comp.status}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Tunnel exposure mode */}
-      <div className="network__exposure">
-        <div className="network__exposure-header">
-          <div>
-            <h4>Tunnel Exposure Mode</h4>
-            <p className="text-muted">
-              {info.tunnel.restricted
-                ? 'Restricted mode: only bot messaging and ACS callback endpoints are exposed through the tunnel. All other endpoints are accessible only on the local network.'
-                : 'Full access mode: all endpoints are exposed through the tunnel. Switch to restricted mode to limit tunnel exposure to only bot and ACS endpoints.'}
-            </p>
-          </div>
-        </div>
-
-        <div className="network__exposure-controls">
-          <div className="network__exposure-toggle">
-            <button
-              className={`network__mode-btn ${!info.tunnel.restricted ? 'network__mode-btn--active network__mode-btn--full' : ''}`}
-              onClick={() => info.tunnel.restricted && toggleTunnelRestriction()}
-              disabled={loading.restrict || !info.tunnel.active}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></svg>
-              Full Access
-            </button>
-            <button
-              className={`network__mode-btn ${info.tunnel.restricted ? 'network__mode-btn--active network__mode-btn--restricted' : ''}`}
-              onClick={() => !info.tunnel.restricted && toggleTunnelRestriction()}
-              disabled={loading.restrict || !info.tunnel.active}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
-              Restricted
-            </button>
-          </div>
-          {!info.tunnel.active && (
-            <p className="text-muted" style={{ fontSize: 12 }}>Start the tunnel first to change exposure mode.</p>
-          )}
-        </div>
-
-        <div className="network__exposure-stats">
-          <div className="network__stat">
-            <span className="network__stat-value">{probe ? probe.counts.total : totalEndpoints}</span>
-            <span className="network__stat-label">Total Endpoints</span>
-          </div>
-          <div className="network__stat">
-            <span className="network__stat-value">{probe?.counts.auth_types?.admin_key ?? '--'}</span>
-            <span className="network__stat-label">Admin Key</span>
-          </div>
-          <div className="network__stat">
-            <span className="network__stat-value">{probe?.counts.auth_types?.bot_jwt ?? '--'}</span>
-            <span className="network__stat-label">Bot JWT</span>
-          </div>
-          <div className="network__stat">
-            <span className="network__stat-value">{probe?.counts.auth_types?.acs_token ?? '--'}</span>
-            <span className="network__stat-label">ACS Token</span>
-          </div>
-          <div className="network__stat">
-            <span className="network__stat-value">{probe?.counts.auth_types?.open ?? '--'}</span>
-            <span className="network__stat-label">Open</span>
-          </div>
-          <div className="network__stat">
-            <span className="network__stat-value">{probe ? probe.counts.tunnel_accessible : tunnelExposed}</span>
-            <span className="network__stat-label">Tunnel-Exposed</span>
-          </div>
-          <div className="network__stat">
-            <span className="network__stat-value">{probe ? probe.counts.tunnel_blocked : totalEndpoints - tunnelExposed}</span>
-            <span className="network__stat-label">Tunnel-Blocked</span>
-          </div>
-        </div>
-        {probe && probe.counts.framework_auth_fail > 0 && (
-          <p className="text-warn" style={{ fontSize: 12, marginTop: 8 }}>
-            {probe.counts.framework_auth_fail} bot/ACS endpoint(s) accepted unauthenticated POST requests. Check that Bot Framework credentials and ACS callback token are configured.
-          </p>
-        )}
-        {probe && !probe.tunnel_restricted_during_probe && (
-          <p className="text-muted" style={{ fontSize: 12, marginTop: 8 }}>
-            Tunnel restriction was off during probe -- all endpoints appear tunnel-accessible. Switch to restricted mode and re-probe to see which endpoints would be blocked.
-          </p>
-        )}
-      </div>
-
-      {/* Resource Network Security */}
-      <div className="network__resource-audit">
-        <div className="network__resource-audit-header">
-          <div>
-            <h4>Resource Network Security</h4>
-            <p className="text-muted">Network configuration of Azure resources across all resource groups: firewall rules, allowed IPs, public access, private endpoints.</p>
-          </div>
-          <button className="btn btn--secondary btn--sm" onClick={loadAudit} disabled={auditLoading}>
-            {auditLoading ? 'Scanning...' : auditLoaded ? 'Rescan' : 'Scan Resources'}
-          </button>
-        </div>
-
-        {auditLoaded && auditResources.length === 0 && (
-          <p className="text-muted" style={{ padding: '16px 0' }}>No Azure resources found. Make sure you are signed in to Azure and have provisioned resources.</p>
-        )}
-
-        {auditResources.length > 0 && (
-          <div className="network__audit-grid">
-            {auditResources.map(res => {
-              const hasIpRules = res.allowed_ips.length > 0
-              const hasVnets = res.allowed_vnets.length > 0
-              const hasPe = res.private_endpoints.length > 0
-              const isSecure = !res.public_access || hasIpRules || hasPe
-              return (
-                <div key={`${res.resource_group}-${res.name}`} className={`network__audit-card ${isSecure ? 'network__audit-card--secure' : 'network__audit-card--exposed'}`}>
-                  <div className="network__audit-card-header">
-                    <div className="network__audit-card-title">
-                      <div className="network__audit-icon">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d={RESOURCE_AUDIT_ICONS[res.icon] || RESOURCE_AUDIT_ICONS.storage} />
-                        </svg>
-                      </div>
-                      <div>
-                        <strong>{res.name}</strong>
-                        <span className="network__audit-type">{res.type}</span>
-                      </div>
-                    </div>
-                    <span className={`badge ${res.public_access ? 'badge--err' : 'badge--ok'}`}>
-                      {res.public_access ? 'Public' : 'Restricted'}
-                    </span>
-                  </div>
-
-                  <div className="network__audit-card-body">
-                    <div className="network__audit-row">
-                      <span className="network__audit-label">Resource Group</span>
-                      <span>{res.resource_group}</span>
-                    </div>
-                    <div className="network__audit-row">
-                      <span className="network__audit-label">Default Action</span>
-                      <span className={res.default_action === 'Allow' ? 'text-warn' : 'text-ok'}>{res.default_action}</span>
-                    </div>
-                    {res.https_only !== undefined && (
-                      <div className="network__audit-row">
-                        <span className="network__audit-label">HTTPS Only</span>
-                        <span className={res.https_only ? 'text-ok' : 'text-warn'}>{res.https_only ? 'Yes' : 'No'}</span>
-                      </div>
-                    )}
-                    {res.min_tls_version && (
-                      <div className="network__audit-row">
-                        <span className="network__audit-label">Min TLS</span>
-                        <span className={res.min_tls_version === 'TLS1_2' ? 'text-ok' : 'text-warn'}>{res.min_tls_version}</span>
-                      </div>
-                    )}
-
-                    {/* Allowed IPs */}
-                    {hasIpRules && (
-                      <div className="network__audit-section">
-                        <span className="network__audit-label">Allowed IPs ({res.allowed_ips.length})</span>
-                        <div className="tag-list">
-                          {res.allowed_ips.map(ip => <span key={ip} className="tag">{ip}</span>)}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* VNet Rules */}
-                    {hasVnets && (
-                      <div className="network__audit-section">
-                        <span className="network__audit-label">VNet Rules ({res.allowed_vnets.length})</span>
-                        <div className="tag-list">
-                          {res.allowed_vnets.map(v => <span key={v} className="tag tag--sm">{v.split('/').pop()}</span>)}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Private Endpoints */}
-                    {hasPe && (
-                      <div className="network__audit-section">
-                        <span className="network__audit-label">Private Endpoints ({res.private_endpoints.length})</span>
-                        <div className="tag-list">
-                          {res.private_endpoints.map(pe => <span key={pe} className="tag tag--ok">{pe}</span>)}
-                        </div>
-                      </div>
-                    )}
-
-                    {!hasIpRules && !hasVnets && !hasPe && res.public_access && (
-                      <div className="network__audit-warning">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                        No IP restrictions, VNets, or private endpoints configured. This resource is accessible from all networks.
-                      </div>
-                    )}
-
-                    {/* Extra properties */}
-                    {Object.entries(res.extra).filter(([, v]) => v !== undefined && v !== null && v !== '').map(([k, v]) => (
-                      <div key={k} className="network__audit-row">
-                        <span className="network__audit-label">{k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</span>
-                        <span className={typeof v === 'boolean' ? (v ? 'text-ok' : 'text-warn') : ''}>
-                          {typeof v === 'boolean' ? (v ? 'Yes' : 'No') : String(v)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Endpoint listing */}
-      <div className="network__endpoints">
-        <div className="network__endpoints-header">
-          <h4>Registered Endpoints</h4>
-          <div className="network__endpoints-filters">
-            <input
-              className="input input--sm"
-              placeholder="Filter endpoints..."
-              value={filter}
-              onChange={e => setFilter(e.target.value)}
-            />
-            <select
-              className="input input--sm"
-              value={categoryFilter || ''}
-              onChange={e => setCategoryFilter(e.target.value || null)}
-            >
-              <option value="">All categories</option>
-              {CATEGORY_ORDER.map(c => (
-                <option key={c} value={c}>{CATEGORY_LABELS[c] || c}</option>
-              ))}
-            </select>
-            <label className="form__check form__check--inline">
-              <input type="checkbox" checked={showTunnelOnly} onChange={e => setShowTunnelOnly(e.target.checked)} />
-              Tunnel-exposed only
-            </label>
-          </div>
-        </div>
-
-        {allCategories.map(cat => (
-          <div key={cat} className="network__ep-group">
-            <div className="network__ep-group-label">{CATEGORY_LABELS[cat] || cat}</div>
-            <table className="network__ep-table">
-              <thead>
-                <tr>
-                  <th>Method</th>
-                  <th>Path</th>
-                  <th>Auth</th>
-                  <th>Tunnel</th>
-                </tr>
-              </thead>
-              <tbody>
-                {grouped[cat].map(ep => {
-                  const probed = 'requires_auth' in ep ? ep as ProbedEndpoint : null
-                  return (
-                    <tr key={`${ep.method}-${ep.path}`}>
-                      <td><span className={`network__method network__method--${ep.method.toLowerCase()}`}>{ep.method}</span></td>
-                      <td><code>{ep.path}</code></td>
-                      <td>
-                        {probed?.auth_type === 'admin_key'
-                          ? <span className="badge badge--warn badge--sm" title="Protected by admin secret">Admin Key</span>
-                          : probed?.auth_type === 'bot_jwt'
-                            ? <span className={`badge ${probed.framework_auth_ok ? 'badge--ok' : 'badge--err'} badge--sm`} title={probed.framework_auth_ok ? 'Bot Framework JWT validated (401 on bad token)' : 'Bot Framework JWT NOT enforced -- unauthenticated POST accepted'}>
-                                Bot JWT {probed.framework_auth_ok ? '' : '!'}
-                              </span>
-                            : probed?.auth_type === 'acs_token'
-                              ? <span className={`badge ${probed.framework_auth_ok ? 'badge--ok' : 'badge--err'} badge--sm`} title={probed.framework_auth_ok ? 'ACS callback token validated (401 on missing token)' : 'ACS callback token NOT enforced -- unauthenticated POST accepted'}>
-                                  ACS Token {probed.framework_auth_ok ? '' : '!'}
-                                </span>
-                              : probed?.auth_type === 'health'
-                                ? <span className="badge badge--muted badge--sm" title="Health/info endpoint, intentionally public">Health</span>
-                                : probed?.auth_type === 'open'
-                                  ? <span className="badge badge--err badge--sm" title="No authentication detected">Open</span>
-                                  : <span className="badge badge--muted badge--sm">{probing ? '...' : '--'}</span>
-                        }
-                      </td>
-                      <td>
-                        {probed ? (
-                          probed.tunnel_blocked === true
-                            ? <span className="badge badge--err badge--sm">Blocked</span>
-                            : probed.tunnel_blocked === false
-                              ? <span className="badge badge--ok badge--sm">Exposed</span>
-                              : <span className="badge badge--muted badge--sm">?</span>
-                        ) : ep.tunnel_exposed ? (
-                          <span className="badge badge--ok badge--sm">Exposed</span>
-                        ) : (
-                          <span className="badge badge--muted badge--sm">Local</span>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        ))}
-
-        {allCategories.length === 0 && (
-          <p className="text-muted" style={{ padding: 16 }}>No endpoints match the current filter.</p>
-        )}
-      </div>
-    </div>
-  )
-}

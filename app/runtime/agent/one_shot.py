@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from copilot import CopilotClient
@@ -22,6 +23,10 @@ async def auto_approve(input_data: dict, invocation: dict) -> dict:
     return {"permissionDecision": "allow"}
 
 
+# Type alias for the SDK's pre-tool-use callback signature.
+PreToolHook = Callable[[dict, Any], Awaitable[dict]]
+
+
 async def run_one_shot(
     prompt: str,
     *,
@@ -29,17 +34,19 @@ async def run_one_shot(
     system_message: str = "",
     timeout: float = 300,
     tools: list[Any] | None = None,
+    on_pre_tool_use: PreToolHook | None = None,
 ) -> str | None:
     opts: dict[str, Any] = {"log_level": "error"}
     if cfg.github_token:
         opts["github_token"] = cfg.github_token
 
+    hook = on_pre_tool_use or auto_approve
     client = CopilotClient(opts)
     await client.start()
     try:
         session_cfg: dict[str, Any] = {
             "model": model,
-            "hooks": {"on_pre_tool_use": auto_approve},
+            "hooks": {"on_pre_tool_use": hook},
         }
         if system_message:
             session_cfg["system_message"] = {"mode": "append", "content": system_message}

@@ -5,12 +5,14 @@ weight: 2
 
 # Azure Container Apps Deployment
 
+> **Experimental:** ACA deployment is under active development. Expect rough edges, incomplete automation, and breaking changes between releases.
+
 When you select **Azure Container Apps** in the TUI target picker, the TUI provisions all Azure infrastructure, pushes the image, and deploys a persistent Container App. Unlike Local Docker, the container keeps running after you exit the TUI.
 
 ## Prerequisites
 
 - **Azure CLI** (`az`) installed and logged in
-- **Docker** running locally (for the image build)
+- **Docker** running locally (the deployer pushes a pre-built local image -- build it first with `docker build -t polyclaw:latest .` or by running Local Docker once)
 
 If `az` is not installed or you are not logged in, the ACA option is greyed out in the target picker with a status message.
 
@@ -32,39 +34,31 @@ The TUI creates the following Azure resources in a single resource group:
 
 | Resource | Purpose |
 |---|---|
-| **Resource Group** | Contains all deployment resources (default: `polyclaw-acac-rg`) |
-| **Azure Container Registry** | Stores the Polyclaw Docker image |
-| **VNet + Subnet** | Network isolation for the Container Apps environment |
-| **Premium FileStorage account** | NFS-backed persistent storage for `/data` |
-| **NFS File Share** | Mounted into the Container App at `/data` |
-| **Container Apps Environment** | Hosts the Container App with VNet integration |
-| **Container App** | Runs the Polyclaw container (1 CPU, 2 GiB RAM, 1 replica) |
+| **Resource Group** | Contains all deployment resources (default: `polyclaw-rg`) |
+| **Azure Container Registry** | Stores the Polyclaw Docker image (Basic SKU) |
+| **User-Assigned Managed Identity** | Scoped runtime identity (`polyclaw-runtime-mi`) |
+| **Container Apps Environment** | Hosts the Container App |
+| **Container App** | Runs the Polyclaw runtime container (2 CPU, 4 GiB RAM, 1 replica) |
 
 The deployment sequence is:
 
-1. Create the resource group
-2. Create or reuse the Azure Container Registry
-3. Build the Docker image for `linux/amd64`
-4. Push the image to ACR
-5. Create the VNet and subnet (with storage service endpoints and ACA delegation)
-6. Create the Premium FileStorage account with NFS share
-7. Create the Container Apps environment with VNet integration
-8. Link the NFS storage to the environment
-9. Create the Container App with the NFS volume mounted at `/data`
-10. Restart the revision to activate storage and retrieve the FQDN
+1. Clean up stale resources from previous deployments in the resource group
+2. Create the resource group
+3. Load environment variables from `.env` (resolve `@kv:` Key Vault references)
+4. Create Azure Container Registry (Basic SKU)
+5. Push the pre-built local image to ACR (the image must already exist as `polyclaw:latest`)
+6. Create a user-assigned managed identity (`polyclaw-runtime-mi`)
+7. Assign RBAC roles to the identity (with retries for propagation delays)
+8. Create the Container Apps environment
+9. Create the runtime Container App (2 CPU, 4 GiB RAM, 1 replica, external ingress)
+10. Restrict ingress to the deployer's public IP (skipped if IP detection fails)
 
-All resource names, the admin secret, and the deployment configuration are saved to `~/.polyclaw-aca.json` so the TUI can reconnect on subsequent launches.
+After deployment, the ACA configuration (`ACA_RUNTIME_FQDN`, `ACA_ACR_NAME`, `ACA_ENV_NAME`, `ACA_MI_RESOURCE_ID`, `ACA_MI_CLIENT_ID`, `RUNTIME_URL`) is written to the `.env` file in the data directory, and a deployment record is saved to `deployments.json` in the same directory.
 
 ## Reconnecting
 
-When you relaunch the TUI with an existing ACA deployment, it detects the saved configuration and offers to reconnect instead of redeploying. The TUI verifies the Container App still exists and connects directly, skipping the build and provisioning steps.
+When you relaunch the TUI with an existing ACA deployment, it reads `ACA_RUNTIME_FQDN` from the `.env` file and the deployment record from `deployments.json` in the data directory. If the Container App still exists, it connects directly, skipping the build and provisioning steps.
 
 ## Persistent Storage
 
-Unlike Local Docker (which uses a Docker named volume), the ACA deployment uses Azure Premium FileStorage with NFS. This provides:
-
-- Persistent data that survives container restarts and redeployments
-- Network-attached storage accessible from the Container App inside the VNet
-- The same `/data` mount path used by the entrypoint script
-
-The storage holds the same data as the local deployment: configuration, auth state, skills, plugins, memory, and scheduler state.
+Unlike Local Docker (which uses Docker named volumes), the ACA runtime container does not mount persistent external storage by default. Configuration, auth state, and runtime data are seeded at startup from environment variables and ACA secrets. For persistent state across redeployments, use the admin container's `.env` file and re-run the deployer when needed.

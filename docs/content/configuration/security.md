@@ -84,7 +84,7 @@ Azure Communication Services callback requests include a JWT token that is valid
 1. User sees the **Disclaimer** screen on first visit
 2. After accepting, the **Login** screen appears
 3. User enters `ADMIN_SECRET`
-4. Frontend calls `GET /api/auth/check` with the token
+4. Frontend calls `POST /api/auth/check` with the token
 5. On success, token is stored in `localStorage`
 6. All subsequent API calls include the Bearer header
 7. If identity is not configured, the user is redirected to the Setup Wizard

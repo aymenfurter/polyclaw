@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { api } from '../api'
-import { IconPanelLeft, IconChevronDown, IconPalette, IconSliders, IconUser } from './Icons'
+import { IconPanelLeft, IconChevronDown, IconPalette, IconSliders, IconUser, IconShield, IconActivity } from './Icons'
 import type { AgentProfile } from '../types'
 
 interface Props {
@@ -12,6 +12,8 @@ const LINKS = [
   { path: '/customization', label: 'Customization', Icon: IconPalette },
   { path: '/messaging', label: 'Messaging', Icon: IconSliders },
   { path: '/infrastructure', label: 'Infrastructure', Icon: IconSliders },
+  { path: '/guardrails', label: 'Hardening', Icon: IconShield },
+  { path: '/tool-activity', label: 'Tool Activity', Icon: IconActivity },
   { path: '/profile', label: 'Agent Profile', Icon: IconUser },
 ] as const
 

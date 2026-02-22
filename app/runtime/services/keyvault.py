@@ -130,7 +130,8 @@ class KeyVaultClient:
             from azure.identity import DefaultAzureCredential
             from azure.keyvault.secrets import SecretClient
 
-            self._client = SecretClient(vault_url=url, credential=DefaultAzureCredential())
+            credential = DefaultAzureCredential(connection_timeout=10)
+            self._client = SecretClient(vault_url=url, credential=credential)
             self._url = url
             logger.info("Key Vault enabled: %s", url)
         except Exception:
@@ -207,17 +208,26 @@ kv = KeyVaultClient()
 def resolve_if_kv_ref(value: str) -> str:
     """Resolve a ``@kv:secret-name`` reference, returning the original value if not a ref.
 
-    If the value looks like a KV reference but Key Vault is unavailable,
-    returns ``""`` so the raw reference string never leaks into config
-    values (e.g. being used as a Telegram token).
+    If the value looks like a KV reference but Key Vault is unavailable or
+    resolution fails, returns ``""`` so the raw reference string never
+    leaks into config values (e.g. being used as a Telegram token).
     """
     if is_kv_ref(value):
         if not kv.enabled:
-            logger.error(
-                "Cannot resolve Key Vault reference %r -- Key Vault is not configured. "
-                "Returning empty string to prevent the raw reference from leaking.",
+            logger.debug(
+                "Key Vault reference %r skipped -- KV not configured. "
+                "Returning empty string.",
                 value,
             )
             return ""
-        return kv.resolve_value(value)
+        try:
+            return kv.resolve_value(value)
+        except Exception:
+            logger.error(
+                "Failed to resolve Key Vault reference %r. "
+                "Returning empty string to prevent the raw reference from leaking.",
+                value,
+                exc_info=True,
+            )
+            return ""
     return value

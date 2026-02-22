@@ -25,8 +25,8 @@ Polyclaw supports an extensive set of slash commands, shared between Bot Framewo
 | Command | Description |
 |---|---|
 | `/skills` | List all available skills |
-| `/addskill <name>` | Add a skill to the current session |
-| `/removeskill <name>` | Remove a skill from the session |
+| `/addskill <name>` | Install a skill from the catalog |
+| `/removeskill <name>` | Uninstall an installed skill |
 
 ## Plugin Commands
 
@@ -41,10 +41,10 @@ Polyclaw supports an extensive set of slash commands, shared between Bot Framewo
 | Command | Description |
 |---|---|
 | `/mcp` | List all MCP servers |
-| `/mcp enable <id>` | Enable an MCP server |
-| `/mcp disable <id>` | Disable an MCP server |
+| `/mcp enable <name>` | Enable an MCP server |
+| `/mcp disable <name>` | Disable an MCP server |
 | `/mcp add <name> <url>` | Add an MCP server |
-| `/mcp remove <id>` | Remove an MCP server |
+| `/mcp remove <name>` | Remove an MCP server |
 
 ## Schedule Commands
 
@@ -84,7 +84,7 @@ Polyclaw supports an extensive set of slash commands, shared between Bot Framewo
 | `/status` | Show system status |
 | `/help` | Show command help |
 | `/preflight` | Run preflight checks |
-| `/change` | Show recent changes |
+| `/change` | Browse recent sessions |
 | `/lockdown on/off` | Enable/disable lockdown mode |
 
 ## Command Processing

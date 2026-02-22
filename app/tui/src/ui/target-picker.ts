@@ -80,7 +80,7 @@ async function showPicker(
 
     const options: TargetOption[] = [
       { id: "docker", label: "Local Docker", description: "Build and run locally (default)", available: true },
-      { id: "aca", label: "Azure Container Apps", description: "Deploy to Azure (persistent, cloud-hosted)", available: false, detail: "Checking..." },
+      { id: "aca", label: "Azure Container Apps \x1b[32m(experimental)\x1b[0m", description: "Deploy to Azure (persistent, cloud-hosted)", available: false, detail: "Checking..." },
     ];
 
     const renderer = await createCliRenderer({

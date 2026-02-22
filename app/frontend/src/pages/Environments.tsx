@@ -68,7 +68,7 @@ export function EnvironmentsContent() {
         <p className="text-muted">No deployments registered. Deployments are automatically tracked when you provision infrastructure.</p>
       )}
 
-      {deployments.length > 0 && (
+      {deployments.filter(d => d.resource_count > 0).length > 0 && (
         <div className="table-container">
           <table className="table">
             <thead>
@@ -82,7 +82,7 @@ export function EnvironmentsContent() {
               </tr>
             </thead>
             <tbody>
-              {deployments.map(d => (
+              {deployments.filter(d => d.resource_count > 0).map(d => (
                 <tr key={d.deploy_id} className={selectedId === d.deploy_id ? 'table__row--selected' : ''} onClick={() => loadDetail(d.deploy_id)} style={{ cursor: 'pointer' }}>
                   <td><code>{d.deploy_id}</code></td>
                   <td><code>{d.tag}</code></td>

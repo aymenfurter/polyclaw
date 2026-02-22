@@ -7,7 +7,7 @@ canonifyURLs   = true
 
 [params]
   description = "Autonomous AI copilot powered by GitHub Copilot SDK"
-  version     = "4.0.0"
+  version     = "5.0.0"
   github      = "https://github.com/aymenfurter/polyclaw"
 
 [markup]

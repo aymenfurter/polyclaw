@@ -1,0 +1,46 @@
+services:
+  admin:
+    build: .
+    image: polyclaw
+    container_name: polyclaw-admin
+    environment:
+      POLYCLAW_MODE: admin
+      POLYCLAW_DATA_DIR: /data
+      ADMIN_PORT: "9090"
+      RUNTIME_URL: "http://runtime:8080"
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - polyclaw-admin-home:/admin-home
+      - polyclaw-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  runtime:
+    image: polyclaw
+    build: .
+    container_name: polyclaw-runtime
+    environment:
+      POLYCLAW_MODE: runtime
+      POLYCLAW_DATA_DIR: /data
+      ADMIN_PORT: "8080"
+    ports:
+      - "3978:3978"
+    volumes:
+      - polyclaw-data:/data
+    depends_on:
+      admin:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  polyclaw-admin-home:
+    name: polyclaw-admin-home
+  polyclaw-data:
+    name: polyclaw-data

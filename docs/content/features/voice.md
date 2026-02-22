@@ -43,11 +43,16 @@ The voice session uses a separate system prompt optimized for spoken conversatio
 Voice is provisioned through the TUI or web dashboard. The required resources are:
 
 - An Azure Communication Services resource with a purchased phone number (the caller ID).
-- An Azure OpenAI resource with a Realtime model deployment (e.g. `gpt-4o-realtime-preview`).
+- An Azure OpenAI resource with a Realtime model deployment (e.g. `gpt-realtime-mini`, configured via `AZURE_OPENAI_REALTIME_DEPLOYMENT`).
 - Network connectivity between ACS and the polyclaw server (via tunnel or public endpoint).
 
 ![Voice call configuration](/screenshots/web-infra-voice.png)
 
 ## Security
 
-ACS callback requests are authenticated with RS256 JWT tokens validated against the ACS resource endpoint. The agent's voice tool calls the internal API over localhost with Bearer auth, so even if the raw endpoint accepts an arbitrary number, the LLM tool schema does not expose one -- the agent can only dial the pre-configured target.
+ACS callback requests go through two authentication layers:
+
+1. **Query-param token** -- a shared secret appended to every callback URL. Requests without the correct token are rejected immediately.
+2. **RS256 JWT** -- when a `Bearer` token is present, the signature is verified against Microsoft's hosted JWKS (`https://acscallautomation.communication.azure.com/calling/keys`). The JWT audience (the ACS resource ID) is auto-learned from the first signature-verified request so no manual configuration is required.
+
+The agent's voice tool calls the internal API over localhost with Bearer auth, so even if the raw endpoint accepts an arbitrary number, the LLM tool schema does not expose one -- the agent can only dial the pre-configured target.

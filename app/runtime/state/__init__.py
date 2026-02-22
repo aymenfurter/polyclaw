@@ -10,6 +10,7 @@ from .proactive import ProactiveStore, get_proactive_store
 from .profile import get_full_profile, load_profile, save_profile
 from .sandbox_config import SandboxConfigStore
 from .session_store import SessionStore
+from .tool_activity_store import ToolActivityStore, get_tool_activity_store
 
 __all__ = [
     "DeployStateStore",
@@ -22,9 +23,11 @@ __all__ = [
     "ProactiveStore",
     "SandboxConfigStore",
     "SessionStore",
+    "ToolActivityStore",
     "get_full_profile",
     "get_memory",
     "get_proactive_store",
+    "get_tool_activity_store",
     "load_profile",
     "save_profile",
 ]

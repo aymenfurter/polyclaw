@@ -84,9 +84,15 @@ class Scheduler:
     def __init__(self, path: Path | None = None) -> None:
         self._store = _TaskStore(path or cfg.scheduler_db_path)
         self._notify: Callable[[str], Awaitable[None]] | None = None
+        self._hitl_interceptor: Any | None = None  # shared HitlInterceptor from Agent
+        self._active_interceptor: Any | None = None  # per-task interceptor
 
     def set_notify_callback(self, cb: Callable[[str], Awaitable[None]]) -> None:
         self._notify = cb
+
+    def set_hitl_interceptor(self, hitl: Any) -> None:
+        """Bind the shared HitlInterceptor for access to AITL/filter/phone."""
+        self._hitl_interceptor = hitl
 
     def add(
         self,
@@ -119,6 +125,27 @@ class Scheduler:
 
     def list_tasks(self) -> list[ScheduledTask]:
         return list(self._store.items.values())
+
+    # ------------------------------------------------------------------
+    # Background HITL approval bridge
+    # ------------------------------------------------------------------
+
+    @property
+    def has_pending_approval(self) -> bool:
+        """Whether a running scheduled task is waiting for HITL approval."""
+        return (
+            self._active_interceptor is not None
+            and self._active_interceptor.has_pending_approval
+        )
+
+    def resolve_pending_approval(self, text: str) -> bool:
+        """Resolve a pending scheduled-task approval with the user's reply.
+
+        Returns ``True`` if a pending approval was found and resolved.
+        """
+        if self._active_interceptor is None:
+            return False
+        return self._active_interceptor.resolve_bot_reply(text)
 
     def get(self, task_id: str) -> ScheduledTask | None:
         return self._store.items.get(task_id)
@@ -229,6 +256,8 @@ class Scheduler:
                 await self._send_notification(task, result)
             except Exception as exc:
                 logger.error("[scheduler] task %s failed: %s", task.id, exc, exc_info=True)
+            finally:
+                self._active_interceptor = None
 
     async def _spawn_session(self, task: ScheduledTask) -> str | None:
         from .agent.tools import get_all_tools
@@ -243,7 +272,44 @@ class Scheduler:
             model=SCHEDULED_MODEL,
             system_message=system_message,
             tools=get_all_tools(),
+            on_pre_tool_use=self._make_background_hook(SCHEDULED_MODEL),
         )
+
+    def _make_background_hook(self, model: str) -> Callable[..., Any]:
+        """Build a guardrails-aware pre-tool-use hook for background sessions.
+
+        Creates a fresh ``HitlInterceptor`` with ``execution_context``
+        set to ``"background"``.  The scheduler's notification callback is
+        bound as ``bot_reply_fn`` so that HITL approval requests are sent
+        to the user via proactive messaging.  The user's reply is routed
+        back through ``resolve_pending_approval`` (called by ``bot.py``).
+
+        PITL works if a ``PhoneVerifier`` is configured on the shared
+        interceptor.  AITL and Prompt Shields are also forwarded.
+        """
+        from .agent.hitl import HitlInterceptor
+        from .state.guardrails_config import get_guardrails_config
+
+        store = get_guardrails_config()
+        interceptor = HitlInterceptor(store)
+        interceptor.set_execution_context("scheduler")
+        interceptor.set_model(model)
+
+        # Bind notification channel so HITL can interact with the user.
+        if self._notify:
+            interceptor.set_bot_reply_fn(self._notify)
+
+        # Forward AITL / Prompt Shield / phone from the shared interceptor.
+        if self._hitl_interceptor:
+            if getattr(self._hitl_interceptor, "_aitl_reviewer", None):
+                interceptor.set_aitl_reviewer(self._hitl_interceptor._aitl_reviewer)
+            if getattr(self._hitl_interceptor, "_prompt_shield", None):
+                interceptor.set_prompt_shield(self._hitl_interceptor._prompt_shield)
+            if getattr(self._hitl_interceptor, "_phone_verifier", None):
+                interceptor.set_phone_verifier(self._hitl_interceptor._phone_verifier)
+
+        self._active_interceptor = interceptor
+        return interceptor.on_pre_tool_use
 
     async def _send_notification(self, task: ScheduledTask, result: str | None) -> None:
         if not self._notify:

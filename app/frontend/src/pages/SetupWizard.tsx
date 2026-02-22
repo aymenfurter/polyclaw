@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { showToast } from '../components/Toast'
-import type { SetupStatus, SandboxConfig, FoundryIQConfig } from '../types'
+import type { SetupStatus, SandboxConfig, FoundryIQConfig, ContentSafetyConfig } from '../types'
 
 type Step = 'azure' | 'github' | 'config' | 'deploy'
 
@@ -24,11 +24,13 @@ export default function SetupWizard() {
   const [status, setStatus] = useState<SetupStatus | null>(null)
   const [currentStep, setCurrentStep] = useState<Step>('azure')
   const [loading, setLoading] = useState<Record<string, boolean>>({})
+  const manualStepRef = useRef(false)
 
   // Optional infra state
   const [voiceConfig, setVoiceConfig] = useState<VoiceConfig | null>(null)
   const [sandboxConfig, setSandboxConfig] = useState<SandboxConfig | null>(null)
   const [foundryConfig, setFoundryConfig] = useState<FoundryIQConfig | null>(null)
+  const [contentSafetyConfig, setContentSafetyConfig] = useState<ContentSafetyConfig | null>(null)
 
   // Device code state
   const [azureDevice, setAzureDevice] = useState<{ code: string; url: string } | null>(null)
@@ -41,14 +43,17 @@ export default function SetupWizard() {
     try {
       const s = await api<SetupStatus>('setup/status')
       setStatus(s)
-      // Auto-advance steps (skip if device code flow active)
-      if (!azureDeviceRef.current && s.azure?.logged_in && currentStep === 'azure') setCurrentStep('github')
-      if (!githubDeviceRef.current && s.azure?.logged_in && s.copilot?.authenticated && currentStep === 'github') setCurrentStep('config')
+      // Auto-advance steps (skip if device code flow active or user clicked a step)
+      if (!manualStepRef.current) {
+        if (!azureDeviceRef.current && s.azure?.logged_in && currentStep === 'azure') setCurrentStep('github')
+        if (!githubDeviceRef.current && s.azure?.logged_in && s.copilot?.authenticated && currentStep === 'github') setCurrentStep('config')
+      }
     } catch { /* ignore */ }
     // Load optional infra status
     try { setVoiceConfig(await api<VoiceConfig>('setup/voice/config')) } catch { /* ignore */ }
     try { setSandboxConfig(await api<SandboxConfig>('sandbox/config')) } catch { /* ignore */ }
     try { setFoundryConfig(await api<FoundryIQConfig>('foundry-iq/config')) } catch { /* ignore */ }
+    try { setContentSafetyConfig(await api<ContentSafetyConfig>('content-safety/status')) } catch { /* ignore */ }
   }, [currentStep])
 
   useEffect(() => { refresh() }, [refresh])
@@ -72,10 +77,14 @@ export default function SetupWizard() {
     }, 1000)
   }
 
-  const handleAzureLogin = async () => {
+  const handleAzureLogin = async (force?: boolean) => {
     setLoading(p => ({ ...p, azure: true }))
     azureDeviceRef.current = true
     try {
+      // When re-authenticating, log out first so the backend starts a fresh device flow
+      if (force) {
+        await api('setup/azure/logout', { method: 'POST' }).catch(() => {})
+      }
       const r = await api<{ status: string; code?: string; url?: string; message?: string }>('setup/azure/login', { method: 'POST' })
       if (r.status === 'already_logged_in') {
         showToast('Already signed in to Azure', 'success')
@@ -182,7 +191,7 @@ export default function SetupWizard() {
               <button
                 key={step.key}
                 className={`setup__step ${currentStep === step.key ? 'setup__step--active' : ''} ${done ? 'setup__step--done' : ''}`}
-                onClick={() => setCurrentStep(step.key)}
+                onClick={() => { manualStepRef.current = true; setCurrentStep(step.key) }}
               >
                 <span className="setup__step-num">{done ? '\u2713' : i + 1}</span>
                 <span className="setup__step-label">{step.label}</span>
@@ -219,10 +228,15 @@ export default function SetupWizard() {
                   {status.azure.subscription && (
                     <p className="text-muted">Subscription: {status.azure.subscription}</p>
                   )}
-                  <button className="btn btn--secondary" onClick={() => setCurrentStep('github')}>Continue</button>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button className="btn btn--secondary" onClick={() => { manualStepRef.current = false; setCurrentStep('github') }}>Continue</button>
+                    <button className="btn btn--outline" onClick={() => handleAzureLogin(true)} disabled={loading.azure}>
+                      {loading.azure ? 'Starting...' : 'Re-authenticate'}
+                    </button>
+                  </div>
                 </div>
               ) : (
-                <button className="btn btn--primary" onClick={handleAzureLogin} disabled={loading.azure}>
+                <button className="btn btn--primary" onClick={() => handleAzureLogin()} disabled={loading.azure}>
                   {loading.azure ? 'Starting...' : 'Sign in with Azure CLI'}
                 </button>
               )}
@@ -255,7 +269,12 @@ export default function SetupWizard() {
                   {status.copilot.username && (
                     <p className="text-muted">User: {status.copilot.username}</p>
                   )}
-                  <button className="btn btn--secondary" onClick={() => setCurrentStep('config')}>Continue</button>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button className="btn btn--secondary" onClick={() => { manualStepRef.current = false; setCurrentStep('config') }}>Continue</button>
+                    <button className="btn btn--outline" onClick={handleCopilotLogin} disabled={loading.github}>
+                      {loading.github ? 'Starting...' : 'Re-authenticate'}
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div>
@@ -365,6 +384,21 @@ export default function SetupWizard() {
             <p className="setup__optional-desc">Provision additional Azure resources. These are not required to use polyclaw.</p>
 
             <div className="setup__optional-grid">
+              <div className="setup__opt-row">
+                <div className="setup__opt-info">
+                  <span className="setup__opt-name">Content Safety <span className="badge badge--warn badge--sm">Recommended</span></span>
+                  <span className="setup__opt-desc">Prompt Shields injection detection</span>
+                </div>
+                {contentSafetyConfig?.deployed
+                  ? <span className="badge badge--ok">Deployed</span>
+                  : <button className="btn btn--secondary btn--sm" disabled={loading.contentSafety} onClick={async () => {
+                      setLoading(p => ({ ...p, contentSafety: true }))
+                      try { await api('content-safety/deploy', { method: 'POST' }); showToast('Content Safety deployed', 'success'); await refresh() }
+                      catch (e: any) { showToast(e.message, 'error') }
+                      setLoading(p => ({ ...p, contentSafety: false }))
+                    }}>{loading.contentSafety ? 'Deploying...' : 'Deploy'}</button>}
+              </div>
+
               <div className="setup__opt-row">
                 <div className="setup__opt-info">
                   <span className="setup__opt-name">Voice Calling</span>
