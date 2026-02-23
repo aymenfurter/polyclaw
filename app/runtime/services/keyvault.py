@@ -205,6 +205,16 @@ class KeyVaultClient:
 kv = KeyVaultClient()
 
 
+def _reset_kv() -> None:
+    """Reset the module-level Key Vault singleton (for test isolation)."""
+    kv.reinit()
+
+
+from ..util.singletons import register_singleton  # noqa: E402
+
+register_singleton(_reset_kv)
+
+
 def resolve_if_kv_ref(value: str) -> str:
     """Resolve a ``@kv:secret-name`` reference, returning the original value if not a ref.
 

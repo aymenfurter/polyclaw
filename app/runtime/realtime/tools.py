@@ -13,6 +13,7 @@ from enum import StrEnum
 from typing import Any
 
 from ..config.settings import cfg
+from ..util.singletons import register_singleton
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,9 @@ def get_task_store() -> TaskStore:
 def _reset_task_store() -> None:
     global _task_store
     _task_store = None
+
+
+register_singleton(_reset_task_store)
 
 
 INVOKE_AGENT_SCHEMA = {
@@ -239,12 +243,11 @@ def _make_realtime_hook(
     guardrails policies are respected during voice-initiated tasks.
     """
     from ..agent.hitl import HitlInterceptor
-    from ..state.guardrails_config import get_guardrails_config
+    from ..state.guardrails.config import get_guardrails_config
 
     store = get_guardrails_config()
     interceptor = HitlInterceptor(store)
-    interceptor.set_execution_context("realtime")
-    interceptor.set_model(_REALTIME_MODEL)
+    interceptor.bind_turn(execution_context="realtime", model=_REALTIME_MODEL)
 
     # Forward AITL / Prompt Shield / phone from the shared interceptor.
     shared_hitl = getattr(agent, "hitl_interceptor", None)

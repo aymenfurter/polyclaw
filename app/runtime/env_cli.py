@@ -7,8 +7,8 @@ import json
 import sys
 from dataclasses import asdict
 
-from .services.azure import AzureCLI
-from .services.misconfig_checker import MisconfigChecker
+from .services.cloud.azure import AzureCLI
+from .services.security.misconfig_checker import MisconfigChecker
 from .services.resource_tracker import ResourceTracker
 from .state.deploy_state import DeployStateStore
 

@@ -29,7 +29,7 @@ class JsonStore:
         try:
             return json.loads(self._path.read_text())
         except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("Failed to load %s: %s", self._path, exc)
+            logger.warning("Failed to load %s: %s", self._path, exc, exc_info=True)
             return self._default_copy()
 
     def save(self, data: Any) -> None:

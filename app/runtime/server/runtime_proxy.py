@@ -65,8 +65,11 @@ async def _proxy_http(
                 body=response_body,
                 headers=resp_headers,
             )
+    except (aiohttp.ClientConnectorError, aiohttp.ClientOSError, OSError):
+        logger.debug("[proxy.http] runtime unreachable: %s", target_url)
+        raise web.HTTPBadGateway(text="Runtime container unreachable")
     except Exception:
-        logger.warning("[proxy.http] runtime unreachable: %s", target_url, exc_info=True)
+        logger.warning("[proxy.http] runtime proxy error: %s", target_url, exc_info=True)
         raise web.HTTPBadGateway(text="Runtime container unreachable")
 
 

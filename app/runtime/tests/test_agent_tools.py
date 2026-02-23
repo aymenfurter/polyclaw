@@ -150,7 +150,7 @@ class TestListScheduledTasks:
 
 
 class TestMakeVoiceCallTool:
-    @patch("app.runtime.agent.tools.cfg")
+    @patch("app.runtime.agent.tools.voice.cfg")
     def test_no_target_number(self, mock_cfg):
         from app.runtime.agent.tools import make_voice_call
 
@@ -158,8 +158,8 @@ class TestMakeVoiceCallTool:
         result = _call_tool(make_voice_call, {"prompt": "hi"})
         assert result["status"] == "error"
 
-    @patch("app.runtime.agent.tools.threading.Thread")
-    @patch("app.runtime.agent.tools.cfg")
+    @patch("app.runtime.agent.tools.voice.threading.Thread")
+    @patch("app.runtime.agent.tools.voice.cfg")
     def test_with_target_number(self, mock_cfg, mock_thread):
         from app.runtime.agent.tools import make_voice_call
 

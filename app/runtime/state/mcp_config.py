@@ -195,7 +195,9 @@ class McpConfigStore:
             if dirty:
                 self._save()
         except Exception as exc:
-            logger.warning("Failed to load MCP config from %s: %s", self._path, exc)
+            logger.warning(
+                "Failed to load MCP config from %s: %s", self._path, exc, exc_info=True,
+            )
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

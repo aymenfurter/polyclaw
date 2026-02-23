@@ -31,6 +31,11 @@ def _reset_otel_state() -> None:
     _otel_active = False
 
 
+from ..util.singletons import register_singleton  # noqa: E402
+
+register_singleton(_reset_otel_state)
+
+
 def configure_otel(
     connection_string: str,
     *,

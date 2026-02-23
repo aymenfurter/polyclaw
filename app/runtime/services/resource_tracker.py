@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..state.deploy_state import TAG_PREFIX, DeployStateStore
-from .azure import AzureCLI
+from .cloud.azure import AzureCLI
 
 logger = logging.getLogger(__name__)
 

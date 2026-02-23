@@ -6,7 +6,7 @@ import logging
 
 from aiohttp import web
 
-from ...services.security_preflight import SecurityPreflightChecker
+from ...services.security.security_preflight import SecurityPreflightChecker
 from ...util.async_helpers import run_sync
 
 logger = logging.getLogger(__name__)

@@ -3,31 +3,24 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from aiohttp import web
 
-from ...agent.tools import get_all_tools
 from ...registries.skills import SkillRegistry
-from ...state.guardrails_config import (
+from ...state.guardrails import (
     GuardrailsConfigStore,
     list_model_tiers,
     list_presets,
 )
 from ...state.mcp_config import McpConfigStore
-
-logger = logging.getLogger(__name__)
-
-_BUILTIN_SDK_TOOLS: list[dict[str, str]] = [
-    {"name": "create", "source": "sdk", "description": "Create a new file"},
-    {"name": "edit", "source": "sdk", "description": "Edit an existing file"},
-    {"name": "view", "source": "sdk", "description": "View file contents"},
-    {"name": "grep", "source": "sdk", "description": "Search file contents"},
-    {"name": "glob", "source": "sdk", "description": "Find files by pattern"},
-    {"name": "run", "source": "sdk", "description": "Run a shell command"},
-    {"name": "bash", "source": "sdk", "description": "Run a bash command"},
-    {"name": "report_intent", "source": "sdk", "description": "Log agent intent (always auto-approved)"},
-]
+from .guardrails_routes_meta import (
+    collect_tools,
+    get_template_handler,
+    list_contexts_handler,
+    list_templates_handler,
+)
 
 
 class GuardrailsRoutes:
@@ -57,81 +50,87 @@ class GuardrailsRoutes:
         router.add_post("/api/guardrails/model-columns", self._add_model_column)
         router.add_delete("/api/guardrails/model-columns/{model}", self._remove_model_column)
         router.add_put("/api/guardrails/model-policies/{model}/{ctx}/{tool_id}", self._set_model_policy)
-        router.add_get("/api/guardrails/contexts", self._list_contexts)
+        router.add_get("/api/guardrails/contexts", list_contexts_handler)
         router.add_get("/api/guardrails/presets", self._list_presets)
         router.add_post("/api/guardrails/presets/{preset_id}", self._apply_preset)
         router.add_post("/api/guardrails/set-all", self._set_all)
         router.add_post("/api/guardrails/model-defaults", self._apply_model_defaults)
         router.add_get("/api/guardrails/model-tiers", self._list_model_tiers)
-        router.add_get("/api/guardrails/templates", self._list_templates)
-        router.add_get("/api/guardrails/templates/{name}", self._get_template)
+        router.add_get("/api/guardrails/templates", list_templates_handler)
+        router.add_get("/api/guardrails/templates/{name}", get_template_handler)
         router.add_get("/api/guardrails/background-agents", self._list_background_agents)
         router.add_get("/api/guardrails/policy-yaml", self._get_policy_yaml)
         router.add_put("/api/guardrails/policy-yaml", self._put_policy_yaml)
+
+    @staticmethod
+    def _apply_validated_field(
+        data: dict[str, Any],
+        key: str,
+        setter: Callable[[Any], None],
+    ) -> web.Response | None:
+        """Apply a data field via *setter*, returning a 400 on ValueError."""
+        if key not in data:
+            return None
+        try:
+            setter(data[key])
+        except ValueError as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)}, status=400,
+            )
+        return None
 
     async def _get_config(self, _req: web.Request) -> web.Response:
         return web.json_response({"status": "ok", **self._store.to_dict()})
 
     async def _update_config(self, req: web.Request) -> web.Response:
         data = await req.json()
-        # Accept both frontend ('enabled') and backend ('hitl_enabled') field names.
+
+        # Boolean fields (no validation needed)
         if "enabled" in data:
             self._store.set_hitl_enabled(bool(data["enabled"]))
         if "hitl_enabled" in data:
             self._store.set_hitl_enabled(bool(data["hitl_enabled"]))
-        # Accept both 'default_strategy' (frontend) and 'default_action' (backend).
-        if "default_strategy" in data:
-            try:
-                self._store.set_default_action(data["default_strategy"])
-            except ValueError as exc:
-                return web.json_response(
-                    {"status": "error", "message": str(exc)}, status=400
-                )
-        if "default_action" in data:
-            try:
-                self._store.set_default_action(data["default_action"])
-            except ValueError as exc:
-                return web.json_response(
-                    {"status": "error", "message": str(exc)}, status=400
-                )
-        # Accept both 'hitl_channel' (frontend) and 'default_channel' (backend).
-        if "hitl_channel" in data:
-            try:
-                self._store.set_default_channel(data["hitl_channel"])
-            except ValueError as exc:
-                return web.json_response(
-                    {"status": "error", "message": str(exc)}, status=400
-                )
-        if "default_channel" in data:
-            try:
-                self._store.set_default_channel(data["default_channel"])
-            except ValueError as exc:
-                return web.json_response(
-                    {"status": "error", "message": str(exc)}, status=400
-                )
+
+        # Validated fields -- accept both frontend and backend key names
+        for key in ("default_strategy", "default_action"):
+            err = self._apply_validated_field(
+                data, key, self._store.set_default_action,
+            )
+            if err:
+                return err
+        for key in ("hitl_channel", "default_channel"):
+            err = self._apply_validated_field(
+                data, key, self._store.set_default_channel,
+            )
+            if err:
+                return err
+        err = self._apply_validated_field(
+            data, "filter_mode", self._store.set_filter_mode,
+        )
+        if err:
+            return err
+
+        # Simple fields (no validation)
         if "phone_number" in data:
             self._store.set_phone_number(data["phone_number"])
         if "aitl_model" in data:
             self._store.set_aitl_model(data["aitl_model"])
         if "aitl_spotlighting" in data:
             self._store.set_aitl_spotlighting(bool(data["aitl_spotlighting"]))
-        if "filter_mode" in data:
-            try:
-                self._store.set_filter_mode(data["filter_mode"])
-            except ValueError as exc:
-                return web.json_response(
-                    {"status": "error", "message": str(exc)}, status=400
-                )
         if "content_safety_endpoint" in data:
             self._store.set_content_safety_endpoint(data["content_safety_endpoint"])
+
+        # Context defaults (batch update)
         if "context_defaults" in data:
             for ctx, strategy in data["context_defaults"].items():
                 try:
                     self._store.set_context_default(ctx, strategy)
                 except ValueError as exc:
                     return web.json_response(
-                        {"status": "error", "message": str(exc)}, status=400
+                        {"status": "error", "message": str(exc)},
+                        status=400,
                     )
+
         # Single context_default update (used by Background Agents tab)
         if "context_default" in data:
             cd = data["context_default"]
@@ -143,10 +142,12 @@ class GuardrailsRoutes:
                         self._store.set_context_default(ctx, strategy)
                     except ValueError as exc:
                         return web.json_response(
-                            {"status": "error", "message": str(exc)}, status=400
+                            {"status": "error", "message": str(exc)},
+                            status=400,
                         )
                 else:
                     self._store.remove_context_default(ctx)
+
         return web.json_response({"status": "ok", **self._store.to_dict()})
 
     async def _list_rules(self, _req: web.Request) -> web.Response:
@@ -250,7 +251,7 @@ class GuardrailsRoutes:
 
     async def _list_tools(self, _req: web.Request) -> web.Response:
         """Return all tools and MCP servers available to the agent."""
-        tools = self._collect_tools()
+        tools = collect_tools()
         mcps = self._collect_mcps()
         return web.json_response({
             "status": "ok",
@@ -261,7 +262,7 @@ class GuardrailsRoutes:
     async def _list_inventory(self, _req: web.Request) -> web.Response:
         """Return a unified tool inventory for the policy matrix UI."""
         inventory: list[dict[str, Any]] = []
-        for t in self._collect_tools():
+        for t in collect_tools():
             inventory.append({
                 "id": t["name"],
                 "name": t["name"],
@@ -339,22 +340,6 @@ class GuardrailsRoutes:
             )
         return web.json_response({"status": "ok"})
 
-    def _collect_tools(self) -> list[dict[str, Any]]:
-        """Gather custom tools defined via @define_tool + built-in SDK tools."""
-        result: list[dict[str, Any]] = []
-        for t in get_all_tools():
-            name = getattr(t, "name", "") or getattr(t, "__name__", "unknown")
-            desc = getattr(t, "description", "") or ""
-            # Avoid using the class-level __doc__ which is the Tool repr
-            if not desc and hasattr(t, "__doc__") and t.__doc__:
-                first_line = t.__doc__.strip().split("\n")[0]
-                if not first_line.startswith("Tool("):
-                    desc = first_line
-            result.append({"name": name, "source": "custom", "description": desc})
-        for entry in _BUILTIN_SDK_TOOLS:
-            result.append(dict(entry))
-        return result
-
     def _collect_mcps(self) -> list[dict[str, Any]]:
         """Gather configured MCP servers."""
         return [
@@ -379,30 +364,6 @@ class GuardrailsRoutes:
             }
             for s in self._skills.list_installed()
         ]
-
-    async def _list_contexts(self, _req: web.Request) -> web.Response:
-        """Return available execution contexts, HITL channels, and strategies."""
-        return web.json_response({
-            "status": "ok",
-            "contexts": [
-                {"id": "interactive", "label": "Interactive", "description": "User is chatting via the web UI or TUI"},
-                {"id": "background", "label": "Background", "description": "Scheduled tasks and proactive loop"},
-                {"id": "voice", "label": "Voice", "description": "Realtime voice call sessions"},
-                {"id": "api", "label": "API", "description": "External API-triggered executions"},
-            ],
-            "channels": [
-                {"id": "chat", "label": "Chat", "description": "In-session WebSocket approval prompt"},
-                {"id": "phone", "label": "Phone Call", "description": "Outbound phone call verification via ACS"},
-            ],
-            "strategies": [
-                {"id": "allow", "label": "Allow", "description": "Pass through without review", "color": "var(--ok)"},
-                {"id": "deny", "label": "Deny", "description": "Block immediately", "color": "var(--err)"},
-                {"id": "hitl", "label": "HITL", "description": "Human-in-the-loop approval via chat", "color": "var(--blue)"},
-                {"id": "pitl", "label": "PITL (Experimental)", "description": "Phone-in-the-loop approval via outbound phone call (experimental)", "color": "var(--cyan, #22d3ee)"},
-                {"id": "aitl", "label": "AITL", "description": "AI-in-the-loop: background reviewer agent decides", "color": "var(--gold)"},
-                {"id": "filter", "label": "Filter", "description": "Content Safety Prompt Shields injection detection", "color": "var(--purple, #a78bfa)"},
-            ],
-        })
 
     async def _list_presets(self, _req: web.Request) -> web.Response:
         """Return available preset definitions with model-tier metadata."""
@@ -466,66 +427,9 @@ class GuardrailsRoutes:
             "models": list_model_tiers(),
         })
 
-    async def _list_templates(self, _req: web.Request) -> web.Response:
-        """Return the list of prompt template names."""
-        from pathlib import Path as _Path
-
-        from ...agent.prompt import _TEMPLATES_DIR
-
-        templates: list[dict[str, str]] = []
-        if _TEMPLATES_DIR.is_dir():
-            for f in sorted(_TEMPLATES_DIR.iterdir()):
-                if f.suffix == ".md":
-                    templates.append({
-                        "name": f.name,
-                        "size": str(f.stat().st_size),
-                    })
-        # Also include SOUL.md if it exists
-        from ...config.settings import cfg
-
-        if cfg.soul_path.exists():
-            templates.insert(0, {
-                "name": "SOUL.md",
-                "size": str(cfg.soul_path.stat().st_size),
-            })
-        return web.json_response({"status": "ok", "templates": templates})
-
-    async def _get_template(self, req: web.Request) -> web.Response:
-        """Fetch the content of a single prompt template."""
-        name = req.match_info["name"]
-        if ".." in name or "/" in name:
-            return web.json_response(
-                {"status": "error", "message": "invalid name"}, status=400
-            )
-        # Check SOUL.md first
-        if name == "SOUL.md":
-            from ...config.settings import cfg
-
-            if cfg.soul_path.exists():
-                return web.json_response({
-                    "status": "ok",
-                    "name": name,
-                    "content": cfg.soul_path.read_text(),
-                })
-            return web.json_response(
-                {"status": "error", "message": "not found"}, status=404
-            )
-        from ...agent.prompt import _TEMPLATES_DIR
-
-        path = _TEMPLATES_DIR / name
-        if not path.exists() or not path.suffix == ".md":
-            return web.json_response(
-                {"status": "error", "message": "not found"}, status=404
-            )
-        return web.json_response({
-            "status": "ok",
-            "name": name,
-            "content": path.read_text(),
-        })
-
     async def _list_background_agents(self, _req: web.Request) -> web.Response:
         """Return metadata for all background agents with current policy."""
-        from ...state.guardrails_config import list_background_agents
+        from ...state.guardrails import list_background_agents
 
         agents = list_background_agents()
         config = self._store.config

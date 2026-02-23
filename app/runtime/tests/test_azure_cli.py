@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.runtime.services.azure import AzureCLI
+from app.runtime.services.cloud.azure import AzureCLI
 from app.runtime.util.result import Result
 
 
@@ -156,7 +156,7 @@ class TestValidateTelegramToken:
         assert result.success is False
         assert "Cannot reach" in result.message
 
-    @patch("app.runtime.services.azure.sleep", return_value=None)
+    @patch("app.runtime.services.cloud.azure.sleep", return_value=None)
     @patch("urllib.request.urlopen")
     def test_404_not_retried(self, mock_urlopen, _mock_sleep) -> None:
         """A 404 means the bot doesn't exist -- it should NOT be retried."""
@@ -170,7 +170,7 @@ class TestValidateTelegramToken:
         # Only one attempt -- no retries on 404.
         assert mock_urlopen.call_count == 1
 
-    @patch("app.runtime.services.azure.sleep", return_value=None)
+    @patch("app.runtime.services.cloud.azure.sleep", return_value=None)
     @patch("urllib.request.urlopen")
     def test_retries_on_transient_502(self, mock_urlopen, _mock_sleep) -> None:
         """A transient 502 should be retried and succeed on the next attempt."""
@@ -202,7 +202,7 @@ class TestAzureCLIGetChannels:
     @patch.object(AzureCLI, "json")
     def test_no_config(self, mock_json) -> None:
         az = AzureCLI()
-        with patch("app.runtime.services.azure.cfg") as mock_cfg:
+        with patch("app.runtime.config.settings.cfg") as mock_cfg:
             mock_cfg.env = MagicMock()
             mock_cfg.env.read.return_value = ""
             result = az.get_channels()
@@ -214,7 +214,7 @@ class TestAzureCLIGetChannels:
             "properties": {"configuredChannels": ["webchat", "telegram"]}
         }
         az = AzureCLI()
-        with patch("app.runtime.services.azure.cfg") as mock_cfg:
+        with patch("app.runtime.config.settings.cfg") as mock_cfg:
             mock_cfg.env = MagicMock()
             mock_cfg.env.read.side_effect = lambda k: "rg" if k == "BOT_RESOURCE_GROUP" else "bot"
             result = az.get_channels()
@@ -225,7 +225,7 @@ class TestAzureCLIUpdateEndpoint:
     @patch.object(AzureCLI, "json")
     def test_not_configured(self, mock_json) -> None:
         az = AzureCLI()
-        with patch("app.runtime.services.azure.cfg") as mock_cfg:
+        with patch("app.runtime.config.settings.cfg") as mock_cfg:
             mock_cfg.env = MagicMock()
             mock_cfg.env.read.return_value = ""
             result = az.update_endpoint("https://example.com/api/messages")

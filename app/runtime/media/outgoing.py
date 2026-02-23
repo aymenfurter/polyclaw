@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import mimetypes
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -200,3 +201,45 @@ def read_error_details() -> list[dict]:
         except OSError:
             continue
     return details
+
+
+# -- inline response attachment extraction ----------------------------------
+
+_FILE_PATH_RE = re.compile(
+    r"(?:^|\s)(/[\w./-]+\.(?:" + "|".join(ext.lstrip(".") for ext in EXTENSION_TO_MIME) + r"))\b",
+    re.IGNORECASE,
+)
+
+
+def extract_outgoing_attachments(response: str) -> list[Attachment]:
+    """Scan LLM response text for file paths and return base64-encoded attachments."""
+    matches = _FILE_PATH_RE.findall(response)
+    attachments: list[Attachment] = []
+    seen: set[str] = set()
+
+    for file_path in matches:
+        if file_path in seen:
+            continue
+        seen.add(file_path)
+
+        p = Path(file_path)
+        if not p.is_file():
+            continue
+
+        content_type = EXTENSION_TO_MIME.get(p.suffix.lower())
+        if not content_type:
+            continue
+
+        try:
+            data = base64.b64encode(p.read_bytes()).decode("ascii")
+            attachments.append(
+                Attachment(
+                    name=p.name,
+                    content_type=content_type,
+                    content_url=f"data:{content_type};base64,{data}",
+                )
+            )
+        except Exception:
+            logger.exception("Failed to read media file %s", file_path)
+
+    return attachments

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.runtime.state.guardrails_config import (
+from app.runtime.state.guardrails import (
     _ALL_PRESET_TOOL_IDS,
     _MODEL_TIERS,
     PRESET_BALANCED,
@@ -136,10 +136,11 @@ class TestPresetPolicies:
         assert p["tool_policies"]["interactive"]["run"] == "hitl"
         assert p["tool_policies"]["interactive"]["bash"] == "hitl"
 
-    def test_balanced_denies_high_risk_in_background(self) -> None:
+    def test_balanced_aitl_terminal_voice_in_background(self) -> None:
         p = _build_preset_policies(PRESET_BALANCED)
-        assert p["tool_policies"]["background"]["run"] == "deny"
-        assert p["tool_policies"]["background"]["bash"] == "deny"
+        assert p["tool_policies"]["background"]["run"] == "aitl"
+        assert p["tool_policies"]["background"]["bash"] == "aitl"
+        assert p["tool_policies"]["background"]["make_voice_call"] == "aitl"
         assert p["tool_policies"]["background"]["mcp:github-mcp-server"] == "deny"
         assert p["tool_policies"]["background"]["mcp:azure-mcp-server"] == "deny"
 
@@ -152,10 +153,10 @@ class TestPresetPolicies:
         assert p["tool_policies"]["interactive"]["create"] == "filter"
         assert p["tool_policies"]["interactive"]["edit"] == "filter"
 
-    def test_balanced_filters_file_ops_in_background(self) -> None:
+    def test_balanced_aitl_file_ops_in_background(self) -> None:
         p = _build_preset_policies(PRESET_BALANCED)
-        assert p["tool_policies"]["background"]["create"] == "filter"
-        assert p["tool_policies"]["background"]["edit"] == "filter"
+        assert p["tool_policies"]["background"]["create"] == "aitl"
+        assert p["tool_policies"]["background"]["edit"] == "aitl"
 
     # ── Permissive ──
     def test_permissive_filters_most_in_interactive(self) -> None:
@@ -230,10 +231,10 @@ class TestApplyPreset:
         assert strong["background"]["run"] == "hitl"
         assert strong["interactive"]["mcp:microsoft-learn"] == "filter"
 
-        # Standard (balanced): view filtered, run hitl interactive / deny bg
+        # Standard (balanced): view filtered, run hitl interactive / aitl bg (override)
         assert standard["interactive"]["view"] == "filter"
         assert standard["interactive"]["run"] == "hitl"
-        assert standard["background"]["run"] == "deny"
+        assert standard["background"]["run"] == "aitl"
         assert standard["interactive"]["mcp:microsoft-learn"] == "filter"
 
         # Cautious (restrictive): run hitl interactive / deny bg, github deny bg
@@ -267,10 +268,10 @@ class TestApplyPreset:
         # MS Learn (low risk) -> filter everywhere
         assert cautious["interactive"]["mcp:microsoft-learn"] == "filter"
         assert cautious["background"]["mcp:microsoft-learn"] == "filter"
-        # Playwright (medium risk) -> hitl interactive / deny background
+        # Playwright (medium risk) -> hitl interactive / deny background (own-tier restrictive)
         assert cautious["interactive"]["mcp:playwright"] == "hitl"
         assert cautious["background"]["mcp:playwright"] == "deny"
-        # GitHub/Azure (high risk) -> hitl interactive / deny background
+        # GitHub/Azure (high risk) -> hitl interactive / deny background (own-tier restrictive)
         assert cautious["interactive"]["mcp:github-mcp-server"] == "hitl"
         assert cautious["background"]["mcp:github-mcp-server"] == "deny"
         assert cautious["interactive"]["mcp:azure-mcp-server"] == "hitl"
@@ -365,7 +366,7 @@ class TestBackgroundAgents:
     """Background agent metadata and resolve_action fallback."""
 
     def test_list_background_agents(self) -> None:
-        from app.runtime.state.guardrails_config import list_background_agents
+        from app.runtime.state.guardrails import list_background_agents
 
         agents = list_background_agents()
         ids = [a["id"] for a in agents]

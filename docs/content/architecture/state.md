@@ -20,7 +20,7 @@ Each chat session is persisted as a separate JSON file containing message histor
 | One file per session | Easy inspection and backup |
 | Archival policies | `24h`, `7d`, `30d`, `never` |
 | Session resume | Last 20 messages loaded as context |
-| Metadata | Model used, message count, timestamps |
+| Metadata | Model, title, message count, created/updated timestamps |
 
 ### Memory Store
 
@@ -35,7 +35,7 @@ Memory formation is triggered after `MEMORY_IDLE_MINUTES` (default: 5) of inacti
 
 ### Profile Store
 
-**File**: `profile.json`
+**File**: `agent_profile.json`
 
 Tracks the agent's identity and behavioral state:
 
@@ -46,9 +46,15 @@ Tracks the agent's identity and behavioral state:
 | `location` | Timezone context |
 | `emotional_state` | Current mood (affects responses) |
 | `preferences` | Communication style preferences |
-| `skill_usage` | Usage counts per skill |
-| `interaction_log` | Recent interaction timestamps |
-| `contribution_heatmap` | Activity by hour/day |
+
+Related data is stored in separate files:
+
+| File | Description |
+|---|---|
+| `skill_usage.json` | Usage counts per skill |
+| `interactions.json` | Recent interaction log (last 1 000 entries) |
+
+The `get_full_profile()` helper merges the profile with skill usage, per-day contribution counts, and activity statistics.
 
 ### MCP Config
 
@@ -73,9 +79,28 @@ Manages autonomous proactive messaging:
 |---|---|
 | `enabled` | Whether proactive messaging is active |
 | `pending` | Single pending message awaiting delivery |
-| `sent` | Last 100 sent messages |
+| `history` | Last 100 delivered messages with reactions |
 | `preferences` | Timing, frequency, and topic constraints |
-| `daily_count` | Messages sent today |
+
+The `messages_sent_today()` and `hours_since_last_sent()` methods compute daily counts and gap tracking from the history rather than persisting them as separate fields.
+
+### Guardrails Config
+
+**Files**: `guardrails.json`, `policy.yaml`
+
+Stores human-in-the-loop (HITL) approval rules, tool-level and context-level policies, model-specific overrides, and Content Safety settings. A YAML policy file is generated alongside the JSON and consumed by the `PolicyEngine` at runtime.
+
+### Monitoring Config
+
+**File**: `monitoring.json`
+
+Stores OpenTelemetry and Application Insights configuration including connection strings, sampling ratio, live metrics toggle, and provisioning metadata.
+
+### Tool Activity Store
+
+**File**: `tool_activity.jsonl`
+
+Append-only JSON-lines log of every tool invocation. Each entry records tool name, arguments, result, duration, risk score, and Content Safety shield results. Supports query, timeline, CSV export, and session-level breakdowns for audit.
 
 ### Other State Files
 
@@ -83,16 +108,16 @@ Manages autonomous proactive messaging:
 |---|---|
 | `SOUL.md` | Agent personality definition |
 | `scheduler.json` | Scheduled task definitions |
-| `deploy_state.json` | Deployment records |
-| `infra_config.json` | Infrastructure configuration |
-| `plugin_config.json` | Plugin enabled/disabled state |
-| `sandbox_config.json` | Sandbox configuration |
-| `foundry_iq_config.json` | Azure AI Foundry IQ settings |
-| `conversation_references.json` | Bot Framework conversation references |
+| `deployments.json` | Deployment records |
+| `infra.json` | Infrastructure configuration (bot, channels, voice) |
+| `plugins.json` | Plugin enabled/disabled state |
+| `sandbox.json` | Sandbox configuration and session pool metadata |
+| `foundry_iq.json` | Azure AI Foundry IQ / Search settings |
+| `conversation_refs.json` | Bot Framework conversation references |
 
 ## Design Principles
 
 - **No database required** -- everything is flat files for simplicity and portability
-- **Human-readable** -- JSON and Markdown files can be inspected and edited manually
+- **Human-readable** -- JSON, JSONL, and Markdown files can be inspected and edited manually
 - **Docker-friendly** -- mount `~/.polyclaw` as a volume for persistence
-- **Atomic writes** -- state modules use write-then-rename for crash safety
+- **Thread-safe I/O** -- shared stores use `threading.Lock` for concurrent access

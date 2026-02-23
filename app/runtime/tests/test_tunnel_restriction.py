@@ -18,7 +18,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from app.runtime.config import cfg
-from app.runtime.server.app import (
+from app.runtime.server.middleware import (
     _CF_HEADERS,
     _PUBLIC_EXACT,
     _PUBLIC_PREFIXES,

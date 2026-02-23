@@ -129,17 +129,26 @@ class DeployStateStore:
         return [d for d in self._deployments.values() if d.kind == kind]
 
     def current_local(self) -> DeploymentRecord | None:
-        local = [d for d in self._deployments.values() if d.kind == "local" and d.status == "active"]
+        local = [
+            d for d in self._deployments.values()
+            if d.kind == "local" and d.status == "active"
+        ]
         return max(local, key=lambda d: d.updated_at) if local else None
 
     def current_aca(self) -> DeploymentRecord | None:
-        aca = [d for d in self._deployments.values() if d.kind == "aca" and d.status == "active"]
+        aca = [
+            d for d in self._deployments.values()
+            if d.kind == "aca" and d.status == "active"
+        ]
         return max(aca, key=lambda d: d.updated_at) if aca else None
 
     def register(self, record: DeploymentRecord) -> None:
         self._deployments[record.deploy_id] = record
         self._save()
-        logger.info("Registered deployment %s (kind=%s, tag=%s)", record.deploy_id, record.kind, record.tag)
+        logger.info(
+            "Registered deployment %s (kind=%s, tag=%s)",
+            record.deploy_id, record.kind, record.tag,
+        )
 
     def update(self, record: DeploymentRecord) -> None:
         record.touch()
@@ -193,7 +202,9 @@ class DeployStateStore:
                 rec.resources = resources
                 self._deployments[did] = rec
         except Exception as exc:
-            logger.warning("Failed to load deploy state from %s: %s", self._path, exc)
+            logger.warning(
+                "Failed to load deploy state from %s: %s", self._path, exc, exc_info=True,
+            )
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

@@ -9,8 +9,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from app.runtime.server.routes.content_safety_routes import ContentSafetyRoutes
-from app.runtime.services.prompt_shield import ShieldResult
-from app.runtime.state.guardrails_config import GuardrailsConfigStore
+from app.runtime.services.security.prompt_shield import ShieldResult
+from app.runtime.state.guardrails import GuardrailsConfigStore
 
 
 def _build_app(routes: ContentSafetyRoutes) -> web.Application:

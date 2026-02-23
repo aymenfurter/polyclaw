@@ -8,7 +8,7 @@ from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from app.runtime.services.prompt_shield import (
+from app.runtime.services.security.prompt_shield import (
     PromptShieldService,
     _BearerTokenProvider,
 )

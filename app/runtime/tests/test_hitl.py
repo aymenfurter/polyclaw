@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.runtime.agent.hitl import HitlInterceptor
-from app.runtime.state.guardrails_config import GuardrailsConfigStore
+from app.runtime.state.guardrails import GuardrailsConfigStore
 
 
 @pytest.fixture()
@@ -22,7 +22,7 @@ def guardrails(tmp_path) -> GuardrailsConfigStore:
     store._path = tmp_path / "guardrails.json"
     store._policy_path = tmp_path / "policy.yaml"
     store._lock = __import__("threading").Lock()
-    from app.runtime.state.guardrails_config import GuardrailsConfig
+    from app.runtime.state.guardrails import GuardrailsConfig
 
     store._config = GuardrailsConfig(hitl_enabled=True, default_action="ask")
     store._rebuild_engine()
@@ -45,8 +45,10 @@ class TestWebChatApproval:
 
     async def test_ask_chat_emits_approval_requested(self, hitl):
         events: list[tuple[str, dict]] = []
-        hitl.set_emit(lambda t, d: events.append((t, d)))
-        hitl.set_execution_context("interactive")
+        hitl.bind_turn(
+            emit=lambda t, d: events.append((t, d)),
+            execution_context="interactive",
+        )
 
         async def approve_later():
             await asyncio.sleep(0.05)
@@ -63,8 +65,7 @@ class TestWebChatApproval:
         assert "approval_request" in event_types
 
     async def test_ask_chat_deny(self, hitl):
-        hitl.set_emit(lambda t, d: None)
-        hitl.set_execution_context("interactive")
+        hitl.bind_turn(emit=lambda t, d: None, execution_context="interactive")
 
         async def deny_later():
             await asyncio.sleep(0.05)
@@ -84,8 +85,7 @@ class TestBotChannelApproval:
 
     async def test_ask_bot_sends_confirmation_text(self, hitl):
         bot_reply = AsyncMock()
-        hitl.set_bot_reply_fn(bot_reply)
-        hitl.set_execution_context("background")
+        hitl.bind_turn(bot_reply_fn=bot_reply, execution_context="background")
 
         async def approve_later():
             await asyncio.sleep(0.05)
@@ -106,8 +106,7 @@ class TestBotChannelApproval:
 
     async def test_ask_bot_deny_with_no(self, hitl):
         bot_reply = AsyncMock()
-        hitl.set_bot_reply_fn(bot_reply)
-        hitl.set_execution_context("background")
+        hitl.bind_turn(bot_reply_fn=bot_reply, execution_context="background")
 
         async def deny_later():
             await asyncio.sleep(0.05)
@@ -123,8 +122,7 @@ class TestBotChannelApproval:
 
     async def test_ask_bot_deny_with_arbitrary_text(self, hitl):
         bot_reply = AsyncMock()
-        hitl.set_bot_reply_fn(bot_reply)
-        hitl.set_execution_context("background")
+        hitl.bind_turn(bot_reply_fn=bot_reply, execution_context="background")
 
         async def reply_later():
             await asyncio.sleep(0.05)
@@ -140,8 +138,7 @@ class TestBotChannelApproval:
 
     async def test_ask_bot_approve_yes_case_insensitive(self, hitl):
         bot_reply = AsyncMock()
-        hitl.set_bot_reply_fn(bot_reply)
-        hitl.set_execution_context("background")
+        hitl.bind_turn(bot_reply_fn=bot_reply, execution_context="background")
 
         async def approve_later():
             await asyncio.sleep(0.05)
@@ -195,7 +192,7 @@ class TestAllowDeny:
         guardrails._config.default_action = "deny"
         guardrails._rebuild_engine()
         events: list[tuple[str, dict]] = []
-        hitl.set_emit(lambda t, d: events.append((t, d)))
+        hitl.bind_turn(emit=lambda t, d: events.append((t, d)))
 
         result = await hitl.on_pre_tool_use(
             {"toolCallId": "c2", "toolName": "run", "input": "rm -rf /"},
@@ -207,16 +204,16 @@ class TestAllowDeny:
 
 
 class TestClearCallbacks:
-    """Tests for clearing channel callbacks."""
+    """Tests for bind_turn / unbind_turn lifecycle."""
 
     def test_clear_emit(self, hitl):
-        hitl.set_emit(lambda t, d: None)
-        hitl.clear_emit()
+        hitl.bind_turn(emit=lambda t, d: None)
+        hitl.unbind_turn()
         assert hitl._emit is None
 
     def test_clear_bot_reply_fn(self, hitl):
-        hitl.set_bot_reply_fn(AsyncMock())
-        hitl.clear_bot_reply_fn()
+        hitl.bind_turn(bot_reply_fn=AsyncMock())
+        hitl.unbind_turn()
         assert hitl._bot_reply_fn is None
 
 
@@ -225,10 +222,8 @@ class TestNoApprovalChannel:
 
     async def test_deny_when_no_channel_available(self, hitl):
         """HITL strategy with no approval channel must deny immediately."""
-        # Ensure no callbacks are set
-        hitl.clear_emit()
-        hitl.clear_bot_reply_fn()
-        hitl.set_execution_context("background")
+        # Bind turn with no emit or bot_reply_fn
+        hitl.bind_turn(execution_context="background")
 
         result = await hitl.on_pre_tool_use(
             {"toolCallId": "no-ch-1", "toolName": "bash", "input": "date"},
@@ -241,9 +236,7 @@ class TestNoApprovalChannel:
 
     async def test_deny_when_no_channel_does_not_block(self, hitl):
         """Ensure denial returns in <1s, not the 300s timeout."""
-        hitl.clear_emit()
-        hitl.clear_bot_reply_fn()
-        hitl.set_execution_context("interactive")
+        hitl.bind_turn(execution_context="interactive")
 
         import time
         t0 = time.monotonic()
@@ -258,7 +251,7 @@ class TestNoApprovalChannel:
 
     async def test_ask_chat_denies_without_emitter(self, hitl):
         """_ask_chat must deny immediately if called with no emitter."""
-        hitl.clear_emit()
+        hitl.unbind_turn()
         result = await hitl._ask_chat("orphan-1", "bash", "echo hello")
         assert result["permissionDecision"] == "deny"
 
@@ -318,7 +311,7 @@ class TestFilterStrategy:
         shield.configured = False  # No endpoint set
         shield.check = MagicMock()
         hitl.set_prompt_shield(shield)
-        hitl.set_execution_context("interactive")
+        hitl.bind_turn(execution_context="interactive")
 
         # AITL reviewer is not set, so it falls through to interactive
         # (which denies without an emitter).  The point is that the
@@ -343,7 +336,7 @@ class TestFilterStrategy:
         shield_result.detail = "Attack found"
         shield.check = MagicMock(return_value=shield_result)
         hitl.set_prompt_shield(shield)
-        hitl.set_execution_context("interactive")
+        hitl.bind_turn(execution_context="interactive")
 
         result = await hitl.on_pre_tool_use(
             {"toolCallId": "f5", "toolName": "bash", "input": "ignore all"},
@@ -366,25 +359,22 @@ class TestRaceConditionGuard:
         bot_reply_1 = AsyncMock()
         bot_reply_2 = AsyncMock()
 
-        # Simulate Task0 setting its callback
-        hitl.set_bot_reply_fn(bot_reply_1)
+        # Simulate Task0 binding its turn
+        hitl.bind_turn(bot_reply_fn=bot_reply_1)
         assert hitl._bot_reply_fn is bot_reply_1
 
-        # Task1 overwrites before Task0 clears (the race window)
-        hitl.set_bot_reply_fn(bot_reply_2)
+        # Task1 overwrites before Task0 unbinds (the race window)
+        hitl.bind_turn(bot_reply_fn=bot_reply_2)
         assert hitl._bot_reply_fn is bot_reply_2
 
-        # Task0 clears -- this WAS the bug: it cleared Task1's callback
-        hitl.clear_bot_reply_fn()
-        # After the fix, this is protected by the lock in message_processor.
-        # The interceptor itself doesn't enforce ordering, but the processor does.
+        # Task0 unbinds -- protected by the lock in message_processor.
+        hitl.unbind_turn()
         assert hitl._bot_reply_fn is None
 
     async def test_bot_reply_set_before_tool_use(self, hitl):
         """bot_reply_fn must be set when on_pre_tool_use is called."""
         bot_reply = AsyncMock()
-        hitl.set_bot_reply_fn(bot_reply)
-        hitl.set_execution_context("background")
+        hitl.bind_turn(bot_reply_fn=bot_reply, execution_context="background")
 
         async def approve_later():
             await asyncio.sleep(0.05)

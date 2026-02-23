@@ -63,7 +63,7 @@ class ProactiveStore:
             try:
                 self._data = json.loads(self._path.read_text())
             except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("Failed to load proactive state: %s", exc)
+                logger.warning("Failed to load proactive state: %s", exc, exc_info=True)
                 self._data = {}
         env_default = cfg.proactive_enabled if not self._path.exists() else False
         self._data.setdefault("enabled", env_default)

@@ -128,7 +128,7 @@ class TestHandleCheckAgentTask:
 class TestMakeRealtimeHook:
     """Verify that _make_realtime_hook creates a properly configured interceptor."""
 
-    @patch("app.runtime.state.guardrails_config.get_guardrails_config")
+    @patch("app.runtime.state.guardrails.config.get_guardrails_config")
     def test_hook_sets_execution_context(self, mock_get_cfg: MagicMock) -> None:
         mock_store = MagicMock()
         mock_store.hitl_enabled = True
@@ -140,7 +140,7 @@ class TestMakeRealtimeHook:
         hook = _make_realtime_hook(agent)
         assert callable(hook)
 
-    @patch("app.runtime.state.guardrails_config.get_guardrails_config")
+    @patch("app.runtime.state.guardrails.config.get_guardrails_config")
     def test_hook_forwards_aitl_from_shared(self, mock_get_cfg: MagicMock) -> None:
         mock_store = MagicMock()
         mock_store.hitl_enabled = True
@@ -157,7 +157,7 @@ class TestMakeRealtimeHook:
         hook = _make_realtime_hook(agent)
         assert callable(hook)
 
-    @patch("app.runtime.state.guardrails_config.get_guardrails_config")
+    @patch("app.runtime.state.guardrails.config.get_guardrails_config")
     def test_hook_works_without_shared_hitl(self, mock_get_cfg: MagicMock) -> None:
         mock_store = MagicMock()
         mock_store.hitl_enabled = True

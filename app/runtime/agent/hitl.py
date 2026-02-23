@@ -8,56 +8,87 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from ..state.guardrails_config import GuardrailsConfigStore
-from ..util.async_helpers import run_sync
+from ..state.guardrails import GuardrailsConfigStore
+from .hitl_channels import (
+    apply_aitl_review,
+    apply_filter_check,
+    ask_bot_approval,
+    ask_chat_approval,
+    ask_phone_approval,
+)
 
 if TYPE_CHECKING:
-    from ..services.prompt_shield import PromptShieldService
+    from ..services.security.prompt_shield import PromptShieldService
     from ..state.tool_activity_store import ToolActivityStore
     from .aitl import AitlReviewer
     from .phone_verify import PhoneVerifier
 
 logger = logging.getLogger(__name__)
 
-_APPROVAL_TIMEOUT = 300.0
-
 _ALWAYS_APPROVED_TOOLS: frozenset[str] = frozenset({"report_intent"})
+
+_ALLOW: dict[str, str] = {"permissionDecision": "allow"}
+_DENY: dict[str, str] = {"permissionDecision": "deny"}
 
 
 class HitlInterceptor:
+    """Human-in-the-loop tool approval interceptor.
+
+    Per-turn state (emit, model, session context) is bound via
+    :meth:`bind_turn` and released via :meth:`unbind_turn`.  Persistent
+    wiring (phone verifier, AITL reviewer, prompt shield) is set once
+    during application startup.
+    """
 
     def __init__(self, guardrails: GuardrailsConfigStore) -> None:
         self._guardrails = guardrails
+
+        # -- per-turn state (bound/unbound each agent turn) ----------------
         self._emit: Callable[[str, dict[str, Any]], None] | None = None
         self._bot_reply_fn: Callable[[str], Awaitable[None]] | None = None
         self._execution_context: str = ""
         self._model: str = ""
         self._session_id: str = ""
+        self._tool_activity: ToolActivityStore | None = None
+
+        # -- persistent state ----------------------------------------------
         self._pending: dict[str, asyncio.Future[bool]] = {}
         self._phone_verifier: PhoneVerifier | None = None
         self._aitl_reviewer: AitlReviewer | None = None
         self._prompt_shield: PromptShieldService | None = None
-        self._tool_activity: ToolActivityStore | None = None
         self._resolved_strategies: dict[str, list[str]] = {}
         self._last_shield_result: dict[str, Any] | None = None
 
-    def set_emit(self, emit: Callable[[str, dict[str, Any]], None]) -> None:
+    # -- per-turn lifecycle ------------------------------------------------
+
+    def bind_turn(
+        self,
+        *,
+        emit: Callable[[str, dict[str, Any]], None] | None = None,
+        bot_reply_fn: Callable[[str], Awaitable[None]] | None = None,
+        execution_context: str = "",
+        model: str = "",
+        session_id: str = "",
+        tool_activity: ToolActivityStore | None = None,
+    ) -> None:
+        """Bind per-turn state before an agent send."""
         self._emit = emit
-
-    def clear_emit(self) -> None:
-        self._emit = None
-
-    def set_bot_reply_fn(self, fn: Callable[[str], Awaitable[None]]) -> None:
-        self._bot_reply_fn = fn
-
-    def clear_bot_reply_fn(self) -> None:
-        self._bot_reply_fn = None
-
-    def set_execution_context(self, context: str) -> None:
-        self._execution_context = context
-
-    def set_model(self, model: str) -> None:
+        self._bot_reply_fn = bot_reply_fn
+        self._execution_context = execution_context
         self._model = model
+        self._session_id = session_id
+        self._tool_activity = tool_activity
+
+    def unbind_turn(self) -> None:
+        """Clear per-turn state after an agent send completes."""
+        self._emit = None
+        self._bot_reply_fn = None
+        self._execution_context = ""
+        self._model = ""
+        self._session_id = ""
+        self._tool_activity = None
+
+    # -- persistent wiring -------------------------------------------------
 
     def set_phone_verifier(self, verifier: PhoneVerifier) -> None:
         self._phone_verifier = verifier
@@ -67,12 +98,6 @@ class HitlInterceptor:
 
     def set_prompt_shield(self, shield: PromptShieldService) -> None:
         self._prompt_shield = shield
-
-    def set_tool_activity(self, store: ToolActivityStore) -> None:
-        self._tool_activity = store
-
-    def set_session_id(self, session_id: str) -> None:
-        self._session_id = session_id
 
     def pop_resolved_strategy(self, tool_name: str) -> str:
         queue = self._resolved_strategies.get(tool_name)
@@ -136,6 +161,7 @@ class HitlInterceptor:
         return result
 
     async def _evaluate_tool(self, input_data: dict, tool_name: str) -> dict:
+        """Evaluate a tool invocation against the guardrails policy."""
         self._last_shield_result = None
 
         call_id = input_data.get("toolCallId") or str(uuid.uuid4())[:8]
@@ -151,10 +177,6 @@ class HitlInterceptor:
             self._model, mcp_server or "(none)",
             self._guardrails.hitl_enabled,
         )
-        logger.info(
-            "[hitl.hook] input_data keys=%s",
-            list(input_data.keys()),
-        )
 
         strategy = self._guardrails.resolve_action(
             tool_name,
@@ -167,22 +189,20 @@ class HitlInterceptor:
             strategy, tool_name,
         )
 
+        # Terminal strategies
         if strategy == "allow":
             logger.info("[hitl.hook] ALLOW tool=%s call_id=%s", tool_name, call_id)
-            return {"permissionDecision": "allow"}
+            return _ALLOW
 
         if strategy == "deny":
-            logger.info("[hitl.hook] DENY tool=%s call_id=%s", tool_name, call_id)
-            self._resolved_strategies.setdefault(tool_name, []).append("deny")
-            if self._emit:
-                self._emit("tool_denied", {
-                    "call_id": call_id,
-                    "tool": tool_name,
-                    "reason": "Denied by guardrail rule",
-                })
-            return {"permissionDecision": "deny"}
+            return self._make_deny(call_id, tool_name)
 
-        if self._prompt_shield and self._prompt_shield.configured and strategy != "filter":
+        # Pre-filter: run Prompt Shield before non-filter strategies
+        if (
+            self._prompt_shield
+            and self._prompt_shield.configured
+            and strategy != "filter"
+        ):
             shield_result = await self._apply_filter(call_id, tool_name, args_str)
             if shield_result is not None:
                 logger.info(
@@ -192,53 +212,117 @@ class HitlInterceptor:
                 )
                 return shield_result
 
+        # Strategy-specific handler
+        result = await self._dispatch_strategy(
+            strategy, call_id, tool_name, args_str,
+        )
+        if result is not None:
+            return result
+
+        # Fallback: interactive approval
+        return await self._route_interactive(
+            call_id, tool_name, args_str, mcp_server,
+        )
+
+    def _make_deny(self, call_id: str, tool_name: str) -> dict:
+        """Build a deny response and emit an event."""
+        logger.info("[hitl.hook] DENY tool=%s call_id=%s", tool_name, call_id)
+        self._resolved_strategies.setdefault(tool_name, []).append("deny")
+        if self._emit:
+            self._emit("tool_denied", {
+                "call_id": call_id,
+                "tool": tool_name,
+                "reason": "Denied by guardrail rule",
+            })
+        return dict(_DENY)
+
+    async def _dispatch_strategy(
+        self,
+        strategy: str,
+        call_id: str,
+        tool_name: str,
+        args_str: str,
+    ) -> dict | None:
+        """Delegate to a strategy-specific handler.
+
+        Returns a decision dict, or ``None`` to fall through to
+        interactive approval.
+        """
         if strategy == "aitl":
-            self._resolved_strategies.setdefault(tool_name, []).append("aitl")
-            if self._aitl_reviewer:
-                result = await self._apply_aitl(call_id, tool_name, args_str)
-                if result is not None:
-                    return result
-            logger.warning(
-                "[hitl] AITL requested but unavailable, falling back to interactive: tool=%s",
-                tool_name,
-            )
-
+            return await self._handle_aitl(call_id, tool_name, args_str)
         if strategy == "filter":
-            self._resolved_strategies.setdefault(tool_name, []).append("filter")
-            if self._prompt_shield:
-                result = await self._apply_filter(call_id, tool_name, args_str)
-                if result is not None:
-                    return result
-                logger.info(
-                    "[hitl.hook] shield passed, ALLOW tool=%s call_id=%s",
-                    tool_name, call_id,
-                )
-                return {"permissionDecision": "allow"}
-            logger.warning(
-                "[hitl] no prompt shield available, allowing tool=%s (Content Safety not deployed)",
-                tool_name,
-            )
-            self._last_shield_result = {
-                "result": "skipped",
-                "detail": "Content Safety not deployed",
-                "elapsed_ms": None,
-            }
-            return {"permissionDecision": "allow"}
-
+            return await self._handle_filter(call_id, tool_name, args_str)
         if strategy == "pitl":
-            self._resolved_strategies.setdefault(tool_name, []).append("pitl")
-            if self._phone_verifier:
-                logger.info("[hitl.hook] PITL routing to phone: tool=%s", tool_name)
-                return await self._ask_phone(call_id, tool_name, args_str)
-            logger.warning(
-                "[hitl] PITL requested but phone verifier unavailable, "
-                "falling back to chat: tool=%s", tool_name,
-            )
+            return await self._handle_pitl(call_id, tool_name, args_str)
+        return None
 
+    async def _handle_aitl(
+        self, call_id: str, tool_name: str, args_str: str,
+    ) -> dict | None:
+        """AI-in-the-loop review."""
+        self._resolved_strategies.setdefault(tool_name, []).append("aitl")
+        if self._aitl_reviewer:
+            return await self._apply_aitl(call_id, tool_name, args_str)
+        logger.warning(
+            "[hitl] AITL requested but unavailable, "
+            "falling back to interactive: tool=%s",
+            tool_name,
+        )
+        return None
+
+    async def _handle_filter(
+        self, call_id: str, tool_name: str, args_str: str,
+    ) -> dict | None:
+        """Content-safety filter."""
+        self._resolved_strategies.setdefault(tool_name, []).append("filter")
+        if self._prompt_shield:
+            result = await self._apply_filter(call_id, tool_name, args_str)
+            if result is not None:
+                return result
+            logger.info(
+                "[hitl.hook] shield passed, ALLOW tool=%s call_id=%s",
+                tool_name, call_id,
+            )
+            return dict(_ALLOW)
+        logger.warning(
+            "[hitl] no prompt shield available, allowing tool=%s "
+            "(Content Safety not deployed)",
+            tool_name,
+        )
+        self._last_shield_result = {
+            "result": "skipped",
+            "detail": "Content Safety not deployed",
+            "elapsed_ms": None,
+        }
+        return dict(_ALLOW)
+
+    async def _handle_pitl(
+        self, call_id: str, tool_name: str, args_str: str,
+    ) -> dict | None:
+        """Phone-in-the-loop verification."""
+        self._resolved_strategies.setdefault(tool_name, []).append("pitl")
+        if self._phone_verifier:
+            logger.info("[hitl.hook] PITL routing to phone: tool=%s", tool_name)
+            return await self._ask_phone(call_id, tool_name, args_str)
+        logger.warning(
+            "[hitl] PITL requested but phone verifier unavailable, "
+            "falling back to chat: tool=%s",
+            tool_name,
+        )
+        return None
+
+    async def _route_interactive(
+        self,
+        call_id: str,
+        tool_name: str,
+        args_str: str,
+        mcp_server: str,
+    ) -> dict:
+        """Route to the best available interactive approval channel."""
         logger.info(
-            "[hitl.hook] interactive approval needed: tool=%s strategy=%s "
+            "[hitl.hook] interactive approval needed: tool=%s "
             "has_emit=%s has_bot_reply=%s has_phone=%s",
-            tool_name, strategy,
+            tool_name,
             self._emit is not None,
             self._bot_reply_fn is not None,
             self._phone_verifier is not None,
@@ -251,26 +335,32 @@ class HitlInterceptor:
         )
 
         if channel == "phone" and self._phone_verifier:
-            logger.info("[hitl.hook] routing to phone channel: tool=%s", tool_name)
+            logger.info(
+                "[hitl.hook] routing to phone channel: tool=%s", tool_name,
+            )
             self._resolved_strategies.setdefault(tool_name, []).append("pitl")
             return await self._ask_phone(call_id, tool_name, args_str)
 
         if self._bot_reply_fn:
-            logger.info("[hitl.hook] routing to bot channel: tool=%s", tool_name)
+            logger.info(
+                "[hitl.hook] routing to bot channel: tool=%s", tool_name,
+            )
             self._resolved_strategies.setdefault(tool_name, []).append("hitl")
             return await self._ask_bot_channel(call_id, tool_name, args_str)
 
         if self._emit:
-            logger.info("[hitl.hook] routing to web chat: tool=%s", tool_name)
+            logger.info(
+                "[hitl.hook] routing to web chat: tool=%s", tool_name,
+            )
             self._resolved_strategies.setdefault(tool_name, []).append("hitl")
             return await self._ask_chat(call_id, tool_name, args_str)
 
         logger.error(
-            "[hitl.hook] NO APPROVAL CHANNEL available (no bot_reply_fn, "
-            "no emit) -- denying tool=%s call_id=%s to avoid silent hang",
+            "[hitl.hook] NO APPROVAL CHANNEL available -- "
+            "denying tool=%s call_id=%s to avoid silent hang",
             tool_name, call_id,
         )
-        return {"permissionDecision": "deny"}
+        return dict(_DENY)
 
     def resolve_approval(self, call_id: str, approved: bool) -> bool:
         future = self._pending.get(call_id)
@@ -299,211 +389,55 @@ class HitlInterceptor:
                 "denying tool=%s immediately", tool_name,
             )
             return {"permissionDecision": "deny"}
-
-        logger.info(
-            "[hitl.chat] sending approval_request via WebSocket: "
-            "tool=%s call_id=%s",
-            tool_name, call_id,
+        return await ask_chat_approval(
+            emit=self._emit,
+            pending=self._pending,
+            call_id=call_id,
+            tool_name=tool_name,
+            args_str=args_str,
         )
-        self._emit("approval_request", {
-            "call_id": call_id,
-            "tool": tool_name,
-            "arguments": args_str,
-        })
-        logger.info("[hitl.chat] approval_request emitted, waiting for response...")
-
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[bool] = loop.create_future()
-        self._pending[call_id] = future
-
-        try:
-            approved = await asyncio.wait_for(future, timeout=_APPROVAL_TIMEOUT)
-        except asyncio.TimeoutError:
-            logger.warning("[hitl] approval timed out: call_id=%s tool=%s", call_id, tool_name)
-            approved = False
-        finally:
-            self._pending.pop(call_id, None)
-
-        decision = "allow" if approved else "deny"
-        logger.info(
-            "[hitl.chat] decision: tool=%s call_id=%s approved=%s decision=%s",
-            tool_name, call_id, approved, decision,
-        )
-        if self._emit:
-            self._emit("approval_resolved", {
-                "call_id": call_id,
-                "tool": tool_name,
-                "approved": approved,
-            })
-        return {"permissionDecision": decision}
 
     async def _ask_bot_channel(
         self, call_id: str, tool_name: str, args_str: str,
     ) -> dict:
         assert self._bot_reply_fn is not None
-        truncated = args_str if len(args_str) <= 200 else args_str[:197] + "..."
-        confirmation_msg = (
-            f"The agent wants to use the tool **{tool_name}**.\n\n"
-            f"Arguments: `{truncated}`\n\n"
-            f"Reply **y** to approve or anything else to deny."
+        return await ask_bot_approval(
+            bot_reply_fn=self._bot_reply_fn,
+            pending=self._pending,
+            call_id=call_id,
+            tool_name=tool_name,
+            args_str=args_str,
         )
-        logger.info(
-            "[hitl] bot-channel approval request: tool=%s call_id=%s",
-            tool_name, call_id,
-        )
-        try:
-            await self._bot_reply_fn(confirmation_msg)
-        except Exception:
-            logger.exception("[hitl] failed to send bot approval message: call_id=%s", call_id)
-            return {"permissionDecision": "deny"}
-
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[bool] = loop.create_future()
-        self._pending[call_id] = future
-
-        try:
-            approved = await asyncio.wait_for(future, timeout=_APPROVAL_TIMEOUT)
-        except asyncio.TimeoutError:
-            logger.warning("[hitl] bot approval timed out: call_id=%s tool=%s", call_id, tool_name)
-            approved = False
-        finally:
-            self._pending.pop(call_id, None)
-
-        decision = "allow" if approved else "deny"
-        logger.info(
-            "[hitl] bot-channel decision: tool=%s call_id=%s decision=%s",
-            tool_name, call_id, decision,
-        )
-
-        outcome_msg = (
-            f"Tool **{tool_name}** {'approved' if approved else 'denied'}."
-        )
-        try:
-            await self._bot_reply_fn(outcome_msg)
-        except Exception:
-            logger.exception("[hitl] failed to send bot outcome message: call_id=%s", call_id)
-
-        return {"permissionDecision": decision}
 
     async def _ask_phone(self, call_id: str, tool_name: str, args_str: str) -> dict:
         assert self._phone_verifier is not None
-        logger.info("[hitl] phone verification: tool=%s call_id=%s", tool_name, call_id)
-
-        if self._emit:
-            self._emit("phone_verification_started", {
-                "call_id": call_id,
-                "tool": tool_name,
-                "arguments": args_str,
-            })
-
-        try:
-            approved = await self._phone_verifier.request_verification(
-                call_id=call_id,
-                tool_name=tool_name,
-                tool_args=args_str,
-            )
-        except Exception:
-            logger.exception("[hitl] phone verification failed: call_id=%s", call_id)
-            approved = False
-
-        decision = "allow" if approved else "deny"
-        logger.info("[hitl] phone decision: tool=%s call_id=%s decision=%s", tool_name, call_id, decision)
-
-        if self._emit:
-            self._emit("phone_verification_complete", {
-                "call_id": call_id,
-                "tool": tool_name,
-                "approved": approved,
-            })
-
-        return {"permissionDecision": decision}
+        return await ask_phone_approval(
+            phone_verifier=self._phone_verifier,
+            emit=self._emit,
+            call_id=call_id,
+            tool_name=tool_name,
+            args_str=args_str,
+        )
 
     async def _apply_aitl(self, call_id: str, tool_name: str, args_str: str) -> dict | None:
         assert self._aitl_reviewer is not None
-        if self._emit:
-            self._emit("aitl_review_started", {
-                "call_id": call_id,
-                "tool": tool_name,
-            })
-        try:
-            approved, reason = await self._aitl_reviewer.review(
-                tool_name=tool_name,
-                arguments=args_str,
-            )
-        except Exception:
-            logger.exception("[hitl] AITL review error: call_id=%s", call_id)
-            return None
-
-        if self._emit:
-            self._emit("aitl_review_complete", {
-                "call_id": call_id,
-                "tool": tool_name,
-                "approved": approved,
-                "reason": reason,
-            })
-
-        decision = "allow" if approved else "deny"
-        logger.info(
-            "[hitl] AITL decision: tool=%s call_id=%s decision=%s reason=%s",
-            tool_name, call_id, decision, reason,
+        return await apply_aitl_review(
+            aitl_reviewer=self._aitl_reviewer,
+            emit=self._emit,
+            call_id=call_id,
+            tool_name=tool_name,
+            args_str=args_str,
         )
-        return {"permissionDecision": decision}
 
     async def _apply_filter(self, call_id: str, tool_name: str, args_str: str) -> dict | None:
         assert self._prompt_shield is not None
-        import time as _time
-
-        t0 = _time.monotonic()
-        try:
-            result = await run_sync(self._prompt_shield.check, args_str)
-        except Exception:
-            elapsed_ms = (_time.monotonic() - t0) * 1000
-            logger.exception("[hitl] Prompt Shield error: call_id=%s", call_id)
-            self._last_shield_result = {
-                "result": "error",
-                "detail": "Shield check raised an exception",
-                "elapsed_ms": round(elapsed_ms, 1),
-            }
-            if self._tool_activity:
-                self._tool_activity.update_shield_result(
-                    call_id=call_id, shield_result="error",
-                    shield_detail="Shield check raised an exception",
-                    shield_elapsed_ms=round(elapsed_ms, 1),
-                )
-            return None
-
-        elapsed_ms = (_time.monotonic() - t0) * 1000
-        shield_status = "attack" if result.attack_detected else "clean"
-        self._last_shield_result = {
-            "result": shield_status,
-            "detail": result.detail,
-            "elapsed_ms": round(elapsed_ms, 1),
-        }
-
-        if self._tool_activity:
-            self._tool_activity.update_shield_result(
-                call_id=call_id,
-                shield_result=shield_status,
-                shield_detail=result.detail,
-                shield_elapsed_ms=round(elapsed_ms, 1),
-            )
-
-        if result.attack_detected:
-            logger.info(
-                "[hitl] Prompt Shield denied: tool=%s call_id=%s detail=%s elapsed=%.0fms",
-                tool_name, call_id, result.detail, elapsed_ms,
-            )
-            if self._emit:
-                self._emit("tool_denied", {
-                    "call_id": call_id,
-                    "tool": tool_name,
-                    "reason": "Blocked by content filter",
-                    "shield_detail": result.detail,
-                })
-            return {"permissionDecision": "deny"}
-
-        logger.info(
-            "[hitl] Prompt Shield passed: tool=%s call_id=%s elapsed=%.0fms",
-            tool_name, call_id, elapsed_ms,
+        decision, shield_info = await apply_filter_check(
+            prompt_shield=self._prompt_shield,
+            tool_activity=self._tool_activity,
+            emit=self._emit,
+            call_id=call_id,
+            tool_name=tool_name,
+            args_str=args_str,
         )
-        return None
+        self._last_shield_result = shield_info
+        return decision

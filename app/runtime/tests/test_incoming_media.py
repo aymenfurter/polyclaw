@@ -5,10 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from app.runtime.media.incoming import (
-    _FILE_PATH_RE,
-    build_media_prompt,
-)
+from app.runtime.media.incoming import build_media_prompt
+from app.runtime.media.outgoing import _FILE_PATH_RE
 
 
 class TestBuildMediaPrompt:

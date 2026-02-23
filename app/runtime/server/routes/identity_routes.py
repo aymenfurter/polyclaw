@@ -9,8 +9,8 @@ from typing import Any
 from aiohttp import web
 
 from ...config.settings import cfg
-from ...services.azure import AzureCLI
-from ...state.guardrails_config import GuardrailsConfigStore
+from ...services.cloud.azure import AzureCLI
+from ...state.guardrails import GuardrailsConfigStore
 from ...state.sandbox_config import SandboxConfigStore
 from ...util.async_helpers import run_sync
 
@@ -151,17 +151,40 @@ class IdentityRoutes:
                 "condition": a.get("condition", ""),
             })
 
-        # Check which required roles are present
+        # Resolve expected session pool scope for scope-aware checking.
+        session_pool_scope = self._resolve_session_pool_scope()
+
+        # Check which required roles are present.  For the Session
+        # Executor role we also verify that the assignment scope covers
+        # the configured session pool -- an assignment on a different
+        # resource / RG still results in 403.
         assigned_names = {a.get("roleDefinitionName", "") for a in assignments}
         checks: list[dict[str, Any]] = []
         for req in _REQUIRED_ROLES:
-            present = req["role"] in assigned_names
-            checks.append({
-                "feature": req["feature"],
-                "role": req["role"],
-                "present": present,
-                "data_action": req.get("data_action", ""),
-            })
+            role_name = req["role"]
+            if role_name == "Azure ContainerApps Session Executor":
+                present, detail = self._check_session_executor_scope(
+                    assignments, session_pool_scope,
+                )
+                check: dict[str, Any] = {
+                    "feature": req["feature"],
+                    "role": role_name,
+                    "present": present,
+                    "data_action": req.get("data_action", ""),
+                }
+                if detail:
+                    check["detail"] = detail
+                if session_pool_scope:
+                    check["expected_scope"] = session_pool_scope
+                checks.append(check)
+            else:
+                present = role_name in assigned_names
+                checks.append({
+                    "feature": req["feature"],
+                    "role": role_name,
+                    "present": present,
+                    "data_action": req.get("data_action", ""),
+                })
 
         return web.json_response({
             "status": "ok",
@@ -249,6 +272,70 @@ class IdentityRoutes:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _resolve_session_pool_scope(self) -> str:
+        """Return the expected ARM scope for the configured session pool, or ``""``."""
+        store = self._sandbox_store or SandboxConfigStore()
+        pool_id = store.pool_id
+        if pool_id:
+            return pool_id
+        endpoint = store.session_pool_endpoint
+        if endpoint:
+            # The management-plane endpoint embeds the resource path, e.g.
+            # https://<region>.dynamicsessions.io/subscriptions/.../sessionPools/<name>
+            # Extract the ARM resource id from it.
+            for prefix in (
+                "https://", "http://",
+            ):
+                if endpoint.lower().startswith(prefix):
+                    endpoint = endpoint[len(prefix):]
+                    break
+            parts = endpoint.split("/")
+            try:
+                sub_idx = parts.index("subscriptions")
+                return "/" + "/".join(parts[sub_idx:])
+            except ValueError:
+                pass
+        return ""
+
+    @staticmethod
+    def _check_session_executor_scope(
+        assignments: list[Any],
+        expected_scope: str,
+    ) -> tuple[bool, str]:
+        """Check whether Session Executor is assigned on the right scope.
+
+        Returns ``(present, detail)`` where *detail* explains mismatches.
+        """
+        role_name = "Azure ContainerApps Session Executor"
+        matching: list[str] = []
+        for a in assignments:
+            if not isinstance(a, dict):
+                continue
+            if a.get("roleDefinitionName", "") != role_name:
+                continue
+            scope = a.get("scope", "")
+            matching.append(scope)
+
+        if not matching:
+            return False, "Role not assigned to this identity"
+
+        if not expected_scope:
+            # No session pool configured; can't verify scope.
+            return True, "Role present (session pool scope not configured -- cannot verify)"
+
+        normalised = expected_scope.lower().rstrip("/")
+        for scope in matching:
+            if scope.lower().rstrip("/") == normalised:
+                return True, ""
+
+        # Role exists but on wrong scope
+        scopes_str = ", ".join(matching)
+        return False, (
+            f"Role assigned on wrong scope. "
+            f"Expected: {expected_scope} -- "
+            f"Found: {scopes_str}"
+        )
 
     async def _fix_session_pool_role(
         self,

@@ -58,15 +58,29 @@ class AcsCaller:
             self._client = CallAutomationClient.from_connection_string(self.acs_connection_string)
         return self._client
 
-    async def initiate_call(self, target_number: str) -> None:
+    @staticmethod
+    def _build_media_config(ws_url: str) -> Any:
+        """Build the shared ``MediaStreamingOptions`` for ACS calls."""
         from azure.communication.callautomation import (
             AudioFormat,
             MediaStreamingAudioChannelType,
             MediaStreamingContentType,
             MediaStreamingOptions,
-            PhoneNumberIdentifier,
             StreamingTransportType,
         )
+
+        return MediaStreamingOptions(
+            transport_url=ws_url,
+            transport_type=StreamingTransportType.WEBSOCKET,
+            content_type=MediaStreamingContentType.AUDIO,
+            audio_channel_type=MediaStreamingAudioChannelType.MIXED,
+            start_media_streaming=True,
+            enable_bidirectional=True,
+            audio_format=AudioFormat.PCM24_K_MONO,
+        )
+
+    async def initiate_call(self, target_number: str) -> None:
+        from azure.communication.callautomation import PhoneNumberIdentifier
 
         callback_url = self.acs_callback_path
         ws_url = self.acs_media_streaming_websocket_path
@@ -78,16 +92,7 @@ class AcsCaller:
         client = self._ensure_client()
         target = PhoneNumberIdentifier(target_number)
         source = PhoneNumberIdentifier(self.source_number)
-
-        media_config = MediaStreamingOptions(
-            transport_url=ws_url,
-            transport_type=StreamingTransportType.WEBSOCKET,
-            content_type=MediaStreamingContentType.AUDIO,
-            audio_channel_type=MediaStreamingAudioChannelType.MIXED,
-            start_media_streaming=True,
-            enable_bidirectional=True,
-            audio_format=AudioFormat.PCM24_K_MONO,
-        )
+        media_config = self._build_media_config(ws_url)
 
         logger.info(
             "Initiating outbound call: target=%s, source=%s, callback=%s, ws=%s",
@@ -108,24 +113,8 @@ class AcsCaller:
             raise
 
     async def answer_inbound_call(self, incoming_call_context: str) -> None:
-        from azure.communication.callautomation import (
-            AudioFormat,
-            MediaStreamingAudioChannelType,
-            MediaStreamingContentType,
-            MediaStreamingOptions,
-            StreamingTransportType,
-        )
-
         client = self._ensure_client()
-        media_config = MediaStreamingOptions(
-            transport_url=self.acs_media_streaming_websocket_path,
-            transport_type=StreamingTransportType.WEBSOCKET,
-            content_type=MediaStreamingContentType.AUDIO,
-            audio_channel_type=MediaStreamingAudioChannelType.MIXED,
-            start_media_streaming=True,
-            enable_bidirectional=True,
-            audio_format=AudioFormat.PCM24_K_MONO,
-        )
+        media_config = self._build_media_config(self.acs_media_streaming_websocket_path)
         logger.info("Answering inbound call")
         client.answer_call(incoming_call_context, self.acs_callback_path, media_streaming=media_config)
         logger.info("Inbound call answered")

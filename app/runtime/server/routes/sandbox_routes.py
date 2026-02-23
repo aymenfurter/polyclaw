@@ -9,10 +9,11 @@ from typing import Any
 from aiohttp import web
 
 from ...sandbox import SandboxExecutor
-from ...services.azure import AzureCLI
+from ...services.cloud.azure import AzureCLI
 from ...state.deploy_state import DeployStateStore
 from ...state.sandbox_config import BLACKLIST, DEFAULT_WHITELIST, SandboxConfigStore
 from ...util.async_helpers import run_sync
+from ._helpers import fail_response as _fail_response, no_az as _no_az
 
 logger = logging.getLogger(__name__)
 
@@ -314,17 +315,3 @@ class SandboxRoutes:
 
         return endpoint, pool_id
 
-
-def _no_az() -> web.Response:
-    return web.json_response(
-        {"status": "error", "message": "Azure CLI not available"}, status=500
-    )
-
-
-def _fail_response(steps: list[dict[str, Any]]) -> web.Response:
-    failed = [s for s in steps if s.get("status") == "failed"]
-    msg = failed[0].get("detail", "Unknown error") if failed else "Unknown error"
-    return web.json_response(
-        {"status": "error", "steps": steps, "message": f"Provisioning failed: {msg}"},
-        status=500,
-    )

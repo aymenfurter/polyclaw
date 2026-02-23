@@ -156,7 +156,7 @@ class TestSandboxExecutor:
         store = MagicMock()
         store.whitelist = ["nonexistent"]
         executor = SandboxExecutor(config_store=store)
-        with patch("app.runtime.sandbox.cfg") as mock_cfg:
+        with patch("app.runtime.sandbox.executor.cfg") as mock_cfg:
             mock_cfg.data_dir = tmp_path
             result = executor._create_data_zip()
         assert result is None
@@ -166,7 +166,7 @@ class TestSandboxExecutor:
         store = MagicMock()
         store.whitelist = ["test.json"]
         executor = SandboxExecutor(config_store=store)
-        with patch("app.runtime.sandbox.cfg") as mock_cfg:
+        with patch("app.runtime.sandbox.executor.cfg") as mock_cfg:
             mock_cfg.data_dir = tmp_path
             result = executor._create_data_zip()
         assert result is not None
@@ -180,7 +180,7 @@ class TestSandboxExecutor:
         store = MagicMock()
         store.whitelist = ["subdir"]
         executor = SandboxExecutor(config_store=store)
-        with patch("app.runtime.sandbox.cfg") as mock_cfg:
+        with patch("app.runtime.sandbox.executor.cfg") as mock_cfg:
             mock_cfg.data_dir = tmp_path
             result = executor._create_data_zip()
         assert result is not None
@@ -195,7 +195,7 @@ class TestSandboxExecutor:
         store = MagicMock()
         store.whitelist = ["allowed"]
         executor = SandboxExecutor(config_store=store)
-        with patch("app.runtime.sandbox.cfg") as mock_cfg:
+        with patch("app.runtime.sandbox.executor.cfg") as mock_cfg:
             mock_cfg.data_dir = tmp_path
             count = executor._merge_result_zip(buf.getvalue())
         assert count == 1
@@ -210,7 +210,7 @@ class TestSandboxExecutor:
         store = MagicMock()
         store.whitelist = []
         executor = SandboxExecutor(config_store=store)
-        with patch("app.runtime.sandbox.cfg") as mock_cfg:
+        with patch("app.runtime.sandbox.executor.cfg") as mock_cfg:
             mock_cfg.data_dir = tmp_path
             count = executor._merge_result_zip(buf.getvalue())
         assert count == 0
@@ -344,7 +344,7 @@ class TestUploadBytesRetry:
     """Tests for _upload_bytes retry logic with exponential backoff."""
 
     @pytest.mark.asyncio
-    @patch("app.runtime.sandbox._UPLOAD_BACKOFF_BASE", 0.0)
+    @patch("app.runtime.sandbox.executor._UPLOAD_BACKOFF_BASE", 0.0)
     async def test_upload_succeeds_on_first_attempt(self) -> None:
         store = MagicMock()
         executor = SandboxExecutor(config_store=store)
@@ -359,11 +359,11 @@ class TestUploadBytesRetry:
         result = await executor._upload_bytes(
             http, "https://endpoint", "sess-1", "file.zip", b"data", {},
         )
-        assert result is True
+        assert result == ""
         assert http.post.call_count == 1
 
     @pytest.mark.asyncio
-    @patch("app.runtime.sandbox._UPLOAD_BACKOFF_BASE", 0.0)
+    @patch("app.runtime.sandbox.executor._UPLOAD_BACKOFF_BASE", 0.0)
     async def test_upload_retries_on_http_error_then_succeeds(self) -> None:
         store = MagicMock()
         executor = SandboxExecutor(config_store=store)
@@ -385,11 +385,11 @@ class TestUploadBytesRetry:
         result = await executor._upload_bytes(
             http, "https://endpoint", "sess-1", "file.zip", b"data", {},
         )
-        assert result is True
+        assert result == ""
         assert http.post.call_count == 2
 
     @pytest.mark.asyncio
-    @patch("app.runtime.sandbox._UPLOAD_BACKOFF_BASE", 0.0)
+    @patch("app.runtime.sandbox.executor._UPLOAD_BACKOFF_BASE", 0.0)
     async def test_upload_retries_on_exception_then_succeeds(self) -> None:
         store = MagicMock()
         executor = SandboxExecutor(config_store=store)
@@ -407,11 +407,11 @@ class TestUploadBytesRetry:
         result = await executor._upload_bytes(
             http, "https://endpoint", "sess-1", "data.zip", b"data", {},
         )
-        assert result is True
+        assert result == ""
         assert http.post.call_count == 2
 
     @pytest.mark.asyncio
-    @patch("app.runtime.sandbox._UPLOAD_BACKOFF_BASE", 0.0)
+    @patch("app.runtime.sandbox.executor._UPLOAD_BACKOFF_BASE", 0.0)
     async def test_upload_fails_after_all_retries(self) -> None:
         store = MagicMock()
         executor = SandboxExecutor(config_store=store)
@@ -428,5 +428,6 @@ class TestUploadBytesRetry:
         result = await executor._upload_bytes(
             http, "https://endpoint", "sess-1", "file.zip", b"data", {},
         )
-        assert result is False
+        assert result != ""
+        assert "503" in result
         assert http.post.call_count == 3
