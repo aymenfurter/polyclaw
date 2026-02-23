@@ -106,7 +106,7 @@
     box-shadow: 0 0 6px rgba(249,115,22,0.3);
   }
   #scene1 .overview .point strong { font-weight: 600; color: var(--text-primary); font-size: inherit; }
-  #scene1 .overview .point .detail { color: var(--text-muted); font-weight: 300; }
+  #scene1 .overview .point .detail { color: var(--text-muted); font-weight: 300; font-size: 0.82em; }
 
   #scene1 .arch-frame {
     flex: 1.4; min-width: 0; opacity: 0;
@@ -138,64 +138,62 @@
       0 2px 8px rgba(0,0,0,0.08);
   }
 
-  /* Testimonial card */
+  /* Community reactions card */
   #scene1 .case-study {
     position: absolute; bottom: -40px; right: -41px; left: auto;
     width: 53%;
     z-index: 3; opacity: 0;
-    background: linear-gradient(145deg, #111827 0%, #0f172a 100%);
-    border-radius: 12px;
-    padding: 22px 26px 18px 26px;
+    background: linear-gradient(160deg, rgba(15,23,42,0.95) 0%, rgba(15,23,42,0.88) 100%);
+    backdrop-filter: blur(24px) saturate(140%);
+    -webkit-backdrop-filter: blur(24px) saturate(140%);
+    border-radius: 14px;
+    padding: 22px 26px 20px 26px;
     overflow: hidden;
-    border: 1px solid rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.08);
     box-shadow:
-      0 4px 24px rgba(0,0,0,0.15),
-      inset 0 1px 0 rgba(255,255,255,0.04);
-  }
-  #scene1 .case-study::before {
-    content: '\201C'; position: absolute; top: -12px; left: 16px;
-    font-size: 100px; font-weight: 700; line-height: 1;
-    color: var(--accent); opacity: 0.06;
-    font-family: Georgia, 'Times New Roman', serif;
+      0 8px 40px rgba(0,0,0,0.25),
+      0 1px 3px rgba(0,0,0,0.1),
+      inset 0 1px 0 rgba(255,255,255,0.05);
   }
   #scene1 .case-study::after {
     content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
-    background: linear-gradient(90deg, transparent, var(--accent), transparent);
-    opacity: 0.2;
+    background: linear-gradient(90deg, transparent 5%, rgba(249,115,22,0.25) 50%, transparent 95%);
   }
-  #scene1 .case-study .cs-quote {
-    font-size: 15px; font-weight: 400; color: rgba(255,255,255,0.78);
-    line-height: 1.65; font-style: italic;
+  #scene1 .case-study .cs-label {
+    font-size: 10px; font-weight: 600; letter-spacing: 2.5px;
+    text-transform: uppercase; color: rgba(255,255,255,0.28);
+    margin-bottom: 16px; position: relative; z-index: 1;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  #scene1 .case-study .cs-reactions {
+    display: flex; flex-direction: column; gap: 0;
     position: relative; z-index: 1;
   }
-  #scene1 .case-study .cs-quote strong {
-    font-weight: 600; font-style: normal; color: rgba(255,255,255,0.95);
+  #scene1 .case-study .cs-reaction {
+    display: flex; align-items: flex-start; gap: 0;
+    padding: 9px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
   }
-  #scene1 .case-study .cs-footer {
-    margin-top: 14px; display: flex; align-items: center;
-    justify-content: space-between; position: relative; z-index: 1;
-    padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06);
+  #scene1 .case-study .cs-reaction:last-child {
+    border-bottom: none; padding-bottom: 0;
   }
-  #scene1 .case-study .cs-who {
-    display: flex; align-items: center; gap: 10px;
+  #scene1 .case-study .cs-accent {
+    font-size: 28px; font-weight: 700; line-height: 1;
+    font-family: Georgia, 'Times New Roman', serif;
+    margin-right: 8px; margin-top: -2px; flex-shrink: 0;
   }
-  #scene1 .case-study .cs-avatar {
-    width: 32px; height: 32px; border-radius: 50%;
-    background: linear-gradient(135deg, var(--accent) 0%, #c2410c 100%);
-    display: flex; align-items: center; justify-content: center;
-    flex-shrink: 0;
-    box-shadow: 0 2px 8px rgba(249,115,22,0.3);
+  #scene1 .case-study .cs-accent.a1 { color: #6366f1; }
+  #scene1 .case-study .cs-accent.a2 { color: #14b8a6; }
+  #scene1 .case-study .cs-accent.a3 { color: var(--accent); }
+  #scene1 .case-study .cs-accent.a4 { color: #8b5cf6; }
+  #scene1 .case-study .cs-bubble {
+    font-size: 13px; font-weight: 400; color: rgba(255,255,255,0.50);
+    line-height: 1.45;
+    letter-spacing: 0.1px;
   }
-  #scene1 .case-study .cs-avatar svg { width: 14px; height: 14px; }
-  #scene1 .case-study .cs-meta {
-    display: flex; flex-direction: column; gap: 1px;
-  }
-  #scene1 .case-study .cs-role {
-    font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.85);
-    letter-spacing: 0.2px;
-  }
-  #scene1 .case-study .cs-org {
-    font-size: 12px; font-weight: 400; color: rgba(255,255,255,0.30);
+  #scene1 .case-study .cs-bubble strong {
+    font-weight: 600; color: rgba(255,255,255,0.88);
   }
 
   /* ══ SCENE 2: Outro with devices ══ */
@@ -319,9 +317,10 @@
       <div class="points" id="s1-points">
         <div class="point"><span class="dot"></span><div><strong>Copilot SDK native</strong><br><span class="detail">Streaming, tool execution, and multi-model support built in</span></div></div>
         <div class="point"><span class="dot"></span><div><strong>Persistent workspace</strong><br><span class="detail">Your agent's files, scripts, and memory survive across sessions</span></div></div>
-        <div class="point"><span class="dot"></span><div><strong>Multi-channel</strong><br><span class="detail">Telegram, web chat, terminal, phone calls via Azure Communication Services & Bot Service</span></div></div>
+        <div class="point"><span class="dot"></span><div><strong>Multi-channel</strong><br><span class="detail">Telegram, web, terminal, phone calls via Azure Communication Services &amp; Bot Service</span></div></div>
         <div class="point"><span class="dot"></span><div><strong>Proactive scheduler</strong><br><span class="detail">Cron jobs and one-shot timers that reach out when the time comes</span></div></div>
-        <div class="point"><span class="dot"></span><div><strong>Secure &amp; observable</strong><br><span class="detail">Optional sandboxed execution via Container Apps dynamic sessions,<br>built-in observability with configurable session retention</span></div></div>
+        <div class="point"><span class="dot"></span><div><strong>Guardrails &amp; HITL</strong><br><span class="detail">Defense-in-depth tool interception -- allow, deny, human-in-the-loop, phone-in-the-loop, AI reviewer, and Azure AI Prompt Shields with fail-closed content safety</span></div></div>
+        <div class="point"><span class="dot"></span><div><strong>Secure &amp; observable</strong><br><span class="detail">Credential isolation between admin and agent runtime with least-privilege RBAC, deterministic audit trails with automated risk classification, sandboxed execution environments, and distributed tracing via OpenTelemetry</span></div></div>
         <div class="point"><span class="dot"></span><div><strong>Extensible</strong><br><span class="detail">Skills, plugins, MCP servers, and self-taught abilities via a built-in marketplace</span></div></div>
       </div>
     </div>
@@ -331,22 +330,23 @@
         <img src="../video/devicepreview.png" alt="Polyclaw on multiple devices">
       </div>
       <div class="case-study" id="s1-case">
-        <div class="cs-quote">
-          We used Polyclaw to <strong>validate an infrastructure-drift scenario
-          across three Azure environments</strong> -- something we'd been meaning
-          to automate for months. The PoC took an afternoon, mostly just
-          <strong>texting it prompts</strong>. Now we're scoping a broader rollout
-          with the <strong>GitHub Copilot SDK</strong> for similar ops workflows.
-        </div>
-        <div class="cs-footer">
-          <div class="cs-who">
-            <div class="cs-avatar">
-              <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-            </div>
-            <div class="cs-meta">
-              <span class="cs-role">Cloud Infrastructure Engineer</span>
-              <span class="cs-org">S&amp;P 500 Financial Services Firm</span>
-            </div>
+        <div class="cs-label">Community Reactions</div>
+        <div class="cs-reactions">
+          <div class="cs-reaction">
+            <span class="cs-accent a1">&ldquo;</span>
+            <div class="cs-bubble"><strong>Coolest post I've seen on LinkedIn</strong> since forever</div>
+          </div>
+          <div class="cs-reaction">
+            <span class="cs-accent a2">&ldquo;</span>
+            <div class="cs-bubble"><strong>Insanely good</strong> -- not surprised, still impressed</div>
+          </div>
+          <div class="cs-reaction">
+            <span class="cs-accent a3">&ldquo;</span>
+            <div class="cs-bubble">Can't wait to install it -- <strong>calling into your assistant</strong> would be slick</div>
+          </div>
+          <div class="cs-reaction">
+            <span class="cs-accent a4">&ldquo;</span>
+            <div class="cs-bubble">Always <strong>pushing the limits</strong> of what's possible with AI</div>
           </div>
         </div>
       </div>
@@ -360,7 +360,7 @@
   <div class="cta-header" id="s2-header">
     <img src="../assets/logo.png" alt="polyclaw" class="cta-logo">
     <h2>Get <em>polyclaw.</em></h2>
-    <div class="cta-sub">Open source. Lives where you do. Yours.</div>
+    <div class="cta-sub">Plans ahead. Remembers everything. Calls when it matters.</div>
   </div>
 
   <div class="devices" id="s2-devices">
