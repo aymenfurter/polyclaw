@@ -40,26 +40,17 @@
 
   <!-- Model icons inside Layer 1 -->
   <rect x="156" y="274" width="120" height="56" rx="8" fill="#0D1117" stroke="#3FB950" stroke-opacity="0.2"/>
-  <text x="172" y="298" font-family="'JetBrains Mono', monospace" font-size="10" fill="#3FB950">claude-opus-4.6</text>
-  <text x="172" y="316" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#484F58">Tier 3 &#x2022; Safe</text>
+  <text x="172" y="298" font-family="'JetBrains Mono', monospace" font-size="10" fill="#3FB950">Reasoning Models</text>
+  <text x="172" y="316" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#484F58">Tier 3 &#x2022; Safer</text>
 
   <rect x="292" y="274" width="120" height="56" rx="8" fill="#0D1117" stroke="#D29922" stroke-opacity="0.2"/>
-  <text x="308" y="298" font-family="'JetBrains Mono', monospace" font-size="10" fill="#D29922">gpt-4.1</text>
+  <text x="308" y="298" font-family="'JetBrains Mono', monospace" font-size="10" fill="#D29922">Smaller Models</text>
   <text x="308" y="316" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#484F58">Tier 2 &#x2022; Standard</text>
 
   <rect x="428" y="274" width="120" height="56" rx="8" fill="#0D1117" stroke="#F85149" stroke-opacity="0.2"/>
-  <text x="444" y="298" font-family="'JetBrains Mono', monospace" font-size="10" fill="#F85149">gpt-5-mini</text>
+  <text x="444" y="298" font-family="'JetBrains Mono', monospace" font-size="10" fill="#F85149">Legacy Models</text>
   <text x="444" y="316" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#484F58">Tier 1 &#x2022; Cautious</text>
 
-  <!-- Right side: annotations -->
-  <line x1="650" y1="280" x2="700" y2="280" stroke="#3FB950" stroke-opacity="0.4" stroke-width="1" stroke-dasharray="4 3"/>
-  <text x="650" y="298" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#3FB950" text-anchor="start" transform="rotate(-90,700,280)">Strongest</text>
-
-  <line x1="650" y1="46" x2="700" y2="46" stroke="#F85149" stroke-opacity="0.4" stroke-width="1" stroke-dasharray="4 3"/>
-  <text x="650" y="56" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#F85149" text-anchor="start" transform="rotate(-90,700,56)">Outermost</text>
-
   <!-- Arrow on right edge: inner to outer -->
-  <line x1="698" y1="340" x2="698" y2="40" stroke="#8B949E" stroke-opacity="0.3" stroke-width="1"/>
-  <polygon points="698,36 694,44 702,44" fill="#8B949E" fill-opacity="0.4"/>
-  <text x="706" y="200" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#484F58" transform="rotate(-90,706,200)">Defense in Depth</text>
+  <text x="706" y="210" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#484F58" transform="rotate(-90,706,200)">Defense in Depth</text>
 </svg>
