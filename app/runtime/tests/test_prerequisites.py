@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from app.runtime.config.settings import cfg
-from app.runtime.server.setup_prerequisites import PrerequisitesRoutes
+from app.runtime.server.setup.prerequisites import PrerequisitesRoutes
 from app.runtime.state.deploy_state import DeployStateStore, DeploymentRecord
 from app.runtime.state.infra_config import InfraConfigStore
 

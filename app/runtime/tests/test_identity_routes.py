@@ -9,7 +9,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from app.runtime.server.routes.identity_routes import IdentityRoutes
-from app.runtime.state.guardrails_config import GuardrailsConfigStore
+from app.runtime.state.guardrails import GuardrailsConfigStore
 
 
 def _build_app(routes: IdentityRoutes) -> web.Application:
@@ -141,6 +141,108 @@ class TestIdentityRoles:
             assert checks["Azure Bot Service Contributor Role"] is False
             assert checks["Key Vault Secrets Officer"] is False
             assert checks["Azure ContainerApps Session Executor"] is False
+
+            # Session executor check should include detail about missing role
+            se_check = next(
+                c for c in data["checks"]
+                if c["role"] == "Azure ContainerApps Session Executor"
+            )
+            assert se_check["detail"] == "Role not assigned to this identity"
+
+    @pytest.mark.asyncio
+    @patch("app.runtime.server.routes.identity_routes.cfg")
+    async def test_roles_session_executor_wrong_scope(self, mock_cfg, tmp_path) -> None:
+        """Session Executor on wrong scope should report as not present."""
+        mock_cfg.runtime_sp_app_id = "app-id"
+        mock_cfg.aca_mi_client_id = ""
+        mock_cfg.runtime_sp_tenant = ""
+
+        az = MagicMock()
+        az.json.side_effect = [
+            {"id": "obj-id-resolved"},  # _sp_show
+            [
+                {
+                    "roleDefinitionName": "Azure ContainerApps Session Executor",
+                    "scope": "/subscriptions/sub1/resourceGroups/wrong-rg"
+                            "/providers/Microsoft.App/sessionPools/wrong-pool",
+                    "condition": "",
+                },
+            ],
+        ]
+
+        from app.runtime.state.sandbox_config import SandboxConfigStore
+
+        sandbox_store = SandboxConfigStore(tmp_path / "sandbox.json")
+        sandbox_store.set_pool_metadata(
+            resource_group="polyclaw-sandbox-rg",
+            location="eastus",
+            pool_name="my-pool",
+            pool_id="/subscriptions/sub1/resourceGroups/polyclaw-sandbox-rg"
+                    "/providers/Microsoft.App/sessionPools/my-pool",
+            endpoint="https://eastus.dynamicsessions.io",
+        )
+
+        routes = IdentityRoutes(az=az, sandbox_store=sandbox_store)
+        app = _build_app(routes)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/identity/roles")
+            assert resp.status == 200
+            data = await resp.json()
+            se_check = next(
+                c for c in data["checks"]
+                if c["role"] == "Azure ContainerApps Session Executor"
+            )
+            assert se_check["present"] is False
+            assert "wrong scope" in se_check["detail"].lower()
+            assert "expected_scope" in se_check
+
+    @pytest.mark.asyncio
+    @patch("app.runtime.server.routes.identity_routes.cfg")
+    async def test_roles_session_executor_correct_scope(self, mock_cfg, tmp_path) -> None:
+        """Session Executor on correct scope should report as present."""
+        mock_cfg.runtime_sp_app_id = "app-id"
+        mock_cfg.aca_mi_client_id = ""
+        mock_cfg.runtime_sp_tenant = ""
+
+        pool_scope = (
+            "/subscriptions/sub1/resourceGroups/polyclaw-sandbox-rg"
+            "/providers/Microsoft.App/sessionPools/my-pool"
+        )
+
+        az = MagicMock()
+        az.json.side_effect = [
+            {"id": "obj-id-resolved"},  # _sp_show
+            [
+                {
+                    "roleDefinitionName": "Azure ContainerApps Session Executor",
+                    "scope": pool_scope,
+                    "condition": "",
+                },
+            ],
+        ]
+
+        from app.runtime.state.sandbox_config import SandboxConfigStore
+
+        sandbox_store = SandboxConfigStore(tmp_path / "sandbox.json")
+        sandbox_store.set_pool_metadata(
+            resource_group="polyclaw-sandbox-rg",
+            location="eastus",
+            pool_name="my-pool",
+            pool_id=pool_scope,
+            endpoint="https://eastus.dynamicsessions.io",
+        )
+
+        routes = IdentityRoutes(az=az, sandbox_store=sandbox_store)
+        app = _build_app(routes)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/identity/roles")
+            assert resp.status == 200
+            data = await resp.json()
+            se_check = next(
+                c for c in data["checks"]
+                if c["role"] == "Azure ContainerApps Session Executor"
+            )
+            assert se_check["present"] is True
 
     @pytest.mark.asyncio
     @patch("app.runtime.server.routes.identity_routes.cfg")

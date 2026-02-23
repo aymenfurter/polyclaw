@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -13,7 +12,7 @@ from aiohttp import ClientWebSocketResponse, web
 from azure.core.credentials import AzureKeyCredential
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 
-from .prompt import REALTIME_SYSTEM_PROMPT
+from .prompt import REALTIME_SYSTEM_PROMPT, TEMPLATES_DIR
 from .tools import (
     ALL_REALTIME_TOOL_SCHEMAS,
     handle_check_agent_task,
@@ -22,8 +21,6 @@ from .tools import (
 )
 
 logger = logging.getLogger(__name__)
-
-_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
 
 class RealtimeMiddleTier:
@@ -125,10 +122,10 @@ class RealtimeMiddleTier:
         else:
             parts: list[str] = [base]
             if prompt:
-                template = (_TEMPLATES_DIR / "realtime_call_instructions.md").read_text()
+                template = (TEMPLATES_DIR / "realtime_call_instructions.md").read_text()
                 parts.append(template.format(prompt=prompt))
             if opening_message:
-                template = (_TEMPLATES_DIR / "realtime_opening_message.md").read_text()
+                template = (TEMPLATES_DIR / "realtime_opening_message.md").read_text()
                 parts.append(template.format(opening_message=opening_message))
             effective_prompt = "\n\n".join(parts) if len(parts) > 1 else base
 
@@ -280,12 +277,9 @@ class RealtimeMiddleTier:
 
         logger.info("Realtime tool call: %s(%s)", name, args_str[:200])
 
-        if name == "invoke_agent":
-            result = await handle_invoke_agent(args, self.agent)
-        elif name == "invoke_agent_async":
-            result = await handle_invoke_agent_async(args, self.agent)
-        elif name == "check_agent_task":
-            result = await handle_check_agent_task(args)
+        handler = _TOOL_DISPATCH.get(name)
+        if handler:
+            result = await handler(args, self.agent)
         else:
             result = f"Unknown tool: {name}"
 
@@ -300,6 +294,21 @@ class RealtimeMiddleTier:
         if self._token_provider:
             return {"Authorization": f"Bearer {self._token_provider()}"}
         raise ValueError("No authentication configured for OpenAI Realtime")
+
+
+# -- tool dispatch table ---------------------------------------------------
+
+
+async def _dispatch_check_agent_task(args: dict[str, Any], agent: Any) -> str:
+    """Thin adapter so check_agent_task matches the ``(args, agent)`` signature."""
+    return await handle_check_agent_task(args)
+
+
+_TOOL_DISPATCH: dict[str, Any] = {
+    "invoke_agent": handle_invoke_agent,
+    "invoke_agent_async": handle_invoke_agent_async,
+    "check_agent_task": _dispatch_check_agent_task,
+}
 
 
 class _ToolCall:

@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-import logging
 import time
 from pathlib import Path
 from typing import Any
 
 from ..config.settings import cfg
 from ..util.singletons import register_singleton
-
-logger = logging.getLogger(__name__)
 
 _DEFAULT_PROFILE: dict[str, Any] = {
     "name": "polyclaw",
@@ -24,6 +21,11 @@ _DEFAULT_PROFILE: dict[str, Any] = {
 
 def _profile_path() -> Path:
     return cfg.data_dir / "agent_profile.json"
+
+
+def profile_path() -> Path:
+    """Return the path to the agent profile JSON file."""
+    return _profile_path()
 
 
 def _usage_path() -> Path:

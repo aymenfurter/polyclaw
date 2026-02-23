@@ -1,4 +1,4 @@
-"""Tests for incoming media (extract_outgoing_attachments, download_attachment)."""
+"""Tests for media extraction (extract_outgoing_attachments, download_attachment)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.runtime.media.incoming import build_media_prompt, extract_outgoing_attachments
+from app.runtime.media.incoming import build_media_prompt
+from app.runtime.media.outgoing import extract_outgoing_attachments
 
 
 class TestExtractOutgoingAttachments:

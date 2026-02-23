@@ -152,7 +152,7 @@ class MemoryFormation:
 
     @staticmethod
     def _build_system_message() -> str:
-        from .profile import _profile_path, _usage_path as _skill_usage_path
+        from .profile import profile_path, _usage_path as _skill_usage_path
 
         template = (_TEMPLATES_DIR / "memory_prompt.md").read_text()
 
@@ -163,7 +163,7 @@ class MemoryFormation:
         return template.format(
             memory_daily_dir=cfg.memory_daily_dir,
             memory_topics_dir=cfg.memory_topics_dir,
-            profile_path=_profile_path(),
+            profile_path=profile_path(),
             skill_usage_path=_skill_usage_path(),
             suggestions_path=cfg.data_dir / "suggestions.txt",
             data_dir=cfg.data_dir,
@@ -173,8 +173,6 @@ class MemoryFormation:
 
     @staticmethod
     def _build_proactive_section() -> str:
-        from .session_store import SessionStore
-
         proactive_template = (_TEMPLATES_DIR / "proactive_prompt_section.md").read_text()
         store = get_proactive_store()
 
@@ -321,14 +319,17 @@ class MemoryFormation:
 
             hours_since = store.hours_since_last_sent()
             if hours_since is not None and hours_since < prefs.min_gap_hours:
-                logger.info("Proactive gap too short (%.1fh < %dh), skipping.", hours_since, prefs.min_gap_hours)
+                logger.info(
+                    "Proactive gap too short (%.1fh < %dh), skipping.",
+                    hours_since, prefs.min_gap_hours,
+                )
                 return
 
             store.schedule_followup(message=message, deliver_at=deliver_at, context=context)
             self._last_proactive_scheduled = True
             logger.info("Proactive follow-up scheduled: %s at %s", message[:50], deliver_at)
         except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("Failed to process proactive follow-up: %s", exc)
+            logger.warning("Failed to process proactive follow-up: %s", exc, exc_info=True)
             try:
                 followup_path.unlink(missing_ok=True)
             except OSError:
@@ -361,7 +362,7 @@ class MemoryFormation:
                     store.update_preferences(avoided_topics=list(prefs.avoided_topics) + [detail])
                     logger.info("Added avoided topic from negative reaction: %s", detail)
         except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("Failed to process proactive reaction: %s", exc)
+            logger.warning("Failed to process proactive reaction: %s", exc, exc_info=True)
             try:
                 reaction_path.unlink(missing_ok=True)
             except OSError:

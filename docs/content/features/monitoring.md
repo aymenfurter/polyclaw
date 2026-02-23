@@ -84,11 +84,24 @@ When enabled, the Live Metrics stream provides a real-time view of request rate,
 
 ---
 
+## Agent Framework Dashboard in Application Insights
+
+Polyclaw emits telemetry in the format expected by the Microsoft Agent Framework. This means the built-in **Agent Framework dashboard** available in Application Insights works out of the box -- no extra configuration or custom queries required.
+
+The dashboard surfaces agent-level metrics such as session counts, tool invocation success rates, model call latency, and failure breakdowns, all derived from the spans and semantic attributes that Polyclaw already produces.
+
+![Agent Framework dashboard in Application Insights](/screenshots/mafpreview-appinsights.png)
+
+Because the telemetry follows the Agent Framework conventions (`gen_ai.system`, `gen_ai.request.model`, operation names, dependency types), the dashboard can correlate traces across the full request lifecycle -- from incoming user messages through model calls and tool executions to the final response.
+
+---
+
 ## Dashboard Links
 
 After provisioning, the monitoring configuration provides direct links to:
 
 - **Azure Portal** -- Application Insights overview, transaction search, failures, and performance views
+- **Agent Framework Dashboard** -- the built-in agent monitoring view in Application Insights, powered by the telemetry format described above
 - **Grafana Agent Dashboard** -- pre-built dashboard URL for Azure Managed Grafana (if configured)
 
 ---

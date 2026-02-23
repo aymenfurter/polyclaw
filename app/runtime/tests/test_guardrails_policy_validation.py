@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.runtime.state.guardrails_config import (
+from app.runtime.state.guardrails import (
     GuardrailsConfigStore,
     PRESET_BALANCED,
     PRESET_PERMISSIVE,
@@ -151,16 +151,19 @@ class TestBalancedPolicy:
         self.s = _store(tmp_path)
         self.s.apply_preset(PRESET_BALANCED, auto_models=False)
 
-    def test_file_ops_filtered_everywhere(self) -> None:
-        for ctx in ("interactive", "background"):
-            assert self.s.resolve_action("create", execution_context=ctx) == "filter"
-            assert self.s.resolve_action("edit", execution_context=ctx) == "filter"
+    def test_file_ops_filtered_interactive(self) -> None:
+        assert self.s.resolve_action("create", execution_context="interactive") == "filter"
+        assert self.s.resolve_action("edit", execution_context="interactive") == "filter"
+
+    def test_file_ops_aitl_background(self) -> None:
+        assert self.s.resolve_action("create", execution_context="background") == "aitl"
+        assert self.s.resolve_action("edit", execution_context="background") == "aitl"
 
     def test_terminal_hitl_interactive(self) -> None:
         assert self.s.resolve_action("run", execution_context="interactive") == "hitl"
 
-    def test_terminal_denied_background(self) -> None:
-        assert self.s.resolve_action("run", execution_context="background") == "deny"
+    def test_terminal_aitl_background(self) -> None:
+        assert self.s.resolve_action("run", execution_context="background") == "aitl"
 
     def test_playwright_hitl_background(self) -> None:
         assert self.s.resolve_action(
@@ -469,7 +472,7 @@ class TestMixedScenario:
         )
 
     def test_voice_call_denied_by_rule(self) -> None:
-        # make_voice_call is in preset tool_policies (high risk -> hitl interactive / deny bg)
+        # make_voice_call is in preset tool_policies (high risk -> hitl interactive / aitl bg)
         # Since it's in tool_policies, the rule doesn't override it for preset contexts.
         # But the tool_policies entry comes first.
         # Interactive: make_voice_call = hitl (preset balanced: high risk interactive)
@@ -477,10 +480,10 @@ class TestMixedScenario:
             "make_voice_call", execution_context="interactive",
         ) == "hitl"
 
-    def test_voice_call_denied_background(self) -> None:
+    def test_voice_call_aitl_background(self) -> None:
         assert self.s.resolve_action(
             "make_voice_call", execution_context="background",
-        ) == "deny"
+        ) == "aitl"
 
     def test_strong_model_create_files_filtered(self) -> None:
         assert self.s.resolve_action("create", model="gpt-5.3-codex") == "filter"

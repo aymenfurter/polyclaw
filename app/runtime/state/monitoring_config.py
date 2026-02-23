@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-import json
-import logging
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any
 
-from ..config.settings import cfg
-
-logger = logging.getLogger(__name__)
+from ._base import BaseConfigStore
 
 
 def _url_encode_slashes(path: str) -> str:
@@ -34,21 +29,12 @@ class MonitoringConfig:
     subscription_id: str = ""
 
 
-class MonitoringConfigStore:
+class MonitoringConfigStore(BaseConfigStore[MonitoringConfig]):
     """JSON-file-backed monitoring / OTel configuration."""
 
-    def __init__(self, path: Path | None = None) -> None:
-        self._path = path or (cfg.data_dir / "monitoring.json")
-        self._config = MonitoringConfig()
-        self._load()
-
-    @property
-    def path(self) -> Path:
-        return self._path
-
-    @property
-    def config(self) -> MonitoringConfig:
-        return self._config
+    _config_type = MonitoringConfig
+    _default_filename = "monitoring.json"
+    _log_label = "monitoring config"
 
     @property
     def enabled(self) -> bool:
@@ -157,27 +143,4 @@ class MonitoringConfigStore:
         """Return the full config including secrets -- internal use only."""
         return asdict(self._config)
 
-    def _load(self) -> None:
-        if not self._path.exists():
-            return
-        try:
-            raw = json.loads(self._path.read_text())
-            self._config = MonitoringConfig(
-                enabled=raw.get("enabled", False),
-                connection_string=raw.get("connection_string", ""),
-                sampling_ratio=raw.get("sampling_ratio", 1.0),
-                enable_live_metrics=raw.get("enable_live_metrics", False),
-                instrumentation_options=raw.get("instrumentation_options", {}),
-                provisioned=raw.get("provisioned", False),
-                app_insights_name=raw.get("app_insights_name", ""),
-                workspace_name=raw.get("workspace_name", ""),
-                resource_group=raw.get("resource_group", ""),
-                location=raw.get("location", ""),
-                subscription_id=raw.get("subscription_id", ""),
-            )
-        except Exception as exc:
-            logger.warning("Failed to load monitoring config from %s: %s", self._path, exc)
 
-    def _save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(asdict(self._config), indent=2) + "\n")

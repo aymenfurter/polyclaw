@@ -28,7 +28,7 @@ from rich.markdown import Markdown
 
 from app.runtime.agent.agent import Agent
 from app.runtime.config.settings import cfg
-from app.runtime.state.guardrails_config import GuardrailsConfigStore
+from app.runtime.state.guardrails import GuardrailsConfigStore
 from app.runtime.state.memory import get_memory
 from app.runtime.state.sandbox_config import SandboxConfigStore
 from app.runtime.state.session_store import SessionStore

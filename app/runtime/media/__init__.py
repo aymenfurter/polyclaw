@@ -1,10 +1,11 @@
 """Media handling -- type classification, download, and outgoing extraction."""
 
 from .classify import EXTENSION_TO_MIME, classify
-from .incoming import build_media_prompt, download_attachment, extract_outgoing_attachments
+from .incoming import build_media_prompt, download_attachment
 from .outgoing import (
     MAX_OUTGOING_FILE_BYTES,
     collect_pending_outgoing,
+    extract_outgoing_attachments,
     move_attachments_to_error,
     read_error_details,
 )

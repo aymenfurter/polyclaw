@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.runtime.util.spotlight import datamark, delimit, spotlight
-from app.runtime.state.guardrails_config import GuardrailsConfigStore
+from app.runtime.state.guardrails import GuardrailsConfigStore
 
 import pytest
 
@@ -95,13 +95,13 @@ class TestGuardrailsSpotlightingConfig:
     """Guardrails store persists and exposes the aitl_spotlighting toggle."""
 
     def test_default_enabled(self, tmp_path: Path) -> None:
-        with patch("app.runtime.state.guardrails_config.cfg") as mock_cfg:
+        with patch("app.runtime.state.guardrails.config.cfg") as mock_cfg:
             mock_cfg.data_dir = tmp_path
             store = GuardrailsConfigStore(tmp_path / "guardrails.json")
         assert store.config.aitl_spotlighting is True
 
     def test_toggle_off_and_persist(self, tmp_path: Path) -> None:
-        with patch("app.runtime.state.guardrails_config.cfg") as mock_cfg:
+        with patch("app.runtime.state.guardrails.config.cfg") as mock_cfg:
             mock_cfg.data_dir = tmp_path
             store = GuardrailsConfigStore(tmp_path / "guardrails.json")
             store.set_aitl_spotlighting(False)
@@ -112,7 +112,7 @@ class TestGuardrailsSpotlightingConfig:
         assert store2.config.aitl_spotlighting is False
 
     def test_toggle_on_and_persist(self, tmp_path: Path) -> None:
-        with patch("app.runtime.state.guardrails_config.cfg") as mock_cfg:
+        with patch("app.runtime.state.guardrails.config.cfg") as mock_cfg:
             mock_cfg.data_dir = tmp_path
             store = GuardrailsConfigStore(tmp_path / "guardrails.json")
             store.set_aitl_spotlighting(False)
@@ -120,7 +120,7 @@ class TestGuardrailsSpotlightingConfig:
             assert store.config.aitl_spotlighting is True
 
     def test_to_dict_includes_spotlighting(self, tmp_path: Path) -> None:
-        with patch("app.runtime.state.guardrails_config.cfg") as mock_cfg:
+        with patch("app.runtime.state.guardrails.config.cfg") as mock_cfg:
             mock_cfg.data_dir = tmp_path
             store = GuardrailsConfigStore(tmp_path / "guardrails.json")
         d = store.to_dict()

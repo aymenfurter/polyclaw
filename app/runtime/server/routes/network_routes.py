@@ -10,9 +10,11 @@ from typing import Any
 from aiohttp import ClientSession, ClientTimeout, web
 
 from ...config.settings import cfg
-from ...services.azure import AzureCLI
+from ...services.cloud.azure import AzureCLI
 from ...state.foundry_iq_config import FoundryIQConfigStore
 from ...state.sandbox_config import SandboxConfigStore
+from .network_audit import audit_resource, collect_resource_groups
+from .network_topology import build_components, build_containers
 
 logger = logging.getLogger(__name__)
 
@@ -164,10 +166,10 @@ class NetworkRoutes:
         tunnel_info = await resolve_tunnel_info(self._tunnel, self._az)
 
         # Build component info (what network connections are configured)
-        components = self._build_components(deploy_mode, tunnel_info)
+        components = build_components(deploy_mode, self._tunnel, tunnel_info)
 
         # Build container topology for dual-container deployments
-        containers = self._build_containers(deploy_mode, server_mode, admin_port)
+        containers = build_containers(deploy_mode, server_mode, admin_port)
 
         return web.json_response({
             "deploy_mode": deploy_mode,
@@ -455,157 +457,6 @@ class NetworkRoutes:
         results.sort(key=lambda e: (e["category"], e["path"], e["method"]))
         return results
 
-    def _build_containers(
-        self,
-        deploy_mode: str,
-        server_mode: str,
-        admin_port: int,
-    ) -> list[dict[str, Any]]:
-        """Build container topology for the network diagram.
-
-        Only states facts that can be read from the current environment
-        or configuration.  Identity and volume claims are intentionally
-        omitted -- those are verified by the probe endpoint.
-        """
-        if deploy_mode == "docker":
-            runtime_port = int(os.getenv("RUNTIME_PORT", "8080"))
-            runtime_url = os.getenv("RUNTIME_URL", "http://runtime:8080")
-            # Parse actual port from RUNTIME_URL if set
-            if ":" in runtime_url.rsplit("/", 1)[-1]:
-                try:
-                    runtime_port = int(runtime_url.rsplit(":", 1)[-1].rstrip("/"))
-                except ValueError:
-                    pass
-            return [
-                {
-                    "role": "admin",
-                    "label": "Admin Container",
-                    "port": admin_port,
-                    "host": "127.0.0.1",
-                    "exposure": "localhost-only",
-                },
-                {
-                    "role": "runtime",
-                    "label": "Agent Container",
-                    "port": runtime_port,
-                    "host": "runtime",
-                    "exposure": "tunnel (Cloudflare)",
-                },
-            ]
-        if deploy_mode == "aca":
-            aca_name = os.getenv("ACA_ENV_NAME", "polyclaw")
-            runtime_port = int(os.getenv("RUNTIME_PORT", "8080"))
-            return [
-                {
-                    "role": "admin",
-                    "label": "Admin Container",
-                    "port": admin_port,
-                    "host": "internal",
-                    "exposure": "internal-only",
-                },
-                {
-                    "role": "runtime",
-                    "label": "Agent Container",
-                    "port": runtime_port,
-                    "host": aca_name,
-                    "exposure": "ACA ingress",
-                },
-            ]
-        # local / combined -- single process
-        return [
-            {
-                "role": "combined",
-                "label": "Polyclaw Server",
-                "port": admin_port,
-                "host": "localhost",
-                "exposure": "localhost",
-            },
-        ]
-
-    def _build_components(
-        self, deploy_mode: str, tunnel_info: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Build the list of network-connected components."""
-        components: list[dict[str, Any]] = []
-
-        # Azure OpenAI / Foundry
-        aoai_endpoint = cfg.azure_openai_endpoint
-        if aoai_endpoint:
-            components.append({
-                "name": "Azure OpenAI",
-                "type": "ai",
-                "endpoint": aoai_endpoint,
-                "deployment": cfg.azure_openai_realtime_deployment,
-                "status": "configured",
-            })
-
-        # GitHub Copilot (model backend)
-        if cfg.github_token:
-            components.append({
-                "name": "GitHub Copilot",
-                "type": "ai",
-                "endpoint": "https://api.githubcopilot.com",
-                "model": cfg.copilot_model,
-                "status": "configured",
-            })
-
-        # ACS (Communication Services)
-        if cfg.acs_connection_string:
-            components.append({
-                "name": "Azure Communication Services",
-                "type": "communication",
-                "status": "configured",
-                "source_number": cfg.acs_source_number or None,
-            })
-
-        # Cloudflare Tunnel -- use pre-resolved tunnel_info when available
-        if tunnel_info is not None:
-            components.append({
-                "name": "Cloudflare Tunnel",
-                "type": "tunnel",
-                "status": "active" if tunnel_info["active"] else "inactive",
-                "url": tunnel_info["url"],
-                "restricted": tunnel_info["restricted"],
-            })
-        else:
-            components.append({
-                "name": "Cloudflare Tunnel",
-                "type": "tunnel",
-                "status": "active" if getattr(self._tunnel, "is_active", False) else "inactive",
-                "url": getattr(self._tunnel, "url", None),
-                "restricted": cfg.tunnel_restricted,
-            })
-
-        # Azure Bot Service
-        if cfg.bot_app_id:
-            components.append({
-                "name": "Azure Bot Service",
-                "type": "bot",
-                "status": "configured",
-                "app_id": cfg.bot_app_id[:12] + "..." if cfg.bot_app_id else None,
-            })
-
-        # Foundry IQ / AI Search (check env for search endpoint)
-        search_endpoint = cfg.env.read("SEARCH_ENDPOINT") or ""
-        if search_endpoint:
-            components.append({
-                "name": "Azure AI Search",
-                "type": "search",
-                "endpoint": search_endpoint,
-                "status": "configured",
-            })
-
-        # Storage / Data directory
-        components.append({
-            "name": "Local Data Store",
-            "type": "storage",
-            "path": str(cfg.data_dir),
-            "status": "active",
-            "deploy_mode": deploy_mode,
-        })
-
-        return components
-
     # ------------------------------------------------------------------
     # Resource network audit
     # ------------------------------------------------------------------
@@ -619,7 +470,9 @@ class NetworkRoutes:
         if not self._az:
             return web.json_response({"resources": [], "error": "Azure CLI not available"})
 
-        resource_groups = self._collect_resource_groups()
+        resource_groups = collect_resource_groups(
+            cfg, self._sandbox_store, self._foundry_iq_store,
+        )
         if not resource_groups:
             return web.json_response({"resources": []})
 
@@ -631,266 +484,8 @@ class NetworkRoutes:
             for r in raw:
                 rtype = (r.get("type") or "").lower()
                 rname = r.get("name", "")
-                audit = self._audit_resource(rg, rname, rtype)
+                audit = audit_resource(self._az, rg, rname, rtype)
                 if audit:
                     resources.append(audit)
 
         return web.json_response({"resources": resources})
-
-    def _collect_resource_groups(self) -> list[str]:
-        """Gather all known resource groups from config stores."""
-        rgs: set[str] = set()
-
-        # Main bot / infra resource group
-        bot_rg = cfg.env.read("RESOURCE_GROUP") or ""
-        if bot_rg:
-            rgs.add(bot_rg)
-
-        # Sandbox
-        if self._sandbox_store:
-            sb = self._sandbox_store.config
-            if sb.resource_group:
-                rgs.add(sb.resource_group)
-
-        # Foundry IQ
-        if self._foundry_iq_store:
-            fiq = self._foundry_iq_store.config
-            if fiq.resource_group:
-                rgs.add(fiq.resource_group)
-
-        # Deploy state resource group
-        deploy_rg = cfg.env.read("DEPLOY_RESOURCE_GROUP") or ""
-        if deploy_rg:
-            rgs.add(deploy_rg)
-
-        # Voice resource group
-        voice_rg = cfg.env.read("VOICE_RESOURCE_GROUP") or ""
-        if voice_rg:
-            rgs.add(voice_rg)
-
-        return list(rgs)
-
-    def _audit_resource(self, rg: str, name: str, rtype: str) -> dict[str, Any] | None:
-        """Return a network audit dict for a single Azure resource."""
-        if "microsoft.storage/storageaccounts" in rtype:
-            return self._audit_storage(rg, name)
-        if "microsoft.keyvault/vaults" in rtype:
-            return self._audit_keyvault(rg, name)
-        if "microsoft.cognitiveservices/accounts" in rtype:
-            return self._audit_cognitive(rg, name)
-        if "microsoft.search/searchservices" in rtype:
-            return self._audit_search(rg, name)
-        if "microsoft.containerregistry/registries" in rtype:
-            return self._audit_acr(rg, name)
-        if "microsoft.app/sessionpools" in rtype:
-            return self._audit_session_pool(rg, name)
-        if "microsoft.communication/communicationservices" in rtype:
-            return self._audit_acs(rg, name)
-        return None
-
-    def _audit_storage(self, rg: str, name: str) -> dict[str, Any] | None:
-        info = self._az.json("storage", "account", "show", "--name", name, "--resource-group", rg)
-        if not isinstance(info, dict):
-            return None
-        props = info.get("properties") or info
-        net_rules = props.get("networkRuleSet") or props.get("networkAcls") or {}
-        default_action = (net_rules.get("defaultAction") or "Allow")
-        ip_rules = net_rules.get("ipRules") or []
-        vnet_rules = net_rules.get("virtualNetworkRules") or []
-        allowed_ips = [r.get("value", r.get("ipAddressOrRange", "")) for r in ip_rules]
-        allowed_vnets = [r.get("id", "") for r in vnet_rules]
-        public_blob = props.get("allowBlobPublicAccess", True)
-        https_only = info.get("enableHttpsTrafficOnly", props.get("supportsHttpsTrafficOnly", True))
-        min_tls = props.get("minimumTlsVersion", "TLS1_0")
-        private_eps = self._get_private_endpoints(props)
-
-        return {
-            "name": name,
-            "resource_group": rg,
-            "type": "Storage Account",
-            "icon": "storage",
-            "public_access": default_action == "Allow",
-            "default_action": default_action,
-            "allowed_ips": allowed_ips,
-            "allowed_vnets": allowed_vnets,
-            "private_endpoints": private_eps,
-            "https_only": https_only,
-            "min_tls_version": min_tls,
-            "extra": {
-                "public_blob_access": public_blob,
-            },
-        }
-
-    def _audit_keyvault(self, rg: str, name: str) -> dict[str, Any] | None:
-        info = self._az.json("keyvault", "show", "--name", name, "--resource-group", rg)
-        if not isinstance(info, dict):
-            return None
-        props = info.get("properties") or info
-        net_acls = props.get("networkAcls") or {}
-        default_action = (net_acls.get("defaultAction") or "Allow")
-        ip_rules = net_acls.get("ipRules") or []
-        vnet_rules = net_acls.get("virtualNetworkRules") or []
-        allowed_ips = [r.get("value", "") for r in ip_rules]
-        allowed_vnets = [r.get("id", "") for r in vnet_rules]
-        public_access = props.get("publicNetworkAccess", "Enabled")
-        private_eps = self._get_private_endpoints(props)
-        rbac = props.get("enableRbacAuthorization", False)
-        soft_delete = props.get("enableSoftDelete", False)
-        purge_protect = props.get("enablePurgeProtection", False)
-
-        return {
-            "name": name,
-            "resource_group": rg,
-            "type": "Key Vault",
-            "icon": "keyvault",
-            "public_access": public_access != "Disabled" and default_action == "Allow",
-            "default_action": default_action,
-            "allowed_ips": allowed_ips,
-            "allowed_vnets": allowed_vnets,
-            "private_endpoints": private_eps,
-            "extra": {
-                "public_network_access": public_access,
-                "rbac_authorization": rbac,
-                "soft_delete": soft_delete,
-                "purge_protection": purge_protect,
-            },
-        }
-
-    def _audit_cognitive(self, rg: str, name: str) -> dict[str, Any] | None:
-        """Audit Azure OpenAI / Cognitive Services accounts."""
-        info = self._az.json(
-            "cognitiveservices", "account", "show",
-            "--name", name, "--resource-group", rg,
-        )
-        if not isinstance(info, dict):
-            return None
-        props = info.get("properties") or info
-        net_acls = props.get("networkAcls") or {}
-        default_action = (net_acls.get("defaultAction") or "Allow")
-        ip_rules = net_acls.get("ipRules") or []
-        vnet_rules = net_acls.get("virtualNetworkRules") or []
-        allowed_ips = [r.get("value", "") for r in ip_rules]
-        allowed_vnets = [r.get("id", "") for r in vnet_rules]
-        public_access = props.get("publicNetworkAccess", "Enabled")
-        private_eps = self._get_private_endpoints(props)
-        kind = info.get("kind", "CognitiveServices")
-        endpoint = props.get("endpoint") or (props.get("endpoints") or {}).get("OpenAI Language Model Instance API", "")
-
-        label = "Azure OpenAI" if kind.lower() == "openai" else f"Cognitive Services ({kind})"
-
-        return {
-            "name": name,
-            "resource_group": rg,
-            "type": label,
-            "icon": "ai",
-            "public_access": public_access != "Disabled" and default_action == "Allow",
-            "default_action": default_action,
-            "allowed_ips": allowed_ips,
-            "allowed_vnets": allowed_vnets,
-            "private_endpoints": private_eps,
-            "extra": {
-                "public_network_access": public_access,
-                "kind": kind,
-                "endpoint": endpoint,
-            },
-        }
-
-    def _audit_search(self, rg: str, name: str) -> dict[str, Any] | None:
-        """Audit Azure AI Search service."""
-        info = self._az.json(
-            "search", "service", "show",
-            "--name", name, "--resource-group", rg,
-        )
-        if not isinstance(info, dict):
-            return None
-        props = info.get("properties") or info
-        public_access = props.get("publicNetworkAccess", "enabled")
-        ip_rules = (props.get("networkRuleSet") or {}).get("ipRules") or []
-        allowed_ips = [r.get("value", "") for r in ip_rules]
-        private_eps = self._get_private_endpoints(props)
-
-        return {
-            "name": name,
-            "resource_group": rg,
-            "type": "Azure AI Search",
-            "icon": "search",
-            "public_access": public_access.lower() != "disabled",
-            "default_action": "Allow" if public_access.lower() != "disabled" else "Deny",
-            "allowed_ips": allowed_ips,
-            "allowed_vnets": [],
-            "private_endpoints": private_eps,
-            "extra": {
-                "public_network_access": public_access,
-                "sku": info.get("sku", {}).get("name", ""),
-            },
-        }
-
-    def _audit_acr(self, rg: str, name: str) -> dict[str, Any] | None:
-        info = self._az.json("acr", "show", "--name", name, "--resource-group", rg)
-        if not isinstance(info, dict):
-            return None
-        public_access = info.get("publicNetworkAccess", "Enabled")
-        net_rules = info.get("networkRuleSet") or {}
-        default_action = (net_rules.get("defaultAction") or "Allow")
-        ip_rules = net_rules.get("ipRules") or []
-        allowed_ips = [r.get("value", "") for r in ip_rules]
-        admin_enabled = info.get("adminUserEnabled", False)
-
-        return {
-            "name": name,
-            "resource_group": rg,
-            "type": "Container Registry",
-            "icon": "acr",
-            "public_access": public_access == "Enabled",
-            "default_action": default_action,
-            "allowed_ips": allowed_ips,
-            "allowed_vnets": [],
-            "private_endpoints": [],
-            "extra": {
-                "admin_user_enabled": admin_enabled,
-                "sku": info.get("sku", {}).get("name", ""),
-            },
-        }
-
-    def _audit_session_pool(self, rg: str, name: str) -> dict[str, Any] | None:
-        """Audit Azure Container Apps session pool."""
-        return {
-            "name": name,
-            "resource_group": rg,
-            "type": "Session Pool",
-            "icon": "sandbox",
-            "public_access": True,
-            "default_action": "Allow",
-            "allowed_ips": [],
-            "allowed_vnets": [],
-            "private_endpoints": [],
-            "extra": {},
-        }
-
-    def _audit_acs(self, rg: str, name: str) -> dict[str, Any] | None:
-        """Audit Azure Communication Services."""
-        return {
-            "name": name,
-            "resource_group": rg,
-            "type": "Communication Services",
-            "icon": "communication",
-            "public_access": True,
-            "default_action": "Allow",
-            "allowed_ips": [],
-            "allowed_vnets": [],
-            "private_endpoints": [],
-            "extra": {},
-        }
-
-    @staticmethod
-    def _get_private_endpoints(props: dict[str, Any]) -> list[str]:
-        """Extract private endpoint names from a resource's properties."""
-        pe_conns = props.get("privateEndpointConnections", [])
-        results: list[str] = []
-        for pec in pe_conns:
-            pe = pec.get("privateEndpoint", {})
-            pe_id = pe.get("id", "")
-            if pe_id:
-                # Extract just the endpoint name from the full resource ID
-                results.append(pe_id.rsplit("/", 1)[-1])
-        return results

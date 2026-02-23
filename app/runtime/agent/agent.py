@@ -14,7 +14,7 @@ from copilot import CopilotClient
 from ..config.settings import cfg
 from ..sandbox import SandboxExecutor, SandboxToolInterceptor
 from ..services.otel import invoke_agent_span, set_span_attribute
-from ..state.guardrails_config import GuardrailsConfigStore
+from ..state.guardrails import GuardrailsConfigStore
 from ..state.mcp_config import McpConfigStore
 from .event_handler import EventHandler
 from .hitl import HitlInterceptor
@@ -352,26 +352,20 @@ class Agent:
             logger.warning("Failed to list models: %s", exc)
             return []
 
-    def _build_session_config(self) -> dict[str, Any]:
-        sandbox_active = self._interceptor and self._sandbox and self._sandbox.enabled
-        # Always register the HITL hook when an interceptor exists so that
-        # guardrails config changes (enable/disable) take effect without
-        # requiring a session restart.  The hook itself checks hitl_enabled
-        # at call time via resolve_action() which returns "allow" when off.
-        hitl_available = self._hitl is not None
-
-        logger.info(
-            "[agent.config] building session config: "
-            "sandbox_active=%s hitl_available=%s hitl_enabled=%s",
-            sandbox_active, hitl_available,
-            self._guardrails.hitl_enabled if self._guardrails else "(no store)",
+    def _build_hooks(self) -> dict[str, Any]:
+        """Compose pre/post-tool-use hooks from active interceptors."""
+        sandbox_active = (
+            self._interceptor and self._sandbox and self._sandbox.enabled
         )
+        hitl_available = self._hitl is not None
 
         if sandbox_active and hitl_available:
             hitl = self._hitl
             sandbox = self._interceptor
 
-            async def chained_pre_tool_use(input_data: dict, invocation: Any) -> dict:
+            async def chained_pre_tool_use(
+                input_data: dict, invocation: Any,
+            ) -> dict:
                 logger.info(
                     "[agent.hook] chained_pre_tool_use called: tool=%s",
                     input_data.get("toolName", "?"),
@@ -380,7 +374,9 @@ class Agent:
                 if result.get("permissionDecision") != "allow":
                     logger.info("[agent.hook] hitl denied, skipping sandbox")
                     return result
-                logger.info("[agent.hook] hitl allowed, proceeding to sandbox")
+                logger.info(
+                    "[agent.hook] hitl allowed, proceeding to sandbox",
+                )
                 return await sandbox.on_pre_tool_use(input_data, invocation)
 
             hooks: dict[str, Any] = {
@@ -399,30 +395,66 @@ class Agent:
             logger.info("[agent.config] hooks: sandbox only")
         else:
             hooks = {"on_pre_tool_use": auto_approve}
-            logger.info("[agent.config] hooks: auto_approve (no hitl, no sandbox)")
+            logger.info(
+                "[agent.config] hooks: auto_approve (no hitl, no sandbox)",
+            )
+
+        return hooks
+
+    def _build_session_config(self) -> dict[str, Any]:
+        """Assemble the full session configuration for the Copilot SDK."""
+        sandbox_active = (
+            self._interceptor and self._sandbox and self._sandbox.enabled
+        )
+        logger.info(
+            "[agent.config] building session config: "
+            "sandbox_active=%s hitl_available=%s hitl_enabled=%s",
+            sandbox_active, self._hitl is not None,
+            self._guardrails.hitl_enabled if self._guardrails else "(no store)",
+        )
 
         session_cfg: dict[str, Any] = {
             "model": cfg.copilot_model,
             "streaming": True,
             "tools": get_all_tools(),
-            "system_message": {"mode": "replace", "content": build_system_prompt()},
-            "hooks": hooks,
-            "skill_directories": [str(cfg.builtin_skills_dir), str(cfg.user_skills_dir)],
+            "system_message": {
+                "mode": "replace",
+                "content": build_system_prompt(),
+            },
+            "hooks": self._build_hooks(),
+            "skill_directories": [
+                str(cfg.builtin_skills_dir),
+                str(cfg.user_skills_dir),
+            ],
         }
 
         if sandbox_active:
-            session_cfg["excluded_tools"] = ["create", "view", "edit", "grep", "glob"]
+            session_cfg["excluded_tools"] = [
+                "create", "view", "edit", "grep", "glob",
+            ]
 
         try:
-            session_cfg["mcp_servers"] = McpConfigStore().get_enabled_servers()
+            session_cfg["mcp_servers"] = (
+                McpConfigStore().get_enabled_servers()
+            )
         except Exception:
-            logger.warning("Failed to load MCP config, using defaults", exc_info=True)
+            logger.warning(
+                "Failed to load MCP config, using defaults",
+                exc_info=True,
+            )
             session_cfg["mcp_servers"] = {
                 "playwright": {
                     "type": "local",
                     "command": "npx",
-                    "args": ["-y", "@playwright/mcp@latest", "--browser", "chromium", "--headless", "--isolated"],
-                    "env": {"PLAYWRIGHT_CHROMIUM_ARGS": "--no-sandbox --disable-setuid-sandbox"},
+                    "args": [
+                        "-y", "@playwright/mcp@latest",
+                        "--browser", "chromium",
+                        "--headless", "--isolated",
+                    ],
+                    "env": {
+                        "PLAYWRIGHT_CHROMIUM_ARGS":
+                            "--no-sandbox --disable-setuid-sandbox",
+                    },
                     "tools": ["*"],
                 },
             }

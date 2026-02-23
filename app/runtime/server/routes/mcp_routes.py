@@ -167,7 +167,3 @@ class McpRoutes:
             "servers": servers,
             "source": "github.com/mcp",
         })
-
-
-def _error(message: str, status: int = 500) -> web.Response:
-    return web.json_response({"status": "error", "message": message}, status=status)

@@ -8,7 +8,7 @@ from typing import Any
 
 from aiohttp import web
 
-from ...services.azure import AzureCLI
+from ...services.cloud.azure import AzureCLI
 from ...services.foundry_iq import (
     delete_index,
     ensure_index,
@@ -21,6 +21,7 @@ from ...services.foundry_iq import (
 from ...state.deploy_state import DeployStateStore
 from ...state.foundry_iq_config import FoundryIQConfigStore
 from ...util.async_helpers import run_sync
+from ._helpers import fail_response as _fail_response, no_az as _no_az
 
 logger = logging.getLogger(__name__)
 
@@ -436,15 +437,3 @@ class FoundryIQRoutes:
         })
         return deployment_name
 
-
-def _no_az() -> web.Response:
-    return web.json_response(
-        {"status": "error", "message": "Azure CLI not available"}, status=500
-    )
-
-
-def _fail_response(steps: list[dict[str, Any]]) -> web.Response:
-    return web.json_response(
-        {"status": "error", "message": "Provisioning failed", "steps": steps},
-        status=500,
-    )

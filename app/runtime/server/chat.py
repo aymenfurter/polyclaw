@@ -109,21 +109,44 @@ class ChatHandler:
     async def _dispatch(self, ws: web.WebSocketResponse, data: dict) -> None:
         action = data.get("action", "")
         logger.info("[chat.dispatch] action=%s keys=%s", action, list(data.keys()))
-        if action == "new_session":
-            await self._agent.new_session()
-            session_id = str(uuid.uuid4())
-            logger.info("[chat.dispatch] new session created: %s", session_id)
-            self._sessions.start_session(session_id, model=cfg.copilot_model)
-            await ws.send_json({"type": "session_created", "session_id": session_id})
-        elif action == "resume_session":
-            await self._resume_session(ws, data.get("session_id", ""))
-        elif action == "send":
-            await self._send_prompt(ws, data)
-        elif action == "approve_tool":
-            await self._handle_tool_approval(ws, data)
+
+        handler = self._ACTION_DISPATCH.get(action)
+        if handler is not None:
+            await handler(self, ws, data)
         else:
             logger.warning("[chat.dispatch] unknown action: %s", action)
             await ws.send_json({"type": "error", "content": f"Unknown action: {action}"})
+
+    async def _handle_new_session(
+        self, ws: web.WebSocketResponse, _data: dict
+    ) -> None:
+        await self._agent.new_session()
+        session_id = str(uuid.uuid4())
+        logger.info("[chat.dispatch] new session created: %s", session_id)
+        self._sessions.start_session(session_id, model=cfg.copilot_model)
+        await ws.send_json({"type": "session_created", "session_id": session_id})
+
+    async def _dispatch_resume(
+        self, ws: web.WebSocketResponse, data: dict
+    ) -> None:
+        await self._resume_session(ws, data.get("session_id", ""))
+
+    async def _dispatch_send(
+        self, ws: web.WebSocketResponse, data: dict
+    ) -> None:
+        await self._send_prompt(ws, data)
+
+    async def _dispatch_approve(
+        self, ws: web.WebSocketResponse, data: dict
+    ) -> None:
+        await self._handle_tool_approval(ws, data)
+
+    _ACTION_DISPATCH: dict[str, Any] = {
+        "new_session": _handle_new_session,
+        "resume_session": _dispatch_resume,
+        "send": _dispatch_send,
+        "approve_tool": _dispatch_approve,
+    }
 
     async def _send_prompt(self, ws: web.WebSocketResponse, data: dict) -> None:
         text = (data.get("text") or data.get("message") or "").strip()
@@ -132,16 +155,12 @@ class ChatHandler:
             return
 
         session_id = data.get("session_id", "")
-        logger.info("[chat.send_prompt] text=%r session=%s", text[:80], session_id or "(none)")
+        logger.info(
+            "[chat.send_prompt] text=%r session=%s",
+            text[:80], session_id or "(none)",
+        )
 
-        # Ensure session store tracks a session -- auto-create one if none is
-        # active so that messages are always persisted to disk.
-        if session_id and self._sessions.current_session_id != session_id:
-            self._sessions.start_session(session_id)
-        elif not self._sessions.current_session_id:
-            auto_id = str(uuid.uuid4())
-            logger.info("[chat.send_prompt] no active session, auto-creating %s", auto_id)
-            self._sessions.start_session(auto_id, model=cfg.copilot_model)
+        self._ensure_active_session(session_id)
 
         # Slash command dispatch
         if text.startswith("/"):
@@ -155,6 +174,62 @@ class ChatHandler:
         memory.record("user", text)
 
         chunks: list[str] = []
+        on_delta, on_event = self._make_event_callbacks(ws, chunks)
+        self._bind_hitl(ws)
+
+        logger.info("[chat.send_prompt] calling agent.send() ...")
+        with agent_span(
+            "chat.agent_turn",
+            attributes={
+                "chat.prompt_length": len(text),
+                "chat.session_id": session_id or "",
+            },
+        ):
+            try:
+                response = await self._agent.send(
+                    text,
+                    on_delta=lambda d: asyncio.ensure_future(on_delta(d)),
+                    on_event=lambda t, d: asyncio.ensure_future(
+                        on_event({"type": t, **d}),
+                    ),
+                )
+            except Exception:
+                logger.exception("[chat.send_prompt] agent.send() raised")
+                record_event("agent_error")
+                await ws.send_json({
+                    "type": "error",
+                    "content": "Agent error -- check server logs",
+                })
+                return
+            finally:
+                self._unbind_hitl()
+            full_text = "".join(chunks) or response or ""
+            set_span_attribute("chat.response_length", len(full_text))
+            set_span_attribute("chat.chunk_count", len(chunks))
+
+        await self._finalize_response(ws, full_text, chunks, memory)
+
+    # -- _send_prompt helpers ----------------------------------------------
+
+    def _ensure_active_session(self, session_id: str) -> None:
+        """Ensure the session store is tracking an active session."""
+        if session_id and self._sessions.current_session_id != session_id:
+            self._sessions.start_session(session_id)
+        elif not self._sessions.current_session_id:
+            auto_id = str(uuid.uuid4())
+            logger.info(
+                "[chat.send_prompt] no active session, auto-creating %s",
+                auto_id,
+            )
+            self._sessions.start_session(auto_id, model=cfg.copilot_model)
+
+    def _make_event_callbacks(
+        self, ws: web.WebSocketResponse, chunks: list[str],
+    ) -> tuple[
+        Any,  # on_delta coroutine
+        Any,  # on_event coroutine
+    ]:
+        """Build the delta and event callback coroutines for agent.send."""
 
         async def on_delta(delta: str) -> None:
             chunks.append(delta)
@@ -163,7 +238,9 @@ class ChatHandler:
         async def on_event(event: dict[str, Any]) -> None:
             event_type = event.pop("type", "")
             if event_type == "sandbox_exec" and self._sandbox:
-                result = await self._sandbox.intercept({"type": event_type, **event})
+                result = await self._sandbox.intercept(
+                    {"type": event_type, **event},
+                )
                 if result:
                     await ws.send_json({"type": "sandbox_result", **result})
             # Record tool activity for audit
@@ -173,7 +250,9 @@ class ChatHandler:
                 tool_name = event.get("tool", "unknown")
                 interaction_type = ""
                 if self._hitl:
-                    interaction_type = self._hitl.pop_resolved_strategy(tool_name)
+                    interaction_type = (
+                        self._hitl.pop_resolved_strategy(tool_name)
+                    )
                 self._tool_activity.record_start(
                     session_id=self._sessions.current_session_id,
                     tool=tool_name,
@@ -188,60 +267,68 @@ class ChatHandler:
                     call_id=event.get("call_id", ""),
                     result=event.get("result", ""),
                 )
-            await ws.send_json({"type": "event", "event": event_type, **event})
+            await ws.send_json({
+                "type": "event", "event": event_type, **event,
+            })
 
-        # Bind the HITL emitter so approval requests reach the WebSocket
-        if self._hitl:
-            def hitl_emit(etype: str, payload: dict[str, Any]) -> None:
-                logger.info(
-                    "[chat.hitl_emit] sending event=%s payload_keys=%s",
-                    etype, list(payload.keys()),
-                )
-                asyncio.ensure_future(ws.send_json({"type": "event", "event": etype, **payload}))
-            self._hitl.set_emit(hitl_emit)
-            self._hitl.set_execution_context("interactive")
-            self._hitl.set_model(cfg.copilot_model)
-            self._hitl.set_tool_activity(self._tool_activity)
-            self._hitl.set_session_id(self._sessions.current_session_id)
-            logger.info(
-                "[chat.send_prompt] HITL emitter bound: model=%s",
-                cfg.copilot_model,
-            )
-        else:
+        return on_delta, on_event
+
+    def _bind_hitl(self, ws: web.WebSocketResponse) -> None:
+        """Bind the HITL emitter so approval requests reach the WebSocket."""
+        if not self._hitl:
             logger.info("[chat.send_prompt] no HITL interceptor available")
+            return
 
-        logger.info("[chat.send_prompt] calling agent.send() ...")
-        with agent_span(
-            "chat.agent_turn",
-            attributes={"chat.prompt_length": len(text), "chat.session_id": session_id or ""},
-        ):
-            try:
-                response = await self._agent.send(
-                    text,
-                    on_delta=lambda d: asyncio.ensure_future(on_delta(d)),
-                    on_event=lambda t, d: asyncio.ensure_future(on_event({"type": t, **d})),
-                )
-            except Exception:
-                logger.exception("[chat.send_prompt] agent.send() raised")
-                record_event("agent_error")
-                await ws.send_json({"type": "error", "content": "Agent error -- check server logs"})
-                return
-            finally:
-                if self._hitl:
-                    self._hitl.clear_emit()
-            full_text = "".join(chunks) or response or ""
-            set_span_attribute("chat.response_length", len(full_text))
-            set_span_attribute("chat.chunk_count", len(chunks))
-        logger.info("[chat.send_prompt] response complete, len=%d, chunks=%d", len(full_text), len(chunks))
+        def hitl_emit(etype: str, payload: dict[str, Any]) -> None:
+            logger.info(
+                "[chat.hitl_emit] sending event=%s payload_keys=%s",
+                etype, list(payload.keys()),
+            )
+            asyncio.ensure_future(
+                ws.send_json({"type": "event", "event": etype, **payload}),
+            )
+
+        self._hitl.bind_turn(
+            emit=hitl_emit,
+            execution_context="interactive",
+            model=cfg.copilot_model,
+            tool_activity=self._tool_activity,
+            session_id=self._sessions.current_session_id,
+        )
+        logger.info(
+            "[chat.send_prompt] HITL emitter bound: model=%s",
+            cfg.copilot_model,
+        )
+
+    def _unbind_hitl(self) -> None:
+        """Clear the HITL emitter after a turn completes."""
+        if self._hitl:
+            self._hitl.unbind_turn()
+
+    async def _finalize_response(
+        self,
+        ws: web.WebSocketResponse,
+        full_text: str,
+        chunks: list[str],
+        memory: Any,
+    ) -> None:
+        """Log, persist, and send the final response artifacts."""
+        logger.info(
+            "[chat.send_prompt] response complete, len=%d, chunks=%d",
+            len(full_text), len(chunks),
+        )
 
         if not full_text:
-            logger.warning("[chat.send_prompt] empty response -- model may have timed out")
+            logger.warning(
+                "[chat.send_prompt] empty response -- "
+                "model may have timed out",
+            )
             await ws.send_json({
                 "type": "error",
                 "content": (
                     "The model did not respond. "
-                    "This can happen when the model is overloaded or the session "
-                    "is stale. Please try again."
+                    "This can happen when the model is overloaded or "
+                    "the session is stale. Please try again."
                 ),
             })
 
@@ -254,7 +341,10 @@ class ChatHandler:
         if outgoing:
             await ws.send_json({"type": "media", "files": outgoing})
         if cards:
-            await ws.send_json({"type": "cards", "cards": [attachment_to_dict(c) for c in cards]})
+            await ws.send_json({
+                "type": "cards",
+                "cards": [attachment_to_dict(c) for c in cards],
+            })
         await ws.send_json({"type": "done"})
 
     async def _try_command(

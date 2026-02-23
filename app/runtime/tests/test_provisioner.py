@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.runtime.config.settings import cfg
-from app.runtime.services.provisioner import Provisioner
+from app.runtime.services.deployment.provisioner import Provisioner
 from app.runtime.state.deploy_state import DeployStateStore
 from app.runtime.state.infra_config import InfraConfigStore
 from app.runtime.util.result import Result
@@ -86,11 +86,7 @@ class TestProvision:
     """Full provision flow -- registers Entra app + runtime identity, no bot service."""
 
     def test_skips_when_not_configured(self, provisioner, store):
-        store.bot = MagicMock()
-        store.bot.resource_group = ""
-        store.bot.location = ""
-
-        # bot_configured returns False when rg/location are empty
+        # bot_configured returns False when rg/location are empty (default)
         with patch.object(type(store), "bot_configured", new_callable=lambda: property(lambda self: False)):
             steps = provisioner.provision()
             assert any(s["step"] == "bot_config" and s["status"] == "skip" for s in steps)

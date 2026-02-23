@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-import json
-import logging
-from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any
 
-from ..config.settings import cfg
-
-logger = logging.getLogger(__name__)
+from ._base import BaseConfigStore
 
 DEFAULT_WHITELIST: list[str] = [
     "media", "memory", "notes", "sessions", "skills",
@@ -38,21 +33,12 @@ class SandboxConfig:
     pool_id: str = ""
 
 
-class SandboxConfigStore:
+class SandboxConfigStore(BaseConfigStore[SandboxConfig]):
     """JSON-file-backed sandbox configuration."""
 
-    def __init__(self, path: Path | None = None) -> None:
-        self._path = path or (cfg.data_dir / "sandbox.json")
-        self._config = SandboxConfig()
-        self._load()
-
-    @property
-    def path(self) -> Path:
-        return self._path
-
-    @property
-    def config(self) -> SandboxConfig:
-        return self._config
+    _config_type = SandboxConfig
+    _default_filename = "sandbox.json"
+    _log_label = "sandbox config"
 
     @property
     def enabled(self) -> bool:
@@ -155,27 +141,4 @@ class SandboxConfigStore:
                 setattr(self._config, k, v)
         self._save()
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self._config)
 
-    def _load(self) -> None:
-        if not self._path.exists():
-            return
-        try:
-            raw = json.loads(self._path.read_text())
-            self._config = SandboxConfig(
-                enabled=raw.get("enabled", False),
-                sync_data=raw.get("sync_data", True),
-                session_pool_endpoint=raw.get("session_pool_endpoint", ""),
-                whitelist=raw.get("whitelist", list(DEFAULT_WHITELIST)),
-                resource_group=raw.get("resource_group", ""),
-                location=raw.get("location", ""),
-                pool_name=raw.get("pool_name", ""),
-                pool_id=raw.get("pool_id", ""),
-            )
-        except Exception as exc:
-            logger.warning("Failed to load sandbox config from %s: %s", self._path, exc)
-
-    def _save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(asdict(self._config), indent=2) + "\n")

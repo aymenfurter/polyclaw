@@ -10,12 +10,13 @@ Polyclaw is configured through environment variables loaded from a `.env` file o
 | Variable | Default | Description |
 |---|---|---|
 | `GITHUB_TOKEN` | -- | GitHub PAT with Copilot access. Supports `@kv:` prefix. |
-| `COPILOT_MODEL` | `claude-sonnet-4-20250514` | Default LLM model for conversations |
+| `COPILOT_MODEL` | `claude-sonnet-4.6` | Default LLM model for conversations |
 | `COPILOT_AGENT` | -- | Optional Copilot agent name |
-| `ADMIN_PORT` | `8000` | Admin server listen port |
+| `ADMIN_PORT` | `9090` | Admin server listen port |
 | `ADMIN_SECRET` | -- | Bearer token for API authentication. Supports `@kv:` prefix. |
 | `POLYCLAW_DATA_DIR` | `~/.polyclaw` | Root directory for all persistent data |
 | `DOTENV_PATH` | -- | Custom path to `.env` file |
+| `POLYCLAW_SERVER_MODE` | `combined` | Server mode: `combined`, `admin`, or `runtime` |
 
 ## Bot Framework
 
@@ -42,7 +43,7 @@ Polyclaw is configured through environment variables loaded from a `.env` file o
 
 | Variable | Default | Description |
 |---|---|---|
-| `MEMORY_MODEL` | `claude-sonnet-4-20250514` | Model used for memory consolidation |
+| `MEMORY_MODEL` | `claude-sonnet-4.6` | Model used for memory consolidation |
 | `MEMORY_IDLE_MINUTES` | `5` | Minutes of inactivity before memory formation triggers |
 
 ## Proactive Messaging

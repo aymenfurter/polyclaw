@@ -15,6 +15,8 @@ import threading
 
 from aiohttp import web
 
+from ..util.singletons import register_singleton
+
 logger = logging.getLogger(__name__)
 
 _ACS_ISSUER = "https://acscallautomation.communication.azure.com"
@@ -36,6 +38,16 @@ def _set_learned_audience(aud: str) -> None:
 def get_learned_audience() -> str:
     """Return the auto-learned ACS resource ID (empty until first JWT)."""
     return _learned_audience
+
+
+def _reset_learned_audience() -> None:
+    """Clear the auto-learned audience (for test isolation)."""
+    global _learned_audience
+    with _audience_lock:
+        _learned_audience = ""
+
+
+register_singleton(_reset_learned_audience)
 
 
 def validate_token_param(request: web.Request, expected_token: str) -> bool:

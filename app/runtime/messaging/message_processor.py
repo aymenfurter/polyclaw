@@ -62,14 +62,16 @@ class MessageProcessor:
                         async def bot_reply(text: str) -> None:
                             await self._send_proactive_reply(ref, text, channel)
 
-                        self._hitl.set_bot_reply_fn(bot_reply)
-                        self._hitl.set_execution_context("bot_processor")
-                        self._hitl.set_model(cfg.copilot_model)
+                        self._hitl.bind_turn(
+                            bot_reply_fn=bot_reply,
+                            execution_context="bot_processor",
+                            model=cfg.copilot_model,
+                        )
                     try:
                         response = await self._agent.send(prompt)
                     finally:
                         if self._hitl:
-                            self._hitl.clear_bot_reply_fn()
+                            self._hitl.unbind_turn()
             if response:
                 self._memory.record("assistant", response)
                 self.session_store.record("assistant", response)

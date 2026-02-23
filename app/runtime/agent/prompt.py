@@ -6,11 +6,11 @@ from pathlib import Path
 
 from ..config.settings import cfg
 
-_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
 
 def _load_template(name: str) -> str:
-    return (_TEMPLATES_DIR / name).read_text()
+    return (TEMPLATES_DIR / name).read_text()
 
 
 def load_soul() -> str:

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
 
-from ..services.azure import AzureCLI
+from ..services.cloud.azure import AzureCLI
 from ..util.async_helpers import run_sync
+from ..util.singletons import register_singleton
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +22,28 @@ _ENDPOINT_CACHE_TTL = 60.0
 # Cache the probe result for 15 s (health check is fast but frequent).
 _PROBE_CACHE_TTL = 15.0
 
-_cached_endpoint: str | None = None
-_cached_endpoint_ts: float = 0.0
-_cached_probe: bool = False
-_cached_probe_url: str | None = None
-_cached_probe_ts: float = 0.0
+
+@dataclass
+class _TunnelCache:
+    """Mutable cache for tunnel endpoint and probe results."""
+
+    endpoint: str | None = None
+    endpoint_ts: float = 0.0
+    probe: bool = False
+    probe_url: str | None = None
+    probe_ts: float = 0.0
+
+
+_cache = _TunnelCache()
+
+
+def _reset_tunnel_cache() -> None:
+    """Reset tunnel cache to default values (for test isolation)."""
+    global _cache  # noqa: PLW0603
+    _cache = _TunnelCache()
+
+
+register_singleton(_reset_tunnel_cache)
 
 
 async def resolve_tunnel_info(
@@ -88,33 +107,29 @@ def _endpoint_to_tunnel_url(endpoint: str) -> str:
 
 async def _get_bot_endpoint_cached(az: AzureCLI) -> str | None:
     """Return the bot messaging endpoint, cached for ``_ENDPOINT_CACHE_TTL`` s."""
-    global _cached_endpoint, _cached_endpoint_ts  # noqa: PLW0603
-
     now = time.monotonic()
-    if _cached_endpoint is not None and (now - _cached_endpoint_ts) < _ENDPOINT_CACHE_TTL:
-        return _cached_endpoint
+    if _cache.endpoint is not None and (now - _cache.endpoint_ts) < _ENDPOINT_CACHE_TTL:
+        return _cache.endpoint
 
     endpoint = await run_sync(az.get_bot_endpoint)
-    _cached_endpoint = endpoint
-    _cached_endpoint_ts = now
+    _cache.endpoint = endpoint
+    _cache.endpoint_ts = now
     return endpoint
 
 
 async def _probe_tunnel_cached(url: str) -> bool:
     """Probe the tunnel with a short TTL cache to avoid hammering."""
-    global _cached_probe, _cached_probe_url, _cached_probe_ts  # noqa: PLW0603
-
     now = time.monotonic()
     if (
-        _cached_probe_url == url
-        and (now - _cached_probe_ts) < _PROBE_CACHE_TTL
+        _cache.probe_url == url
+        and (now - _cache.probe_ts) < _PROBE_CACHE_TTL
     ):
-        return _cached_probe
+        return _cache.probe
 
     active = await _probe_tunnel(url)
-    _cached_probe = active
-    _cached_probe_url = url
-    _cached_probe_ts = now
+    _cache.probe = active
+    _cache.probe_url = url
+    _cache.probe_ts = now
     return active
 
 

@@ -9,9 +9,9 @@ from typing import Any
 from aiohttp import web
 
 from ...config.settings import cfg
-from ...services.azure import AzureCLI
-from ...services.prompt_shield import PromptShieldService
-from ...state.guardrails_config import GuardrailsConfigStore
+from ...services.cloud.azure import AzureCLI
+from ...services.security.prompt_shield import PromptShieldService
+from ...state.guardrails import GuardrailsConfigStore
 from ...util.async_helpers import run_sync
 
 logger = logging.getLogger(__name__)

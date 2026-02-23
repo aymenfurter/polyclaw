@@ -6,11 +6,12 @@ import logging
 
 from aiohttp import web
 
-from ...services.azure import AzureCLI
-from ...services.misconfig_checker import MisconfigChecker
+from ...services.cloud.azure import AzureCLI
+from ...services.security.misconfig_checker import MisconfigChecker
 from ...services.resource_tracker import ResourceTracker
 from ...state.deploy_state import DeployStateStore
 from ...util.async_helpers import run_sync
+from ._helpers import no_az as _no_az
 
 logger = logging.getLogger(__name__)
 
@@ -118,8 +119,3 @@ class EnvironmentRoutes:
         result = await run_sync(checker.check_all, resource_groups)
         return web.json_response(MisconfigChecker.to_dict(result))
 
-
-def _no_az() -> web.Response:
-    return web.json_response(
-        {"status": "error", "message": "Azure CLI not available"}, status=500
-    )

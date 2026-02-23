@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.runtime.services.misconfig_checker import CheckResult, Finding, MisconfigChecker
+from app.runtime.services.security.misconfig_checker import CheckResult, Finding, MisconfigChecker
 
 
 class _FakeAzureCLI:

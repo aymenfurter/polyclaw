@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any
 
-from ..config.settings import cfg
+from ._base import BaseConfigStore
 
 logger = logging.getLogger(__name__)
 
@@ -48,16 +46,30 @@ class ChannelsConfig:
     voice_call: VoiceCallConfig = field(default_factory=VoiceCallConfig)
 
 
-class InfraConfigStore:
+@dataclass
+class InfraConfig:
+    """Top-level config dataclass wrapping bot and channel configs."""
+
+    bot: BotInfraConfig = field(default_factory=BotInfraConfig)
+    channels: ChannelsConfig = field(default_factory=ChannelsConfig)
+
+
+class InfraConfigStore(BaseConfigStore[InfraConfig]):
     """Persists infrastructure configuration to ``infra.json``."""
 
-    _SECRET_FIELDS = {"token", "acs_connection_string", "azure_openai_api_key"}
+    _config_type = InfraConfig
+    _default_filename = "infra.json"
+    _log_label = "infra config"
+    _SECRET_FIELDS = frozenset({"token", "acs_connection_string", "azure_openai_api_key"})
+    _secret_prefix = "infra-"
 
-    def __init__(self, path: Path | None = None) -> None:
-        self._path = path or (cfg.data_dir / "infra.json")
-        self.bot = BotInfraConfig()
-        self.channels = ChannelsConfig()
-        self._load()
+    @property
+    def bot(self) -> BotInfraConfig:
+        return self._config.bot
+
+    @property
+    def channels(self) -> ChannelsConfig:
+        return self._config.channels
 
     @property
     def bot_configured(self) -> bool:
@@ -71,108 +83,75 @@ class InfraConfigStore:
     def voice_call_configured(self) -> bool:
         return bool(self.channels.voice_call.acs_connection_string)
 
-    def _load(self) -> None:
-        if not self._path.exists():
-            return
-        try:
-            data = json.loads(self._path.read_text())
-        except (json.JSONDecodeError, OSError):
-            return
-        bot_data = data.get("bot", {})
+    def _apply_raw(self, raw: dict[str, Any]) -> None:
+        bot_data = raw.get("bot", {})
         for k, v in bot_data.items():
-            if hasattr(self.bot, k):
+            if hasattr(self._config.bot, k):
                 try:
-                    setattr(self.bot, k, self._resolve_secret(v))
+                    setattr(self._config.bot, k, self._resolve_secret(v))
                 except Exception:
                     logger.warning("Failed to resolve bot.%s -- skipping", k, exc_info=True)
-        tg_data = data.get("channels", {}).get("telegram", {})
+        tg_data = raw.get("channels", {}).get("telegram", {})
         for k, v in tg_data.items():
-            if hasattr(self.channels.telegram, k):
+            if hasattr(self._config.channels.telegram, k):
                 try:
-                    setattr(self.channels.telegram, k, self._resolve_secret(v))
+                    setattr(self._config.channels.telegram, k, self._resolve_secret(v))
                 except Exception:
                     logger.warning("Failed to resolve telegram.%s -- skipping", k, exc_info=True)
-        vc_data = data.get("channels", {}).get("voice_call", {})
+        vc_data = raw.get("channels", {}).get("voice_call", {})
         for k, v in vc_data.items():
-            if hasattr(self.channels.voice_call, k):
+            if hasattr(self._config.channels.voice_call, k):
                 try:
-                    setattr(self.channels.voice_call, k, self._resolve_secret(v))
+                    setattr(self._config.channels.voice_call, k, self._resolve_secret(v))
                 except Exception:
                     logger.warning("Failed to resolve voice_call.%s -- skipping", k, exc_info=True)
 
-    def _save(self) -> None:
-        data = {
-            "bot": asdict(self.bot),
+    def _save_data(self) -> dict[str, Any]:
+        return {
+            "bot": asdict(self._config.bot),
             "channels": {
-                "telegram": self._store_secrets(asdict(self.channels.telegram)),
-                "voice_call": self._store_secrets(asdict(self.channels.voice_call)),
+                "telegram": self._store_secrets(asdict(self._config.channels.telegram)),
+                "voice_call": self._store_secrets(asdict(self._config.channels.voice_call)),
             },
         }
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(data, indent=2) + "\n")
 
     def save_bot(self, **kwargs: str) -> None:
         for k, v in kwargs.items():
-            if hasattr(self.bot, k):
-                setattr(self.bot, k, v)
+            if hasattr(self._config.bot, k):
+                setattr(self._config.bot, k, v)
         self._save()
 
     def save_telegram(self, **kwargs: str) -> None:
         for k, v in kwargs.items():
-            if hasattr(self.channels.telegram, k):
-                setattr(self.channels.telegram, k, v)
+            if hasattr(self._config.channels.telegram, k):
+                setattr(self._config.channels.telegram, k, v)
         self._save()
 
     def clear_telegram(self) -> None:
-        self.channels.telegram = TelegramChannelConfig()
+        self._config.channels.telegram = TelegramChannelConfig()
         self._save()
 
     def save_voice_call(self, **kwargs: str) -> None:
         for k, v in kwargs.items():
-            if hasattr(self.channels.voice_call, k):
-                setattr(self.channels.voice_call, k, v)
+            if hasattr(self._config.channels.voice_call, k):
+                setattr(self._config.channels.voice_call, k, v)
         self._save()
 
     def clear_voice_call(self) -> None:
-        self.channels.voice_call = VoiceCallConfig()
+        self._config.channels.voice_call = VoiceCallConfig()
         self._save()
 
     def to_safe_dict(self) -> dict[str, Any]:
-        data = {
-            "bot": asdict(self.bot),
+        return {
+            "bot": asdict(self._config.bot),
             "channels": {
-                "telegram": self._mask_secrets(asdict(self.channels.telegram)),
-                "voice_call": self._mask_secrets(asdict(self.channels.voice_call)),
+                "telegram": self._mask_secrets(asdict(self._config.channels.telegram)),
+                "voice_call": self._mask_secrets(asdict(self._config.channels.voice_call)),
             },
         }
-        return data
 
     def _mask_secrets(self, d: dict[str, Any]) -> dict[str, Any]:
         return {
             k: ("****" if k in self._SECRET_FIELDS and v else v)
             for k, v in d.items()
         }
-
-    def _store_secrets(self, d: dict[str, Any]) -> dict[str, Any]:
-        from ..services.keyvault import kv, env_key_to_secret_name, is_kv_ref
-
-        result = dict(d)
-        if not kv.enabled:
-            return result
-        for k in self._SECRET_FIELDS:
-            val = result.get(k, "")
-            if val and not is_kv_ref(val):
-                try:
-                    ref = kv.store(env_key_to_secret_name(f"infra-{k}"), val)
-                    result[k] = ref
-                except Exception as exc:
-                    logger.warning("Failed to store secret %s in KV: %s", k, exc)
-        return result
-
-    @staticmethod
-    def _resolve_secret(value: Any) -> Any:
-        if not isinstance(value, str):
-            return value
-        from ..services.keyvault import resolve_if_kv_ref
-
-        return resolve_if_kv_ref(value)

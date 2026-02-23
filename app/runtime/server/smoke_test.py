@@ -12,7 +12,7 @@ from typing import Any
 
 from ..agent.agent import Agent
 from ..config.settings import cfg
-from ..services.github import GitHubAuth
+from ..services.cloud.github import GitHubAuth
 
 logger = logging.getLogger(__name__)
 

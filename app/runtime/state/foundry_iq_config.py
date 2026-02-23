@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Any
 
-from ..config.settings import cfg
+from ._base import BaseConfigStore
 
 logger = logging.getLogger(__name__)
 
@@ -33,23 +31,14 @@ class FoundryIQConfig:
     provisioned: bool = False
 
 
-class FoundryIQConfigStore:
+class FoundryIQConfigStore(BaseConfigStore[FoundryIQConfig]):
     """JSON-file-backed Foundry IQ configuration."""
 
+    _config_type = FoundryIQConfig
+    _default_filename = "foundry_iq.json"
+    _log_label = "Foundry IQ config"
     _SECRET_FIELDS = frozenset({"search_api_key", "embedding_api_key"})
-
-    def __init__(self, path: Path | None = None) -> None:
-        self._path = path or (cfg.data_dir / "foundry_iq.json")
-        self._config = FoundryIQConfig()
-        self._load()
-
-    @property
-    def path(self) -> Path:
-        return self._path
-
-    @property
-    def config(self) -> FoundryIQConfig:
-        return self._config
+    _secret_prefix = "foundryiq-"
 
     @property
     def enabled(self) -> bool:
@@ -105,46 +94,17 @@ class FoundryIQConfigStore:
         self._config.enabled = False
         self._save()
 
-    def _load(self) -> None:
-        if not self._path.exists():
-            return
-        try:
-            raw = json.loads(self._path.read_text())
-            for k in FoundryIQConfig.__dataclass_fields__:
-                if k in raw:
-                    value = raw[k]
-                    if k in self._SECRET_FIELDS and isinstance(value, str):
-                        value = self._resolve_secret(value)
-                    setattr(self._config, k, value)
-        except Exception as exc:
-            logger.warning("Failed to load Foundry IQ config from %s: %s", self._path, exc)
+    def _apply_raw(self, raw: dict[str, Any]) -> None:
+        for k in FoundryIQConfig.__dataclass_fields__:
+            if k in raw:
+                value = raw[k]
+                if k in self._SECRET_FIELDS and isinstance(value, str):
+                    value = self._resolve_secret(value)
+                setattr(self._config, k, value)
 
-    def _save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+    def _save_data(self) -> dict[str, Any]:
         data = asdict(self._config)
-        data = self._store_secrets(data)
-        self._path.write_text(json.dumps(data, indent=2) + "\n")
-
-    def _store_secrets(self, d: dict[str, Any]) -> dict[str, Any]:
-        from ..services.keyvault import kv, env_key_to_secret_name, is_kv_ref
-
-        result = dict(d)
-        if not kv.enabled:
-            return result
-        for k in self._SECRET_FIELDS:
-            val = result.get(k, "")
-            if val and not is_kv_ref(val):
-                try:
-                    ref = kv.store(env_key_to_secret_name(f"foundryiq-{k}"), val)
-                    result[k] = ref
-                except Exception as exc:
-                    logger.warning("Failed to store secret %s in KV: %s", k, exc)
-        return result
-
-    @staticmethod
-    def _resolve_secret(value: str) -> str:
-        from ..services.keyvault import resolve_if_kv_ref
-        return resolve_if_kv_ref(value)
+        return self._store_secrets(data)
 
 
 # -- singleton -------------------------------------------------------------

@@ -8,100 +8,15 @@ import json
 import logging
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from ..config.settings import cfg
 from ..util.singletons import register_singleton
+from .tool_activity_models import ToolActivityEntry, check_suspicious
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ToolActivityEntry:
-    """A single recorded tool invocation."""
-
-    id: str = ""
-    session_id: str = ""
-    tool: str = ""
-    call_id: str = ""
-    category: str = ""  # sdk | custom | mcp | skill
-    arguments: str = ""
-    result: str = ""
-    status: str = ""  # started | completed | denied | error
-    timestamp: float = 0.0
-    duration_ms: float | None = None
-    flagged: bool = False
-    flag_reason: str = ""
-    risk_score: int = 0  # 0-100 computed risk score
-    risk_factors: list[str] = field(default_factory=list)
-    model: str = ""  # which LLM model initiated this tool call
-    interaction_type: str = ""  # "" | hitl | aitl | pitl | filter | deny
-    shield_result: str = ""  # "" | clean | attack | error | not_configured
-    shield_detail: str = ""  # human-readable detail from Content Safety API
-    shield_elapsed_ms: float | None = None  # round-trip time for the shield call
-
-
-_SUSPICIOUS_PATTERNS: list[tuple[str, int, str]] = [
-    # (pattern, severity 1-100, description)
-    ("rm -rf", 90, "Recursive forced deletion"),
-    ("rm -r /", 100, "Root filesystem deletion"),
-    ("DROP TABLE", 85, "SQL table drop"),
-    ("DELETE FROM", 60, "SQL mass deletion"),
-    ("curl.*|.*sh", 80, "Remote code execution via curl"),
-    ("wget.*|.*sh", 80, "Remote code execution via wget"),
-    ("eval(", 75, "Dynamic code evaluation"),
-    ("exec(", 75, "Dynamic code execution"),
-    ("os.system", 70, "Shell command execution"),
-    ("subprocess", 50, "Subprocess invocation"),
-    ("chmod 777", 65, "World-writable permissions"),
-    ("passwd", 55, "Password file access"),
-    ("/etc/shadow", 90, "Shadow password file access"),
-    ("env | grep", 45, "Environment variable enumeration"),
-    ("printenv", 45, "Environment variable dump"),
-    ("base64 -d", 60, "Base64 decode (potential obfuscation)"),
-    (".ssh/", 70, "SSH directory access"),
-    ("id_rsa", 85, "SSH private key access"),
-    ("PRIVATE KEY", 95, "Private key exposure"),
-    ("API_KEY", 50, "API key in arguments"),
-    ("SECRET", 55, "Secret value in arguments"),
-    ("TOKEN", 45, "Token value in arguments"),
-    ("password", 50, "Password in arguments"),
-    ("credentials", 55, "Credentials reference"),
-    ("sudo ", 60, "Privilege escalation"),
-    ("nc -l", 70, "Netcat listener (reverse shell)"),
-    (">&/dev/tcp", 90, "Bash reverse shell"),
-    ("/dev/tcp", 85, "Network device access"),
-    ("mkfifo", 65, "Named pipe creation"),
-    ("nmap", 55, "Network scanning"),
-    ("sqlmap", 80, "SQL injection tool"),
-    (".env", 40, "Environment file access"),
-    ("aws configure", 50, "Cloud credential configuration"),
-    ("gcloud auth", 50, "Cloud credential configuration"),
-    ("az login", 40, "Azure CLI login"),
-    ("docker run", 45, "Container execution"),
-    ("kubectl exec", 55, "Kubernetes pod execution"),
-]
-
-
-def _check_suspicious(arguments: str, result: str) -> tuple[bool, str, int, list[str]]:
-    """Check if a tool call looks suspicious based on arguments/result.
-
-    Returns (flagged, primary_reason, risk_score, risk_factors).
-    """
-    text = f"{arguments} {result}".lower()
-    factors: list[str] = []
-    max_severity = 0
-    primary_reason = ""
-    for pattern, severity, description in _SUSPICIOUS_PATTERNS:
-        if pattern.lower() in text:
-            factors.append(description)
-            if severity > max_severity:
-                max_severity = severity
-                primary_reason = f"Suspicious pattern: {pattern}"
-    flagged = max_severity >= 40
-    return flagged, primary_reason, max_severity, factors
 
 
 class ToolActivityStore:
@@ -119,6 +34,13 @@ class ToolActivityStore:
         self._pending_starts: dict[str, ToolActivityEntry] = {}
         self._counter = 0
         self._load()
+
+    def _deduplicated(self) -> list[ToolActivityEntry]:
+        """Return entries deduplicated by id, keeping the latest version."""
+        by_id: dict[str, ToolActivityEntry] = {}
+        for e in self._entries:
+            by_id[e.id] = e
+        return list(by_id.values())
 
     def _load(self) -> None:
         if not self._path.exists():
@@ -139,7 +61,7 @@ class ToolActivityStore:
                     self._counter = max(self._counter, int(entry.id.split("-")[-1] or "0"))
                 self._entries = list(by_id.values())
             except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("[tool_activity] failed to load: %s", exc)
+                logger.warning("[tool_activity] failed to load: %s", exc, exc_info=True)
 
     def _next_id(self) -> str:
         self._counter += 1
@@ -174,7 +96,7 @@ class ToolActivityStore:
             model=model,
             interaction_type=interaction_type,
         )
-        flagged, reason, risk, factors = _check_suspicious(arguments, "")
+        flagged, reason, risk, factors = check_suspicious(arguments, "")
         entry.flagged = flagged
         entry.flag_reason = reason
         entry.risk_score = risk
@@ -209,7 +131,7 @@ class ToolActivityStore:
             pending.result = result[:2000] if result else ""
             pending.status = status
             pending.duration_ms = (time.time() - pending.timestamp) * 1000
-            flagged, reason, risk, factors = _check_suspicious(pending.arguments, result)
+            flagged, reason, risk, factors = check_suspicious(pending.arguments, result)
             if flagged and not pending.flagged:
                 pending.flagged = True
                 pending.flag_reason = reason
@@ -264,11 +186,9 @@ class ToolActivityStore:
     ) -> dict[str, Any]:
         """Query tool activity with filters."""
         with self._lock:
-            # Deduplicate: keep the latest version of each entry id
-            by_id: dict[str, ToolActivityEntry] = {}
-            for e in self._entries:
-                by_id[e.id] = e
-            entries = sorted(by_id.values(), key=lambda e: e.timestamp, reverse=True)
+            entries = sorted(
+                self._deduplicated(), key=lambda e: e.timestamp, reverse=True,
+            )
 
         # Apply filters
         if session_id:
@@ -301,10 +221,7 @@ class ToolActivityStore:
     def get_summary(self) -> dict[str, Any]:
         """Get aggregate statistics about tool activity."""
         with self._lock:
-            by_id: dict[str, ToolActivityEntry] = {}
-            for e in self._entries:
-                by_id[e.id] = e
-            entries = list(by_id.values())
+            entries = self._deduplicated()
 
         total = len(entries)
         flagged = sum(1 for e in entries if e.flagged)
@@ -406,10 +323,7 @@ class ToolActivityStore:
     ) -> list[dict[str, Any]]:
         """Return tool call counts bucketed by time interval."""
         with self._lock:
-            by_id: dict[str, ToolActivityEntry] = {}
-            for e in self._entries:
-                by_id[e.id] = e
-            entries = list(by_id.values())
+            entries = self._deduplicated()
 
         if not entries:
             return []
@@ -427,7 +341,10 @@ class ToolActivityStore:
                 continue
             bucket_ts = int(e.timestamp // bucket_secs) * bucket_secs
             if bucket_ts not in buckets:
-                buckets[bucket_ts] = {"total": 0, "flagged": 0, "sdk": 0, "mcp": 0, "custom": 0, "skill": 0}
+                buckets[bucket_ts] = {
+                    "total": 0, "flagged": 0,
+                    "sdk": 0, "mcp": 0, "custom": 0, "skill": 0,
+                }
             buckets[bucket_ts]["total"] += 1
             if e.flagged:
                 buckets[bucket_ts]["flagged"] += 1
@@ -442,10 +359,7 @@ class ToolActivityStore:
     def get_session_breakdown(self) -> list[dict[str, Any]]:
         """Return per-session aggregation for the session-level audit view."""
         with self._lock:
-            by_id: dict[str, ToolActivityEntry] = {}
-            for e in self._entries:
-                by_id[e.id] = e
-            entries = list(by_id.values())
+            entries = self._deduplicated()
 
         sessions: dict[str, dict[str, Any]] = {}
         for e in entries:
@@ -570,7 +484,7 @@ class ToolActivityStore:
                         status="completed",
                         timestamp=msg.get("timestamp", 0),
                     )
-                    flagged, reason, risk, factors = _check_suspicious(entry.arguments, entry.result)
+                    flagged, reason, risk, factors = check_suspicious(entry.arguments, entry.result)
                     entry.flagged = flagged
                     entry.flag_reason = reason
                     entry.risk_score = risk
