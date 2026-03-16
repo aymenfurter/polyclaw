@@ -89,6 +89,9 @@ class PrerequisitesRoutes:
                 "message": "Key Vault already configured",
             })
 
+        if not await self._register_keyvault_provider(steps):
+            return _fail(steps)
+
         if not await self._ensure_rg(prereq_rg, location, steps):
             return _fail(steps)
 
@@ -133,6 +136,9 @@ class PrerequisitesRoutes:
 
         prereq_rg = _DEFAULT_PREREQ_RG
 
+        if not await self._register_keyvault_provider(steps):
+            return steps
+
         if not await self._ensure_rg(prereq_rg, location, steps):
             return steps
 
@@ -143,6 +149,19 @@ class PrerequisitesRoutes:
         await self._assign_role(prereq_rg, steps)
         await self._wait_for_access(steps)
         return steps
+
+    async def _register_keyvault_provider(self, steps: list[dict]) -> bool:
+        """Register the Microsoft.KeyVault resource provider on the active subscription."""
+        ok, msg = await run_sync(
+            self._az.ok,
+            "provider", "register", "--namespace", "Microsoft.KeyVault", "--wait",
+        )
+        steps.append({
+            "step": "provider_registration",
+            "status": "ok" if ok else "failed",
+            "detail": "Microsoft.KeyVault registered" if ok else (msg or "Unknown error"),
+        })
+        return ok
 
     def _link_existing_keyvault(self) -> None:
         """Ensure the existing Key Vault resource is registered on the current deployment."""
