@@ -61,9 +61,26 @@ class ChatHandler:
         await ws.prepare(req)
         logger.info("[chat.handle] WebSocket connected from %s", req.remote)
 
-        # Track the current send task so approve_tool can arrive while
-        # agent.send() is blocked waiting for HITL approval.
-        send_task: asyncio.Task[None] | None = None
+        # FIFO queue for "send" actions so messages are processed in order
+        # instead of being dropped when a send is already in progress.
+        send_queue: asyncio.Queue[dict] = asyncio.Queue()
+
+        async def _send_worker() -> None:
+            """Drain send_queue sequentially (FIFO)."""
+            while True:
+                data = await send_queue.get()
+                try:
+                    await self._dispatch(ws, data)
+                except Exception:
+                    logger.exception("[chat.handle] error in queued send")
+                    try:
+                        await ws.send_json({"type": "error", "content": "Internal error"})
+                    except Exception:
+                        pass
+                finally:
+                    send_queue.task_done()
+
+        worker_task = asyncio.create_task(_send_worker())
 
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -72,11 +89,11 @@ class ChatHandler:
                     data = json.loads(msg.data)
                     action = data.get("action", "")
                     if action == "send":
-                        if send_task and not send_task.done():
-                            logger.warning("[chat.handle] send already in progress, ignoring")
-                            continue
-                        send_task = asyncio.create_task(self._dispatch(ws, data))
+                        send_queue.put_nowait(data)
                     else:
+                        # Non-send actions (approve_tool, new_session, etc.)
+                        # are dispatched immediately so HITL approval can
+                        # arrive while agent.send() is blocked.
                         await self._dispatch(ws, data)
                 except json.JSONDecodeError:
                     logger.warning("[chat.handle] invalid JSON: %s", msg.data[:100])
@@ -87,9 +104,8 @@ class ChatHandler:
             elif msg.type == aiohttp.WSMsgType.ERROR:
                 logger.error("[chat.handle] WebSocket error: %s", ws.exception())
 
-        # Cancel inflight send on disconnect
-        if send_task and not send_task.done():
-            send_task.cancel()
+        # Cancel worker on disconnect
+        worker_task.cancel()
         logger.info("[chat.handle] WebSocket disconnected")
         return ws
 
@@ -120,7 +136,7 @@ class ChatHandler:
     async def _handle_new_session(
         self, ws: web.WebSocketResponse, _data: dict
     ) -> None:
-        await self._agent.new_session()
+        await self._agent.ensure_session()
         session_id = str(uuid.uuid4())
         logger.info("[chat.dispatch] new session created: %s", session_id)
         self._sessions.start_session(session_id, model=cfg.copilot_model)

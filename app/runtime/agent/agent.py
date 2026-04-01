@@ -44,6 +44,7 @@ class Agent:
         self._interceptor: SandboxToolInterceptor | None = None
         self._guardrails: GuardrailsConfigStore | None = None
         self._hitl: HitlInterceptor | None = None
+        self._send_lock = asyncio.Lock()
 
     def set_sandbox(self, executor: SandboxExecutor) -> None:
         self._sandbox = executor
@@ -215,6 +216,11 @@ class Agent:
     async def new_session(self) -> Any:
         if not self._client:
             raise RuntimeError("Agent not started")
+        async with self._send_lock:
+            return await self._new_session_inner()
+
+    async def _new_session_inner(self) -> Any:
+        """Create a new SDK session. Caller must hold ``_send_lock``."""
         logger.info("[agent.new_session] destroying old session ...")
         await self._safe_destroy_session()
         session_cfg = self._build_session_config()
@@ -227,6 +233,23 @@ class Agent:
         self._session = await self._client.create_session(session_cfg)
         logger.info("[agent.new_session] session created: %s", type(self._session).__name__)
         return self._session
+
+    async def ensure_session(self) -> Any:
+        """Return the existing SDK session, or create one if none exists.
+
+        Safe to call from multiple connections -- will not destroy an
+        active session that another caller may be using.
+        """
+        if self._session:
+            return self._session
+        if not self._client:
+            raise RuntimeError("Agent not started")
+        async with self._send_lock:
+            # Double-check after acquiring lock -- another caller may have
+            # created the session while we were waiting.
+            if self._session:
+                return self._session
+            return await self._new_session_inner()
 
     async def send(
         self,
@@ -248,15 +271,17 @@ class Agent:
                 on_delta(msg)
             return msg
 
-        if not self._session:
-            logger.info("[agent.send] no session -- creating one")
-            await self.new_session()
-
         model = cfg.copilot_model
         self.request_counts[model] = self.request_counts.get(model, 0) + 1
 
-        with invoke_agent_span("polyclaw", model=model) as span:
-            return await self._send_inner(prompt, on_delta, on_event, span)
+        logger.info("[agent.send] waiting for send lock ...")
+        async with self._send_lock:
+            logger.info("[agent.send] send lock acquired")
+            if not self._session:
+                logger.info("[agent.send] no session -- creating one")
+                await self._new_session_inner()
+            with invoke_agent_span("polyclaw", model=model) as span:
+                return await self._send_inner(prompt, on_delta, on_event, span)
 
     async def _send_inner(
         self,
@@ -278,7 +303,7 @@ class Agent:
                 if "Session not found" in str(exc):
                     self._safe_unsub(unsub)
                     logger.info("[agent.send] session expired, creating new session...")
-                    await self.new_session()
+                    await self._new_session_inner()
                     handler = EventHandler(on_delta, on_event)
                     unsub = self._session.on(handler)
                     await self._session.send({"prompt": prompt})
