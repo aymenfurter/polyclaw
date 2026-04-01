@@ -1,4 +1,4 @@
-"""Tests for PrerequisitesRoutes._link_existing_keyvault."""
+"""Tests for PrerequisitesRoutes helpers."""
 
 from __future__ import annotations
 
@@ -7,15 +7,17 @@ from unittest.mock import MagicMock
 
 from app.runtime.config.settings import cfg
 from app.runtime.server.setup.prerequisites import PrerequisitesRoutes
-from app.runtime.state.deploy_state import DeployStateStore, DeploymentRecord
+from app.runtime.state.deploy_state import DeploymentRecord, DeployStateStore
 from app.runtime.state.infra_config import InfraConfigStore
+from app.runtime.util.result import Result
 
 
 def _make_routes(
     tmp_path: Path,
     deploy_store: DeployStateStore | None = None,
+    az: MagicMock | None = None,
 ) -> PrerequisitesRoutes:
-    az = MagicMock()
+    az = az or MagicMock()
     store = InfraConfigStore(path=tmp_path / "infra.json")
     return PrerequisitesRoutes(az, store, deploy_store=deploy_store)
 
@@ -75,3 +77,36 @@ class TestLinkExistingKeyvault:
 
         updated = ds.get("cccc3333")
         assert len(updated.resources) == 0
+
+
+class TestRegisterKeyvaultProvider:
+    async def test_success_appends_ok_step(self, tmp_path: Path) -> None:
+        az = MagicMock()
+        az.ok.return_value = Result.ok("Registered")
+        routes = _make_routes(tmp_path, az=az)
+
+        steps: list[dict] = []
+        result = await routes._register_keyvault_provider(steps)
+
+        assert result is True
+        assert len(steps) == 1
+        assert steps[0]["step"] == "provider_registration"
+        assert steps[0]["status"] == "ok"
+        assert "Microsoft.KeyVault" in steps[0]["detail"]
+        az.ok.assert_called_once_with(
+            "provider", "register", "--namespace", "Microsoft.KeyVault", "--wait",
+        )
+
+    async def test_failure_appends_failed_step(self, tmp_path: Path) -> None:
+        az = MagicMock()
+        az.ok.return_value = Result.fail("Subscription not found")
+        routes = _make_routes(tmp_path, az=az)
+
+        steps: list[dict] = []
+        result = await routes._register_keyvault_provider(steps)
+
+        assert result is False
+        assert len(steps) == 1
+        assert steps[0]["step"] == "provider_registration"
+        assert steps[0]["status"] == "failed"
+        assert "Subscription not found" in steps[0]["detail"]
