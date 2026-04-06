@@ -22,8 +22,8 @@ class GitHubAuth:
     def status(self) -> dict[str, Any]:
         from ...config.settings import cfg
 
-        if cfg.github_token:
-            return {"authenticated": True, "details": "Using GITHUB_TOKEN from environment"}
+        if cfg.foundry_endpoint:
+            return {"authenticated": True, "details": "Using Foundry BYOK mode"}
         try:
             result = subprocess.run(
                 ["gh", "auth", "status"],

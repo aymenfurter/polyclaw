@@ -50,9 +50,9 @@ class TestGuardrailsDisabled:
 
     def test_model_policy_ignored_when_disabled(self, tmp_path) -> None:
         s = _store(tmp_path)
-        s.apply_model_defaults(["gpt-4.1"])
+        s.apply_model_defaults(["gpt-5-mini"])
         s.set_hitl_enabled(False)
-        assert s.resolve_action("run", model="gpt-4.1") == "allow"
+        assert s.resolve_action("run", model="gpt-5-mini") == "allow"
 
 
 # ── 2. Restrictive preset -- tightest controls ──────────────────────────
@@ -244,69 +244,69 @@ class TestModelScopedResolution:
     def setup_store(self, tmp_path) -> None:
         self.s = _store(tmp_path)
         self.s.apply_preset(PRESET_BALANCED, auto_models=False)
-        self.s.apply_model_defaults(["gpt-5.3-codex", "gpt-5.2", "gpt-4.1"])
+        self.s.apply_model_defaults(["gpt-5", "gpt-4.1", "gpt-5-mini"])
 
-    # Strong model (gpt-5.3-codex) gets permissive policies -- model wins
+    # Strong model (gpt-5) gets permissive policies -- model wins
     def test_strong_run_filter(self) -> None:
         # Model policy (permissive interactive high=filter) beats context (balanced hitl)
-        assert self.s.resolve_action("run", model="gpt-5.3-codex") == "filter"
+        assert self.s.resolve_action("run", model="gpt-5") == "filter"
 
     def test_strong_view_filter(self) -> None:
-        assert self.s.resolve_action("view", model="gpt-5.3-codex") == "filter"
+        assert self.s.resolve_action("view", model="gpt-5") == "filter"
 
     def test_strong_github_filter(self) -> None:
         # Model policy (permissive interactive high=filter) beats context (balanced hitl)
         assert self.s.resolve_action(
             "mcp:github-mcp-server", mcp_server="github-mcp-server",
-            model="gpt-5.3-codex",
+            model="gpt-5",
         ) == "filter"
 
     def test_strong_mslearn_filter(self) -> None:
         assert self.s.resolve_action(
             "mcp:microsoft-learn", mcp_server="microsoft-learn",
-            model="gpt-5.3-codex",
+            model="gpt-5",
         ) == "filter"
 
     # Standard model defaults to interactive context -- context policy wins
     def test_standard_run_hitl(self) -> None:
         # Default ctx=interactive, balanced interactive high-risk=hitl
-        assert self.s.resolve_action("run", model="gpt-5.2") == "hitl"
+        assert self.s.resolve_action("run", model="gpt-4.1") == "hitl"
 
     def test_standard_file_ops_filter(self) -> None:
-        assert self.s.resolve_action("create", model="gpt-5.2") == "filter"
-        assert self.s.resolve_action("edit", model="gpt-5.2") == "filter"
+        assert self.s.resolve_action("create", model="gpt-4.1") == "filter"
+        assert self.s.resolve_action("edit", model="gpt-4.1") == "filter"
 
     def test_standard_github_hitl(self) -> None:
         # Default ctx=interactive, balanced interactive high-risk=hitl
         assert self.s.resolve_action(
             "mcp:github-mcp-server", mcp_server="github-mcp-server",
-            model="gpt-5.2",
+            model="gpt-4.1",
         ) == "hitl"
 
     # Cautious model defaults to interactive context -- context policy wins
     def test_cautious_run_hitl(self) -> None:
         # Default ctx=interactive, balanced interactive high-risk=hitl
-        assert self.s.resolve_action("run", model="gpt-4.1") == "hitl"
+        assert self.s.resolve_action("run", model="gpt-5-mini") == "hitl"
 
     def test_cautious_create_hitl(self) -> None:
         # Model policy (restrictive interactive medium=hitl) beats context (balanced filter)
-        assert self.s.resolve_action("create", model="gpt-4.1") == "hitl"
+        assert self.s.resolve_action("create", model="gpt-5-mini") == "hitl"
 
     def test_cautious_github_hitl(self) -> None:
         # Default ctx=interactive, balanced interactive high-risk=hitl
         assert self.s.resolve_action(
             "mcp:github-mcp-server", mcp_server="github-mcp-server",
-            model="gpt-4.1",
+            model="gpt-5-mini",
         ) == "hitl"
 
     def test_cautious_mslearn_filter(self) -> None:
         assert self.s.resolve_action(
             "mcp:microsoft-learn", mcp_server="microsoft-learn",
-            model="gpt-4.1",
+            model="gpt-5-mini",
         ) == "filter"
 
     def test_cautious_view_filter(self) -> None:
-        assert self.s.resolve_action("view", model="gpt-4.1") == "filter"
+        assert self.s.resolve_action("view", model="gpt-5-mini") == "filter"
 
     # Unknown model falls back to context policies (no model column)
     def test_unknown_model_uses_context_policy(self) -> None:
@@ -318,10 +318,10 @@ class TestModelScopedResolution:
         assert result == "hitl"
 
     def test_model_overrides_context(self) -> None:
-        # gpt-4.1 model policy (restrictive interactive high=hitl) and context
+        # gpt-5-mini model policy (restrictive interactive high=hitl) and context
         # policy (balanced interactive high=hitl) both happen to agree here.
         result = self.s.resolve_action(
-            "run", execution_context="interactive", model="gpt-4.1",
+            "run", execution_context="interactive", model="gpt-5-mini",
         )
         # Both agree on hitl, but model wins in general
         assert result == "hitl"
@@ -376,7 +376,7 @@ class TestCustomRulesOverride:
         ) == "deny"
         # Allowed for another model (falls to global default)
         assert self.s.resolve_action(
-            "my_custom_tool", model="gpt-5.3-codex",
+            "my_custom_tool", model="gpt-5",
         ) == "allow"
 
     def test_disabled_rule_ignored(self) -> None:
@@ -420,9 +420,9 @@ class TestResolutionPriority:
     def test_model_beats_tool_policy(self, tmp_path) -> None:
         s = _store(tmp_path)
         s.apply_preset(PRESET_PERMISSIVE, auto_models=False)  # interactive run=filter
-        s.apply_model_defaults(["gpt-4.1"])  # model restrictive interactive run=hitl
+        s.apply_model_defaults(["gpt-5-mini"])  # model restrictive interactive run=hitl
         # Model policy (more specific) wins over context tool policy
-        assert s.resolve_action("run", execution_context="interactive", model="gpt-4.1") == "hitl"
+        assert s.resolve_action("run", execution_context="interactive", model="gpt-5-mini") == "hitl"
 
     def test_tool_policy_beats_context_default(self, tmp_path) -> None:
         s = _store(tmp_path)
@@ -465,7 +465,7 @@ class TestMixedScenario:
     def setup_store(self, tmp_path) -> None:
         self.s = _store(tmp_path)
         self.s.apply_preset(PRESET_BALANCED, auto_models=False)
-        self.s.apply_model_defaults(["gpt-5.3-codex", "gpt-5.2", "gpt-4.1"])
+        self.s.apply_model_defaults(["gpt-5", "gpt-4.1", "gpt-5-mini"])
         # Custom rule: block voice calls for all models
         self.s.add_rule(
             name="no-voice", pattern="make_voice_call", action="deny",
@@ -486,18 +486,18 @@ class TestMixedScenario:
         ) == "aitl"
 
     def test_strong_model_create_files_filtered(self) -> None:
-        assert self.s.resolve_action("create", model="gpt-5.3-codex") == "filter"
-        assert self.s.resolve_action("edit", model="gpt-5.3-codex") == "filter"
+        assert self.s.resolve_action("create", model="gpt-5") == "filter"
+        assert self.s.resolve_action("edit", model="gpt-5") == "filter"
 
     def test_cautious_model_uses_context_policy_for_terminal(self) -> None:
         # Default ctx=interactive, balanced interactive high-risk=hitl
         # Context tool policy takes precedence over model policy
-        assert self.s.resolve_action("run", model="gpt-4.1") == "hitl"
-        assert self.s.resolve_action("bash", model="gpt-4.1") == "hitl"
+        assert self.s.resolve_action("run", model="gpt-5-mini") == "hitl"
+        assert self.s.resolve_action("bash", model="gpt-5-mini") == "hitl"
 
     def test_standard_model_mslearn_filtered(self) -> None:
         assert self.s.resolve_action(
-            "mcp:microsoft-learn", mcp_server="microsoft-learn", model="gpt-5.2",
+            "mcp:microsoft-learn", mcp_server="microsoft-learn", model="gpt-4.1",
         ) == "filter"
 
     def test_context_fallback_for_unknown_tool(self) -> None:
@@ -523,7 +523,7 @@ class TestMixedScenario:
         # Model policy (permissive interactive high=filter) beats context (balanced hitl)
         assert self.s.resolve_action(
             "mcp:github-mcp-server", mcp_server="github-mcp-server",
-            model="gpt-5.3-codex",
+            model="gpt-5",
         ) == "filter"
 
     def test_cautious_model_github_hitl(self) -> None:
@@ -531,7 +531,7 @@ class TestMixedScenario:
         # Context tool policy takes precedence over model policy (deny)
         assert self.s.resolve_action(
             "mcp:github-mcp-server", mcp_server="github-mcp-server",
-            model="gpt-4.1",
+            model="gpt-5-mini",
         ) == "hitl"
 
 
@@ -544,26 +544,26 @@ class TestPresetAutoModels:
         s = _store(tmp_path)
         s.apply_preset(PRESET_BALANCED, auto_models=True)
         # Should have the tier-2 models as columns
-        assert "claude-sonnet-4.6" in s.config.model_columns
-        assert "gpt-5.2" in s.config.model_columns
+        assert "gpt-4.1" in s.config.model_columns
+        assert "gpt-4.1" in s.config.model_columns
 
     def test_restrictive_adds_tier_3_models(self, tmp_path) -> None:
         s = _store(tmp_path)
         s.apply_preset(PRESET_RESTRICTIVE, auto_models=True)
-        assert "gpt-4.1" in s.config.model_columns
+        assert "gpt-5-mini" in s.config.model_columns
         assert "gpt-5-mini" in s.config.model_columns
 
     def test_permissive_adds_tier_1_models(self, tmp_path) -> None:
         s = _store(tmp_path)
         s.apply_preset(PRESET_PERMISSIVE, auto_models=True)
-        assert "gpt-5.3-codex" in s.config.model_columns
-        assert "claude-opus-4.6" in s.config.model_columns
+        assert "gpt-5" in s.config.model_columns
+        assert "gpt-5" in s.config.model_columns
 
     def test_auto_models_have_policies(self, tmp_path) -> None:
         s = _store(tmp_path)
         s.apply_preset(PRESET_RESTRICTIVE, auto_models=True)
-        # gpt-4.1 should have model policies populated per context
-        assert "gpt-4.1" in s.config.model_policies
-        assert s.config.model_policies["gpt-4.1"]["interactive"]["run"] == "hitl"
-        assert s.config.model_policies["gpt-4.1"]["background"]["run"] == "deny"
-        assert s.config.model_policies["gpt-4.1"]["interactive"]["view"] == "filter"
+        # gpt-5-mini should have model policies populated per context
+        assert "gpt-5-mini" in s.config.model_policies
+        assert s.config.model_policies["gpt-5-mini"]["interactive"]["run"] == "hitl"
+        assert s.config.model_policies["gpt-5-mini"]["background"]["run"] == "deny"
+        assert s.config.model_policies["gpt-5-mini"]["interactive"]["view"] == "filter"

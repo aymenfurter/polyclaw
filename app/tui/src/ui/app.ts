@@ -460,11 +460,9 @@ export class App {
     try {
       const status = await this.api.getSetupStatus();
       const azOk = status.azure?.logged_in ?? false;
-      const ghOk = status.copilot?.authenticated ?? false;
       const tunnelOk = status.tunnel?.active ?? false;
       const pieces = [
         `Azure: ${azOk ? "\x1b[32mOK\x1b[0m" : "\x1b[31m--\x1b[0m"}`,
-        `GitHub: ${ghOk ? "\x1b[32mOK\x1b[0m" : "\x1b[31m--\x1b[0m"}`,
         `Tunnel: ${tunnelOk ? "\x1b[32mOK\x1b[0m" : "\x1b[90m--\x1b[0m"}`,
       ];
 
@@ -486,7 +484,7 @@ export class App {
         pieces.push(`Runtime: ${cColor(cs.runtime.health)}${cLabel(cs.runtime.health)}\x1b[0m`);
       } catch { /* Docker unavailable */ }
 
-      const dot = azOk && ghOk ? "\x1b[32m●\x1b[0m" : "\x1b[33m●\x1b[0m";
+      const dot = azOk ? "\x1b[32m●\x1b[0m" : "\x1b[33m●\x1b[0m";
       this.titleBar.content = ` ${dot} polyclaw v3  |  ${pieces.join("  ")}`;
     } catch {
       // Leave whatever container info was written above

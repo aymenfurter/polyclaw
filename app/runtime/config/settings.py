@@ -15,7 +15,6 @@ from ..util.singletons import register_singleton
 SECRET_ENV_KEYS: frozenset[str] = frozenset({
     "ADMIN_SECRET",
     "BOT_APP_PASSWORD",
-    "GITHUB_TOKEN",
     "ACS_CONNECTION_STRING",
     "AZURE_OPENAI_API_KEY",
 })
@@ -62,7 +61,7 @@ class AdminConfig:
 
 @dataclass
 class ModelConfig:
-    copilot_model: str = "claude-sonnet-4.6"
+    copilot_model: str = "gpt-4.1"
     copilot_agent: str = ""
 
 
@@ -96,10 +95,13 @@ class Settings:
         self.bot_app_tenant_id: str = e("BOT_APP_TENANT_ID")
         self.bot_port: int = int(e("BOT_PORT") or "3978")
 
-        self.github_token: str = e("GITHUB_TOKEN")
-
-        self.copilot_model: str = e("COPILOT_MODEL") or "claude-sonnet-4.6"
+        self.copilot_model: str = e("COPILOT_MODEL") or "gpt-4.1"
         self.copilot_agent: str = e("COPILOT_AGENT") or ""
+
+        # Foundry (BYOK) configuration
+        self.foundry_endpoint: str = e("FOUNDRY_ENDPOINT")
+        self.foundry_name: str = e("FOUNDRY_NAME")
+        self.foundry_resource_group: str = e("FOUNDRY_RESOURCE_GROUP")
 
         self.admin_port: int = int(e("ADMIN_PORT") or "9090")
         self.lockdown_mode: bool = bool(e("LOCKDOWN_MODE"))
@@ -119,7 +121,7 @@ class Settings:
 
         self.admin_secret: str = e("ADMIN_SECRET")
 
-        self.memory_model: str = e("MEMORY_MODEL") or "claude-sonnet-4.6"
+        self.memory_model: str = e("MEMORY_MODEL") or "gpt-4.1"
         self.memory_idle_minutes: int = int(e("MEMORY_IDLE_MINUTES") or "5")
         self.proactive_enabled: bool = e("PROACTIVE_ENABLED").lower() in ("1", "true", "yes") if e("PROACTIVE_ENABLED") else False
 

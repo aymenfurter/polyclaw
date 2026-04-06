@@ -79,7 +79,8 @@ class AcaDeployer:
 
             env_vars = self._load_env_vars(steps)
 
-            acr_name = ensure_acr(self._az, req.resource_group, req.location, steps, rec)
+            acr_name = ensure_acr(self._az, req.resource_group, req.location, steps, rec,
+                                   acr_name=req.acr_name)
             if not acr_name:
                 result.error = "Container registry creation failed"
                 return result
@@ -105,6 +106,7 @@ class AcaDeployer:
 
             env_name, env_id = ensure_aca_environment(
                 self._az, req.resource_group, req.location, steps, rec,
+                env_name=req.env_name,
             )
             if not env_name:
                 result.error = "Container Apps environment creation failed"

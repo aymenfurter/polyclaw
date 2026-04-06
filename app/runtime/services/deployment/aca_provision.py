@@ -31,11 +31,13 @@ def ensure_acr(
     location: str,
     steps: list[dict],
     rec: DeploymentRecord,
+    acr_name: str = "",
 ) -> str:
     """Create a container registry.  Returns the ACR name, or ``""`` on failure."""
     logger.info("[aca] Step 3/10: Creating container registry ...")
-    acr_name = "polyclaw" + secrets.token_hex(4)
-    acr_name = acr_name[:50].replace("-", "")
+    if not acr_name:
+        acr_name = "polyclaw" + secrets.token_hex(4)
+        acr_name = acr_name[:50].replace("-", "")
 
     result = az.json(
         "acr", "create",
@@ -229,10 +231,12 @@ def ensure_aca_environment(
     location: str,
     steps: list[dict],
     rec: DeploymentRecord,
+    env_name: str = "",
 ) -> tuple[str, str]:
     """Create an ACA environment.  Returns ``(env_name, env_id)``."""
     logger.info("[aca] Step 7/10: Creating ACA environment ...")
-    env_name = f"{_ENV_NAME_PREFIX}-{secrets.token_hex(4)}"
+    if not env_name:
+        env_name = f"{_ENV_NAME_PREFIX}-{secrets.token_hex(4)}"
 
     result = az.json(
         "containerapp", "env", "create",
@@ -278,7 +282,7 @@ def ensure_runtime_app(
 
     _SECRET_ENV_KEYS = frozenset({
         "RUNTIME_SP_PASSWORD", "ACS_CALLBACK_TOKEN",
-        "GITHUB_TOKEN", "BOT_APP_PASSWORD",
+        "BOT_APP_PASSWORD",
         "ACS_CONNECTION_STRING", "AZURE_OPENAI_API_KEY",
     })
     _SKIP = frozenset({

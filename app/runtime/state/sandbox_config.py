@@ -142,3 +142,25 @@ class SandboxConfigStore(BaseConfigStore[SandboxConfig]):
         self._save()
 
 
+# -- singleton -------------------------------------------------------------
+
+_instance: SandboxConfigStore | None = None
+
+
+def get_sandbox_config() -> SandboxConfigStore:
+    global _instance
+    if _instance is None:
+        _instance = SandboxConfigStore()
+    return _instance
+
+
+def _reset_sandbox_config() -> None:
+    global _instance
+    _instance = None
+
+
+from ..util.singletons import register_singleton  # noqa: E402
+
+register_singleton(_reset_sandbox_config)
+
+

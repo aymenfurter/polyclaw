@@ -9,6 +9,7 @@ from typing import Any
 from aiohttp import web
 
 from ...services.cloud.azure import AzureCLI
+from ...services.deployment.bicep_deployer import BicepDeployer, BicepDeployRequest
 from ...services.foundry_iq import (
     delete_index,
     ensure_index,
@@ -40,6 +41,7 @@ class FoundryIQRoutes:
         self._store = config_store
         self._az = az
         self._deploy_store = deploy_store
+        self._bicep = BicepDeployer(az, deploy_store) if az and deploy_store else None
 
     def register(self, router: web.UrlDispatcher) -> None:
         router.add_get("/api/foundry-iq/config", self._get_config)
@@ -105,7 +107,7 @@ class FoundryIQRoutes:
         return web.json_response(result)
 
     async def _provision(self, req: web.Request) -> web.Response:
-        if not self._az:
+        if not self._bicep:
             return _no_az()
         if self._store.is_provisioned:
             return web.json_response({
@@ -122,74 +124,89 @@ class FoundryIQRoutes:
 
         location = body.get("location", "eastus").strip()
         rg = body.get("resource_group", "").strip() or _DEFAULT_FIQ_RG
-        search_name = (
-            body.get("search_name", "").strip()
-            or f"polyclaw-search-{_secrets.token_hex(4)}"
-        )
-        openai_name = (
-            body.get("openai_name", "").strip()
-            or f"polyclaw-aoai-{_secrets.token_hex(4)}"
-        )
         embedding_model = body.get("embedding_model", "text-embedding-3-large").strip()
         embedding_dimensions = int(body.get("embedding_dimensions", 3072))
 
-        steps: list[dict[str, Any]] = []
-
-        if not await self._ensure_rg(rg, location, steps):
-            return _fail_response(steps)
-
-        search_result = await self._create_search(rg, location, search_name, steps)
-        if not search_result:
-            return _fail_response(steps)
-        search_endpoint, search_key = search_result
-
-        openai_result = await self._create_openai(rg, location, openai_name, steps)
-        if not openai_result:
-            return _fail_response(steps)
-        openai_endpoint, openai_key = openai_result
-
-        deployment_name = await self._deploy_model(
-            rg, openai_name, embedding_model, steps
+        bicep_req = BicepDeployRequest(
+            resource_group=rg,
+            location=location,
+            deploy_foundry=False,
+            deploy_key_vault=False,
+            deploy_search=True,
+            deploy_embedding_aoai=True,
+            embedding_model_name=embedding_model,
         )
-        if not deployment_name:
-            return _fail_response(steps)
+        result = await run_sync(self._bicep.deploy, bicep_req)
+
+        if not result.ok:
+            return _fail_response(result.steps)
+
+        # Retrieve the search admin key (not available as a Bicep output)
+        search_key = ""
+        if result.search_name and self._az:
+            keys = await run_sync(
+                self._az.json,
+                "search", "admin-key", "show",
+                "--service-name", result.search_name,
+                "--resource-group", rg,
+            )
+            search_key = keys.get("primaryKey", "") if isinstance(keys, dict) else ""
+            result.steps.append({
+                "step": "search_key",
+                "status": "ok" if search_key else "warning",
+                "detail": "Key retrieved" if search_key else "Key unavailable",
+            })
+
+        # Retrieve the AOAI key (fallback; prefer Entra ID)
+        aoai_key = ""
+        if result.embedding_aoai_name and self._az:
+            aoai_keys = await run_sync(
+                self._az.json,
+                "cognitiveservices", "account", "keys", "list",
+                "--name", result.embedding_aoai_name,
+                "--resource-group", rg,
+            )
+            aoai_key = aoai_keys.get("key1", "") if isinstance(aoai_keys, dict) else ""
 
         self._store.save(
             resource_group=rg,
             location=location,
-            search_resource_name=search_name,
-            openai_resource_name=openai_name,
-            openai_deployment_name=deployment_name,
-            search_endpoint=search_endpoint,
+            search_resource_name=result.search_name,
+            openai_resource_name=result.embedding_aoai_name,
+            openai_deployment_name=result.embedding_deployment_name,
+            search_endpoint=result.search_endpoint,
             search_api_key=search_key,
-            embedding_endpoint=openai_endpoint,
-            embedding_api_key=openai_key,
-            embedding_model=deployment_name,
+            embedding_endpoint=result.embedding_aoai_endpoint,
+            embedding_api_key=aoai_key,
+            embedding_model=result.embedding_deployment_name,
             embedding_dimensions=embedding_dimensions,
             index_name="polyclaw-memories",
             provisioned=True,
             enabled=True,
         )
-        steps.append({"step": "save_config", "status": "ok", "detail": "Saved"})
+        result.steps.append({"step": "save_config", "status": "ok", "detail": "Saved"})
 
         try:
             idx_result = await run_sync(ensure_index, self._store)
             idx_ok = idx_result.get("status") == "ok"
-            steps.append({
+            result.steps.append({
                 "step": "create_index",
                 "status": "ok" if idx_ok else "failed",
                 "detail": idx_result.get("detail", ""),
             })
         except Exception as exc:
-            steps.append({
+            result.steps.append({
                 "step": "create_index", "status": "failed", "detail": str(exc)[:200]
             })
 
-        logger.info("Foundry IQ provisioned: search=%s, openai=%s", search_name, openai_name)
+        logger.info(
+            "Foundry IQ provisioned (Bicep): search=%s, aoai=%s",
+            result.search_name, result.embedding_aoai_name,
+        )
         return web.json_response({
             "status": "ok",
             "message": f"Foundry IQ provisioned in {rg}",
-            "steps": steps,
+            "steps": result.steps,
             "config": self._store.to_safe_dict(),
         })
 
@@ -264,176 +281,3 @@ class FoundryIQRoutes:
         return web.json_response({
             "status": "ok", "message": "Resources removed", "steps": steps
         })
-
-    # -- internal helpers --
-
-    async def _ensure_rg(
-        self, rg: str, location: str, steps: list[dict[str, Any]]
-    ) -> bool:
-        existing = await run_sync(self._az.json, "group", "show", "--name", rg)
-        if existing:
-            steps.append({
-                "step": "resource_group", "status": "ok", "detail": f"{rg} (existing)"
-            })
-            return True
-
-        tag_args: list[str] = []
-        if self._deploy_store:
-            rec = self._deploy_store.current_local()
-            if rec:
-                tag_args = ["--tags", f"polyclaw_deploy={rec.tag}"]
-
-        result = await run_sync(
-            self._az.json,
-            "group", "create", "--name", rg, "--location", location, *tag_args,
-        )
-        ok = bool(result)
-        steps.append({
-            "step": "resource_group",
-            "status": "ok" if ok else "failed",
-            "detail": rg if ok else (self._az.last_stderr or "Unknown error"),
-        })
-        if ok and self._deploy_store:
-            rec = self._deploy_store.current_local()
-            if rec and rg not in rec.resource_groups:
-                rec.resource_groups.append(rg)
-                self._deploy_store.update(rec)
-        return ok
-
-    async def _create_search(
-        self, rg: str, location: str, name: str, steps: list[dict[str, Any]]
-    ) -> tuple[str, str] | None:
-        result = await run_sync(
-            self._az.json,
-            "search", "service", "create",
-            "--name", name, "--resource-group", rg,
-            "--location", location, "--sku", "basic",
-            "--partition-count", "1", "--replica-count", "1",
-        )
-        if not result or not isinstance(result, dict):
-            steps.append({
-                "step": "create_search", "status": "failed",
-                "detail": (self._az.last_stderr or "Unknown")[:300],
-            })
-            return None
-
-        host_name = result.get("hostName") or f"{name}.search.windows.net"
-        endpoint = f"https://{host_name}"
-        steps.append({
-            "step": "create_search", "status": "ok", "detail": f"{name} ({endpoint})"
-        })
-
-        if self._deploy_store:
-            rec = self._deploy_store.current_local()
-            if rec:
-                rec.add_resource(
-                    resource_type="search", resource_group=rg,
-                    resource_name=name, purpose="Foundry IQ - Azure AI Search",
-                    resource_id=result.get("id", ""),
-                )
-                self._deploy_store.update(rec)
-
-        keys = await run_sync(
-            self._az.json,
-            "search", "admin-key", "show",
-            "--service-name", name, "--resource-group", rg,
-        )
-        admin_key = keys.get("primaryKey", "") if isinstance(keys, dict) else ""
-        if not admin_key:
-            steps.append({
-                "step": "search_key", "status": "failed",
-                "detail": (self._az.last_stderr or "Key empty")[:300],
-            })
-            return None
-        steps.append({"step": "search_key", "status": "ok", "detail": "Key retrieved"})
-        return endpoint, admin_key
-
-    async def _create_openai(
-        self, rg: str, location: str, name: str, steps: list[dict[str, Any]]
-    ) -> tuple[str, str] | None:
-        result = await run_sync(
-            self._az.json,
-            "cognitiveservices", "account", "create",
-            "--name", name, "--resource-group", rg,
-            "--location", location, "--kind", "OpenAI",
-            "--sku", "S0", "--custom-domain", name,
-        )
-        if not result or not isinstance(result, dict):
-            steps.append({
-                "step": "create_openai", "status": "failed",
-                "detail": (self._az.last_stderr or "Unknown")[:300],
-            })
-            return None
-
-        steps.append({
-            "step": "create_openai", "status": "ok", "detail": f"{name} created"
-        })
-
-        if self._deploy_store:
-            rec = self._deploy_store.current_local()
-            if rec:
-                rec.add_resource(
-                    resource_type="cognitiveservices", resource_group=rg,
-                    resource_name=name, purpose="Foundry IQ - Azure OpenAI",
-                    resource_id=result.get("id", ""),
-                )
-                self._deploy_store.update(rec)
-
-        info = await run_sync(
-            self._az.json,
-            "cognitiveservices", "account", "show",
-            "--name", name, "--resource-group", rg,
-        )
-        endpoint = ""
-        if isinstance(info, dict):
-            endpoint = info.get("properties", {}).get("endpoint", "")
-        if not endpoint:
-            endpoint = f"https://{name}.openai.azure.com/"
-
-        aoai_keys = await run_sync(
-            self._az.json,
-            "cognitiveservices", "account", "keys", "list",
-            "--name", name, "--resource-group", rg,
-        )
-        api_key = aoai_keys.get("key1", "") if isinstance(aoai_keys, dict) else ""
-        if api_key:
-            steps.append({"step": "openai_key", "status": "ok", "detail": "Key retrieved"})
-        else:
-            steps.append({
-                "step": "openai_key", "status": "ok",
-                "detail": "Key-based auth disabled; will use Entra ID",
-            })
-        return endpoint, api_key
-
-    async def _deploy_model(
-        self, rg: str, account: str, model: str, steps: list[dict[str, Any]]
-    ) -> str | None:
-        deployment_name = model
-        result = await run_sync(
-            self._az.json,
-            "cognitiveservices", "account", "deployment", "create",
-            "--name", account, "--resource-group", rg,
-            "--deployment-name", deployment_name,
-            "--model-name", model, "--model-version", "1",
-            "--model-format", "OpenAI",
-            "--sku-capacity", "1", "--sku-name", "Standard",
-        )
-        if result is None:
-            err = self._az.last_stderr or ""
-            if "already exists" in err.lower() or "conflict" in err.lower():
-                steps.append({
-                    "step": "deploy_model", "status": "ok",
-                    "detail": f"{deployment_name} (already exists)",
-                })
-                return deployment_name
-            steps.append({
-                "step": "deploy_model", "status": "failed", "detail": err[:300]
-            })
-            return None
-
-        steps.append({
-            "step": "deploy_model", "status": "ok",
-            "detail": f"{deployment_name} deployed",
-        })
-        return deployment_name
-

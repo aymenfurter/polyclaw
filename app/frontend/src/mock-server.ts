@@ -14,7 +14,7 @@ import type { IncomingMessage, ServerResponse } from 'http'
 
 const STATUS = {
   azure: { logged_in: true, user: 'test@example.com', subscription: 'sub-123' },
-  copilot: { authenticated: true, username: 'testuser' },
+  foundry: { deployed: true, endpoint: 'https://mock-foundry.cognitiveservices.azure.com', name: 'mock-foundry' },
   prerequisites_configured: true,
   telegram_configured: false,
   tunnel: { active: false, url: '' },
@@ -201,8 +201,7 @@ const routes: RouteEntry[] = [
   { match: (u) => u === '/api/setup/status', respond: () => STATUS },
   { match: (u) => u.startsWith('/api/setup/config'), respond: (_, m) => m === 'POST' ? { status: 'ok' } : CONFIG },
   { match: (u) => u.startsWith('/api/setup/azure/login'), respond: () => ({ status: 'ok' }) },
-  { match: (u) => u.startsWith('/api/setup/copilot/login'), respond: () => ({ status: 'ok', user_code: 'ABC-123', verification_uri: 'https://github.com/login/device' }) },
-  { match: (u) => u.startsWith('/api/setup/copilot/status'), respond: () => ({ authenticated: true }) },
+
   { match: (u) => u.startsWith('/api/setup/configuration/save'), respond: () => ({ status: 'ok' }) },
   { match: (u) => u.startsWith('/api/setup/tunnel/start'), respond: () => ({ status: 'ok' }) },
   { match: (u) => u.startsWith('/api/setup/channels/'), respond: () => ({ status: 'ok' }) },

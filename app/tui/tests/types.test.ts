@@ -21,7 +21,6 @@ describe("Config types (compile-time validation)", () => {
   test("StatusResponse can be constructed", () => {
     const status: StatusResponse = {
       azure: { logged_in: true, subscription: "sub-1" },
-      copilot: { authenticated: true, details: "ok" },
       tunnel: { active: true, url: "https://tunnel.example.com" },
     };
     expect(status.azure?.logged_in).toBe(true);

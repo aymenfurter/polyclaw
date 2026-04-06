@@ -155,3 +155,25 @@ class InfraConfigStore(BaseConfigStore[InfraConfig]):
             k: ("****" if k in self._SECRET_FIELDS and v else v)
             for k, v in d.items()
         }
+
+
+# -- singleton -------------------------------------------------------------
+
+_instance: InfraConfigStore | None = None
+
+
+def get_infra_config() -> InfraConfigStore:
+    global _instance
+    if _instance is None:
+        _instance = InfraConfigStore()
+    return _instance
+
+
+def _reset_infra_config() -> None:
+    global _instance
+    _instance = None
+
+
+from ..util.singletons import register_singleton  # noqa: E402
+
+register_singleton(_reset_infra_config)

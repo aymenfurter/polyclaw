@@ -106,14 +106,12 @@ class SkillRoutes:
                 result["rate_limit_warning"] = (
                     f"GitHub API rate limit exceeded for your IP. "
                     f"Catalog results may be incomplete. "
-                    f"Rate limit resets in ~{wait_min} min. "
-                    f"Set a GITHUB_TOKEN for a higher limit."
+                    f"Rate limit resets in ~{wait_min} min."
                 )
             else:
                 result["rate_limit_warning"] = (
                     "GitHub API rate limit exceeded for your IP. "
-                    "Catalog results may be incomplete. "
-                    "Set a GITHUB_TOKEN for a higher limit."
+                    "Catalog results may be incomplete."
                 )
 
         return web.json_response(result)

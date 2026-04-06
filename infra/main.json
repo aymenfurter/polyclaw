@@ -1,0 +1,489 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.41.2.15936",
+      "templateHash": "18062785448056283597"
+    }
+  },
+  "parameters": {
+    "baseName": {
+      "type": "string",
+      "metadata": {
+        "description": "Base name for all resources (must be globally unique)."
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region for resource deployment."
+      }
+    },
+    "principalId": {
+      "type": "string",
+      "metadata": {
+        "description": "Object ID of the principal to grant data-plane access."
+      }
+    },
+    "principalType": {
+      "type": "string",
+      "defaultValue": "User",
+      "allowedValues": [
+        "User",
+        "ServicePrincipal"
+      ],
+      "metadata": {
+        "description": "Principal type for RBAC assignment."
+      }
+    },
+    "deployFoundry": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Deploy the Foundry (AI Services) resource + model deployments."
+      }
+    },
+    "models": {
+      "type": "array",
+      "defaultValue": [
+        {
+          "name": "gpt-4.1",
+          "version": "2025-04-14",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        },
+        {
+          "name": "gpt-5",
+          "version": "2025-10-01",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        },
+        {
+          "name": "gpt-5-mini",
+          "version": "2025-10-01",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        }
+      ],
+      "metadata": {
+        "description": "Model deployments to create on the Foundry resource."
+      }
+    },
+    "deployKeyVault": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Deploy a Key Vault alongside the Foundry resource."
+      }
+    },
+    "deployAcs": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Deploy an ACS resource for voice calling."
+      }
+    },
+    "acsDataLocation": {
+      "type": "string",
+      "defaultValue": "United States",
+      "metadata": {
+        "description": "ACS data location."
+      }
+    },
+    "deployContentSafety": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Deploy a Content Safety resource."
+      }
+    },
+    "deploySearch": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Deploy Azure AI Search for Foundry IQ."
+      }
+    },
+    "deployEmbeddingAoai": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Deploy a dedicated Azure OpenAI resource for embeddings (Foundry IQ)."
+      }
+    },
+    "embeddingModelName": {
+      "type": "string",
+      "defaultValue": "text-embedding-3-large",
+      "metadata": {
+        "description": "Embedding model deployment name."
+      }
+    },
+    "embeddingModelVersion": {
+      "type": "string",
+      "defaultValue": "1",
+      "metadata": {
+        "description": "Embedding model version."
+      }
+    },
+    "deployMonitoring": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Deploy Log Analytics + Application Insights for monitoring."
+      }
+    },
+    "deploySessionPool": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Deploy a Container Apps session pool (code sandbox)."
+      }
+    }
+  },
+  "variables": {
+    "cognitiveServicesOpenAIUser": "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd",
+    "kvSecretsOfficer": "b86a8fe4-44ce-4948-aee5-eccb2c155cd7",
+    "cognitiveServicesUser": "a97b65f3-24c7-4388-baec-2e87135dc908",
+    "embeddingCogUser": "a97b65f3-24c7-4388-baec-2e87135dc908"
+  },
+  "resources": [
+    {
+      "condition": "[parameters('deployFoundry')]",
+      "type": "Microsoft.CognitiveServices/accounts",
+      "apiVersion": "2024-10-01",
+      "name": "[parameters('baseName')]",
+      "location": "[parameters('location')]",
+      "kind": "AIServices",
+      "sku": {
+        "name": "S0"
+      },
+      "properties": {
+        "customSubDomainName": "[parameters('baseName')]",
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "copy": {
+        "name": "modelDeployments",
+        "count": "[length(if(parameters('deployFoundry'), parameters('models'), createArray()))]",
+        "mode": "serial",
+        "batchSize": 1
+      },
+      "type": "Microsoft.CognitiveServices/accounts/deployments",
+      "apiVersion": "2024-10-01",
+      "name": "[format('{0}/{1}', parameters('baseName'), if(parameters('deployFoundry'), parameters('models'), createArray())[copyIndex()].name)]",
+      "sku": {
+        "name": "[if(parameters('deployFoundry'), parameters('models'), createArray())[copyIndex()].sku]",
+        "capacity": "[if(parameters('deployFoundry'), parameters('models'), createArray())[copyIndex()].capacity]"
+      },
+      "properties": {
+        "model": {
+          "format": "OpenAI",
+          "name": "[if(parameters('deployFoundry'), parameters('models'), createArray())[copyIndex()].name]",
+          "version": "[if(parameters('deployFoundry'), parameters('models'), createArray())[copyIndex()].version]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.CognitiveServices/accounts', parameters('baseName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployFoundry')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.CognitiveServices/accounts', parameters('baseName'))]",
+      "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('baseName')), parameters('principalId'), variables('cognitiveServicesOpenAIUser'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('cognitiveServicesOpenAIUser'))]",
+        "principalId": "[parameters('principalId')]",
+        "principalType": "[parameters('principalType')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.CognitiveServices/accounts', parameters('baseName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployKeyVault')]",
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}-kv', parameters('baseName'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "tenantId": "[subscription().tenantId]",
+        "sku": {
+          "family": "A",
+          "name": "standard"
+        },
+        "enableRbacAuthorization": true,
+        "enableSoftDelete": true,
+        "softDeleteRetentionInDays": 7,
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "condition": "[parameters('deployKeyVault')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.KeyVault/vaults', format('{0}-kv', parameters('baseName')))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', format('{0}-kv', parameters('baseName'))), parameters('principalId'), variables('kvSecretsOfficer'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('kvSecretsOfficer'))]",
+        "principalId": "[parameters('principalId')]",
+        "principalType": "[parameters('principalType')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', format('{0}-kv', parameters('baseName')))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployAcs')]",
+      "type": "Microsoft.Communication/communicationServices",
+      "apiVersion": "2023-04-01",
+      "name": "[format('{0}-acs', parameters('baseName'))]",
+      "location": "Global",
+      "properties": {
+        "dataLocation": "[parameters('acsDataLocation')]"
+      }
+    },
+    {
+      "condition": "[parameters('deployContentSafety')]",
+      "type": "Microsoft.CognitiveServices/accounts",
+      "apiVersion": "2024-10-01",
+      "name": "[format('{0}-content-safety', parameters('baseName'))]",
+      "location": "[parameters('location')]",
+      "kind": "ContentSafety",
+      "sku": {
+        "name": "S0"
+      },
+      "properties": {
+        "customSubDomainName": "[format('{0}-content-safety', parameters('baseName'))]",
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "condition": "[parameters('deployContentSafety')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.CognitiveServices/accounts', format('{0}-content-safety', parameters('baseName')))]",
+      "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', format('{0}-content-safety', parameters('baseName'))), parameters('principalId'), variables('cognitiveServicesUser'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('cognitiveServicesUser'))]",
+        "principalId": "[parameters('principalId')]",
+        "principalType": "[parameters('principalType')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.CognitiveServices/accounts', format('{0}-content-safety', parameters('baseName')))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deploySearch')]",
+      "type": "Microsoft.Search/searchServices",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}-search', parameters('baseName'))]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "basic"
+      },
+      "properties": {
+        "replicaCount": 1,
+        "partitionCount": 1,
+        "publicNetworkAccess": "enabled"
+      }
+    },
+    {
+      "condition": "[parameters('deployEmbeddingAoai')]",
+      "type": "Microsoft.CognitiveServices/accounts",
+      "apiVersion": "2024-10-01",
+      "name": "[format('{0}-aoai', parameters('baseName'))]",
+      "location": "[parameters('location')]",
+      "kind": "OpenAI",
+      "sku": {
+        "name": "S0"
+      },
+      "properties": {
+        "customSubDomainName": "[format('{0}-aoai', parameters('baseName'))]",
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "condition": "[parameters('deployEmbeddingAoai')]",
+      "type": "Microsoft.CognitiveServices/accounts/deployments",
+      "apiVersion": "2024-10-01",
+      "name": "[format('{0}/{1}', format('{0}-aoai', parameters('baseName')), parameters('embeddingModelName'))]",
+      "sku": {
+        "name": "Standard",
+        "capacity": 1
+      },
+      "properties": {
+        "model": {
+          "format": "OpenAI",
+          "name": "[parameters('embeddingModelName')]",
+          "version": "[parameters('embeddingModelVersion')]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.CognitiveServices/accounts', format('{0}-aoai', parameters('baseName')))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployEmbeddingAoai')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.CognitiveServices/accounts', format('{0}-aoai', parameters('baseName')))]",
+      "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', format('{0}-aoai', parameters('baseName'))), parameters('principalId'), variables('embeddingCogUser'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('embeddingCogUser'))]",
+        "principalId": "[parameters('principalId')]",
+        "principalType": "[parameters('principalType')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.CognitiveServices/accounts', format('{0}-aoai', parameters('baseName')))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployMonitoring')]",
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2023-09-01",
+      "name": "[format('{0}-logs', parameters('baseName'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "retentionInDays": 30,
+        "sku": {
+          "name": "PerGB2018"
+        }
+      }
+    },
+    {
+      "condition": "[parameters('deployMonitoring')]",
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[format('{0}-insights', parameters('baseName'))]",
+      "location": "[parameters('location')]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-logs', parameters('baseName')))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-logs', parameters('baseName')))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deploySessionPool')]",
+      "type": "Microsoft.App/sessionPools",
+      "apiVersion": "2024-02-02-preview",
+      "name": "[format('{0}-sandbox', parameters('baseName'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "poolManagementType": "Dynamic",
+        "containerType": "PythonLTS",
+        "scaleConfiguration": {
+          "maxConcurrentSessions": 10
+        },
+        "dynamicPoolConfiguration": {
+          "cooldownPeriodInSeconds": 300
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "foundryEndpoint": {
+      "type": "string",
+      "value": "[if(parameters('deployFoundry'), reference(resourceId('Microsoft.CognitiveServices/accounts', parameters('baseName')), '2024-10-01').endpoint, '')]"
+    },
+    "foundryResourceId": {
+      "type": "string",
+      "value": "[if(parameters('deployFoundry'), resourceId('Microsoft.CognitiveServices/accounts', parameters('baseName')), '')]"
+    },
+    "foundryName": {
+      "type": "string",
+      "value": "[if(parameters('deployFoundry'), parameters('baseName'), '')]"
+    },
+    "deployedModels": {
+      "type": "array",
+      "copy": {
+        "count": "[length(if(parameters('deployFoundry'), parameters('models'), createArray()))]",
+        "input": "[if(parameters('deployFoundry'), parameters('models'), createArray())[copyIndex()].name]"
+      }
+    },
+    "keyVaultUrl": {
+      "type": "string",
+      "value": "[if(parameters('deployKeyVault'), reference(resourceId('Microsoft.KeyVault/vaults', format('{0}-kv', parameters('baseName'))), '2023-07-01').vaultUri, '')]"
+    },
+    "keyVaultName": {
+      "type": "string",
+      "value": "[if(parameters('deployKeyVault'), format('{0}-kv', parameters('baseName')), '')]"
+    },
+    "acsResourceId": {
+      "type": "string",
+      "value": "[if(parameters('deployAcs'), resourceId('Microsoft.Communication/communicationServices', format('{0}-acs', parameters('baseName'))), '')]"
+    },
+    "acsName": {
+      "type": "string",
+      "value": "[if(parameters('deployAcs'), format('{0}-acs', parameters('baseName')), '')]"
+    },
+    "contentSafetyEndpoint": {
+      "type": "string",
+      "value": "[if(parameters('deployContentSafety'), reference(resourceId('Microsoft.CognitiveServices/accounts', format('{0}-content-safety', parameters('baseName'))), '2024-10-01').endpoint, '')]"
+    },
+    "contentSafetyResourceId": {
+      "type": "string",
+      "value": "[if(parameters('deployContentSafety'), resourceId('Microsoft.CognitiveServices/accounts', format('{0}-content-safety', parameters('baseName'))), '')]"
+    },
+    "contentSafetyName": {
+      "type": "string",
+      "value": "[if(parameters('deployContentSafety'), format('{0}-content-safety', parameters('baseName')), '')]"
+    },
+    "searchEndpoint": {
+      "type": "string",
+      "value": "[if(parameters('deploySearch'), format('https://{0}.search.windows.net', format('{0}-search', parameters('baseName'))), '')]"
+    },
+    "searchName": {
+      "type": "string",
+      "value": "[if(parameters('deploySearch'), format('{0}-search', parameters('baseName')), '')]"
+    },
+    "embeddingAoaiEndpoint": {
+      "type": "string",
+      "value": "[if(parameters('deployEmbeddingAoai'), reference(resourceId('Microsoft.CognitiveServices/accounts', format('{0}-aoai', parameters('baseName'))), '2024-10-01').endpoint, '')]"
+    },
+    "embeddingAoaiName": {
+      "type": "string",
+      "value": "[if(parameters('deployEmbeddingAoai'), format('{0}-aoai', parameters('baseName')), '')]"
+    },
+    "embeddingDeploymentName": {
+      "type": "string",
+      "value": "[if(parameters('deployEmbeddingAoai'), parameters('embeddingModelName'), '')]"
+    },
+    "logAnalyticsWorkspaceId": {
+      "type": "string",
+      "value": "[if(parameters('deployMonitoring'), resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-logs', parameters('baseName'))), '')]"
+    },
+    "logAnalyticsWorkspaceName": {
+      "type": "string",
+      "value": "[if(parameters('deployMonitoring'), format('{0}-logs', parameters('baseName')), '')]"
+    },
+    "appInsightsConnectionString": {
+      "type": "string",
+      "value": "[if(parameters('deployMonitoring'), reference(resourceId('Microsoft.Insights/components', format('{0}-insights', parameters('baseName'))), '2020-02-02').ConnectionString, '')]"
+    },
+    "appInsightsName": {
+      "type": "string",
+      "value": "[if(parameters('deployMonitoring'), format('{0}-insights', parameters('baseName')), '')]"
+    },
+    "sessionPoolEndpoint": {
+      "type": "string",
+      "value": "[if(parameters('deploySessionPool'), reference(resourceId('Microsoft.App/sessionPools', format('{0}-sandbox', parameters('baseName'))), '2024-02-02-preview').poolManagementEndpoint, '')]"
+    },
+    "sessionPoolId": {
+      "type": "string",
+      "value": "[if(parameters('deploySessionPool'), resourceId('Microsoft.App/sessionPools', format('{0}-sandbox', parameters('baseName'))), '')]"
+    },
+    "sessionPoolName": {
+      "type": "string",
+      "value": "[if(parameters('deploySessionPool'), format('{0}-sandbox', parameters('baseName')), '')]"
+    }
+  }
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 from collections.abc import Callable
 
 import aiohttp as _aiohttp
@@ -21,6 +22,7 @@ from ...util.async_helpers import run_sync
 from .azure import AzureSetupRoutes
 from ._helpers import error_response as _error, ok_response as _ok
 from .deploy import DeploymentRoutes
+from .foundry import FoundryDeployRoutes
 from .preflight import PreflightRoutes
 from .prerequisites import PrerequisitesRoutes
 from .voice import VoiceSetupRoutes
@@ -57,6 +59,11 @@ class SetupRoutes:
         self._voice_routes = VoiceSetupRoutes(az, infra_store)
         self._prerequisites_routes = PrerequisitesRoutes(az, infra_store, deploy_store)
         self._preflight_routes = PreflightRoutes(tunnel, infra_store, az=az)
+        self._foundry_routes = FoundryDeployRoutes(
+            az=az,
+            deploy_store=deploy_store,
+            restart_runtime=self._restart_runtime,
+        )
         self._deployment_routes = DeploymentRoutes(
             az=az,
             provisioner=provisioner,
@@ -89,6 +96,7 @@ class SetupRoutes:
         r.add_get("/api/setup/config", self.get_config)
         r.add_post("/api/setup/config", self.save_config)
         self._preflight_routes.register(r)
+        self._foundry_routes.register(r)
         self._deployment_routes.register(r)
 
     # -- Status --
@@ -97,18 +105,26 @@ class SetupRoutes:
         from ..tunnel_status import resolve_tunnel_info
 
         account = self._az.account_info()
-        copilot = self._gh.status()
         kv_url = cfg.env.read("KEY_VAULT_URL") or ""
         tunnel_info = await resolve_tunnel_info(self._tunnel, self._az)
 
+        logged_in = account is not None
+        needs_subscription = bool(account and account.get("_no_default_subscription"))
+
         return web.json_response({
             "azure": {
-                "logged_in": account is not None,
-                "user": account.get("user", {}).get("name") if account else None,
-                "subscription": account.get("name") if account else None,
-                "subscription_id": account.get("id") if account else None,
+                "logged_in": logged_in,
+                "needs_subscription": needs_subscription,
+                "user": account.get("user", {}).get("name") if account and not needs_subscription else None,
+                "subscription": account.get("name") if account and not needs_subscription else None,
+                "subscription_id": account.get("id") if account and not needs_subscription else None,
             },
-            "copilot": copilot,
+            "foundry": {
+                "deployed": bool(cfg.foundry_endpoint),
+                "endpoint": cfg.foundry_endpoint,
+                "name": cfg.foundry_name,
+                "resource_group": cfg.foundry_resource_group,
+            },
             "tunnel": tunnel_info,
             "lockdown_mode": cfg.lockdown_mode,
             "prerequisites_configured": bool(kv_url),
@@ -125,12 +141,6 @@ class SetupRoutes:
 
     async def copilot_status(self, _req: web.Request) -> web.Response:
         info = self._gh.status()
-        if info.get("authenticated") and not cfg.github_token:
-            token = self._gh.extract_token()
-            if token:
-                cfg.write_env(GITHUB_TOKEN=token)
-                logger.info("[setup.copilot] persisted GITHUB_TOKEN from gh CLI session")
-                await self._restart_runtime()
         return web.json_response(info)
 
     async def copilot_login(self, _req: web.Request) -> web.Response:
@@ -140,18 +150,63 @@ class SetupRoutes:
         )
 
     async def copilot_set_token(self, req: web.Request) -> web.Response:
-        body = await req.json()
-        token = body.get("token", "").strip()
-        if not token:
-            return _error("Token is required", 400)
-        cfg.write_env(GITHUB_TOKEN=token)
-        await self._restart_runtime()
-        return _ok("GitHub token saved")
+        return _error("GitHub token is no longer used. Configure FOUNDRY_ENDPOINT instead.", 410)
 
     async def _restart_runtime(self) -> None:
-        """Signal the runtime container to reload configuration."""
+        """Restart or reload the runtime container.
+
+        Docker mode:  full ``docker restart`` so the entrypoint re-runs
+        ``az login --service-principal`` with the SP credentials from
+        ``/data/.env``.  A soft reload cannot replicate this.
+
+        Non-Docker:  HTTP POST to ``/api/internal/reload``.
+        """
         runtime_url = os.getenv("RUNTIME_URL", "")
         if not runtime_url or cfg.server_mode == ServerMode.combined:
+            return
+
+        # Docker mode -- hard restart (re-runs entrypoint + az login)
+        # Falls back to ``docker compose up -d runtime`` when the container
+        # does not exist yet (first provision).
+        if os.getenv("POLYCLAW_CONTAINER") == "1":
+            try:
+                proc = await run_sync(
+                    subprocess.run,
+                    ["docker", "restart", "polyclaw-runtime"],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if proc.returncode == 0:
+                    logger.info("[setup.restart_runtime] docker restart succeeded")
+                else:
+                    stderr = proc.stderr.strip()
+                    logger.warning(
+                        "[setup.restart_runtime] docker restart failed: %s", stderr,
+                    )
+                    # Container doesn't exist yet -- start it via compose
+                    if "No such container" in stderr or "not found" in stderr.lower():
+                        logger.info(
+                            "[setup.restart_runtime] container missing, "
+                            "attempting docker compose up -d runtime",
+                        )
+                        up = await run_sync(
+                            subprocess.run,
+                            ["docker", "compose", "up", "-d", "runtime"],
+                            capture_output=True, text=True, timeout=120,
+                        )
+                        if up.returncode == 0:
+                            logger.info(
+                                "[setup.restart_runtime] compose up succeeded",
+                            )
+                        else:
+                            logger.warning(
+                                "[setup.restart_runtime] compose up failed: %s",
+                                up.stderr.strip(),
+                            )
+            except Exception as exc:
+                logger.warning(
+                    "[setup.restart_runtime] docker restart error: %s",
+                    exc, exc_info=True,
+                )
             return
 
         url = f"{runtime_url.rstrip('/')}/api/internal/reload"
@@ -356,7 +411,6 @@ class SetupRoutes:
         raw = {
             "COPILOT_MODEL": cfg.env.read("COPILOT_MODEL") or cfg.copilot_model,
             "BOT_PORT": cfg.env.read("BOT_PORT") or str(cfg.bot_port),
-            "GITHUB_TOKEN": cfg.env.read("GITHUB_TOKEN"),
         }
         for key in raw:
             if key in SECRET_ENV_KEYS and raw[key]:
@@ -366,7 +420,6 @@ class SetupRoutes:
     _ALLOWED_CONFIG_KEYS: frozenset[str] = frozenset({
         "COPILOT_MODEL",
         "BOT_PORT",
-        "GITHUB_TOKEN",
     })
 
     async def save_config(self, req: web.Request) -> web.Response:

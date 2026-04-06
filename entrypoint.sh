@@ -44,6 +44,16 @@ else
     export AZURE_CONFIG_DIR="$DATA_DIR/.azure"
 fi
 
+# ---------------------------------------------------------------------------
+# Bicep binary: az bicep install puts the binary under /root/.azure/bin/ at
+# build time.  When HOME is overridden (admin=/admin-home, runtime=/runtime-home),
+# az cannot find it.  Symlink into $AZURE_CONFIG_DIR/bin so it is always available.
+# ---------------------------------------------------------------------------
+if [[ -x /root/.azure/bin/bicep && -n "${AZURE_CONFIG_DIR:-}" ]]; then
+    mkdir -p "$AZURE_CONFIG_DIR/bin"
+    ln -sf /root/.azure/bin/bicep "$AZURE_CONFIG_DIR/bin/bicep"
+fi
+
 # Clean stale copilot CLI runtime cache (forces re-download of matching version)
 COPILOT_INSTALLED="$(copilot --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo '')"
 if [[ -n "$COPILOT_INSTALLED" && -d "$HOME/.copilot/pkg" ]]; then
@@ -176,7 +186,7 @@ elif [[ -n "${KEY_VAULT_URL:-}" ]]; then
     echo "  Vault URL:  ${KEY_VAULT_URL}"
 
     # Collect @kv: references for debugging
-    _KV_REFS=$(env | grep '=@kv:' | cut -d= -f1 | tr '\n' ', ' | sed 's/,$//')
+    _KV_REFS=$(env | grep '=@kv:' | cut -d= -f1 | tr '\n' ', ' | sed 's/,$//' || true)
     if [[ -n "$_KV_REFS" ]]; then
         echo "  @kv: refs:  ${_KV_REFS}"
     else
@@ -186,7 +196,7 @@ elif [[ -n "${KEY_VAULT_URL:-}" ]]; then
     # Gate on Azure CLI auth: if `az account show` fails, there are no
     # credentials available and DefaultAzureCredential will hang probing
     # IMDS (especially on ACA where the admin has no managed identity).
-    if az account show --output none 2>/dev/null; then
+    if timeout 15 az account show --output none 2>/dev/null; then
         echo "  Azure CLI:  authenticated"
         _KV_OUTPUT=$(timeout 60 python -m polyclaw.keyvault_resolve 2>&1) || {
             _KV_RC=$?
@@ -217,21 +227,6 @@ elif [[ -n "${KEY_VAULT_URL:-}" ]]; then
                 export "$key="
             fi
         done < <(env)
-    fi
-fi
-
-AUTH_DONE="$DATA_DIR/.copilot-auth/.authenticated"
-
-# --- GitHub Authentication ------------------------------------------------
-
-if [[ "$MODE" != "runtime" ]]; then
-    # Only admin / combined modes care about GitHub auth
-    if [[ -n "${GITHUB_TOKEN:-}" ]] || [[ -n "${GH_TOKEN:-}" ]]; then
-        echo "Using token from environment."
-    elif [[ -f "$AUTH_DONE" ]]; then
-        echo "Already authenticated (cached)."
-    else
-        echo "GitHub not authenticated -- use the web admin UI to authenticate."
     fi
 fi
 
@@ -277,7 +272,11 @@ elif [[ "$MODE" == "runtime" ]]; then
         echo "  Identity:     managed identity (AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-<not set>})"
     else
         echo "  Platform:     Docker"
-        echo "  Identity:     ${RUNTIME_SP_APP_ID:+scoped SP $RUNTIME_SP_APP_ID}${RUNTIME_SP_APP_ID:-none}"
+        if [[ -n "${RUNTIME_SP_APP_ID:-}" ]]; then
+            echo "  Identity:     scoped SP ${RUNTIME_SP_APP_ID}"
+        else
+            echo "  Identity:     (none)"
+        fi
     fi
     echo "  Bot messages: http://localhost:${ADMIN_PORT}/api/messages"
     echo ""

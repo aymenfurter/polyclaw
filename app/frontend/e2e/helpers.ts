@@ -12,7 +12,7 @@ import { type Page } from '@playwright/test'
 
 export const MOCK_STATUS = {
   azure: { logged_in: true, user: 'test@example.com', subscription: 'sub-123' },
-  copilot: { authenticated: true, username: 'testuser' },
+  foundry: { deployed: true, endpoint: 'https://mock-foundry.cognitiveservices.azure.com', name: 'mock-foundry' },
   prerequisites_configured: true,
   telegram_configured: false,
   tunnel: { active: false, url: '' },
@@ -23,7 +23,7 @@ export const MOCK_STATUS = {
 
 export const MOCK_STATUS_NEEDS_SETUP = {
   azure: { logged_in: false },
-  copilot: { authenticated: false },
+  foundry: { deployed: false },
   prerequisites_configured: false,
   telegram_configured: false,
   tunnel: { active: false },
@@ -452,12 +452,6 @@ export async function mockApi(page: Page) {
   // Setup actions
   await page.route('**/api/setup/azure/login', route =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'ok' }) }),
-  )
-  await page.route('**/api/setup/copilot/login', route =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'ok', user_code: 'ABC-123', verification_uri: 'https://github.com/login/device' }) }),
-  )
-  await page.route('**/api/setup/copilot/status', route =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ authenticated: true }) }),
   )
   await page.route('**/api/setup/configuration/save', route =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'ok' }) }),

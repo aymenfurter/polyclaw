@@ -144,3 +144,25 @@ class MonitoringConfigStore(BaseConfigStore[MonitoringConfig]):
         return asdict(self._config)
 
 
+# -- singleton -------------------------------------------------------------
+
+_instance: MonitoringConfigStore | None = None
+
+
+def get_monitoring_config() -> MonitoringConfigStore:
+    global _instance
+    if _instance is None:
+        _instance = MonitoringConfigStore()
+    return _instance
+
+
+def _reset_monitoring_config() -> None:
+    global _instance
+    _instance = None
+
+
+from ..util.singletons import register_singleton  # noqa: E402
+
+register_singleton(_reset_monitoring_config)
+
+

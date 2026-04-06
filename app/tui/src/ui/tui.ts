@@ -426,17 +426,20 @@ export async function launchTUI(
   }
 
   function updateStatusDots(s: StatusResponse): void {
-    const states: Record<string, boolean> = {
-      azure: s.azure?.logged_in ?? false,
-      github: s.copilot?.authenticated ?? false,
-      tunnel: s.tunnel?.active ?? false,
-      bot: s.bot_configured ?? false,
+    const azureOk = s.azure?.logged_in ?? false;
+    const botConfigured = s.bot_configured ?? false;
+    const tunnelActive = s.tunnel?.active ?? false;
+
+    const colors: Record<string, string> = {
+      azure: azureOk ? Colors.green : Colors.red,
+      tunnel: !botConfigured ? Colors.dim : tunnelActive ? Colors.green : Colors.red,
+      bot: botConfigured ? Colors.green : Colors.dim,
     };
     for (const item of STATUS_ITEMS) {
-      try { (statusDots[item.key] as unknown as { fg: string }).fg = states[item.key] ? Colors.green : Colors.red; } catch { /* ignore */ }
+      try { (statusDots[item.key] as unknown as { fg: string }).fg = colors[item.key] ?? Colors.dim; } catch { /* ignore */ }
     }
     // Auto-open admin UI if auth needs attention
-    if (!browserOpened && (!states.azure || !states.github)) {
+    if (!browserOpened && !azureOk) {
       browserOpened = true;
       const adminUrl = secret ? `${baseUrl}/?secret=${secret}` : baseUrl;
       addMessage("system", `Opening admin UI for setup: ${adminUrl}`, Colors.muted);
@@ -1001,7 +1004,6 @@ export async function launchTUI(
       }
     }
     if (/Resolved.*secret.*Key Vault|azure.*logged.in/i.test(line)) markPhase("azure", true);
-    if (/copilot.*authenticated|gh.*logged.in/i.test(line)) markPhase("github", true);
     if (/Tunnel started/i.test(line)) markPhase("tunnel", true);
     if (/Bot deployment completed|bot_deploy.*ok/i.test(line)) markPhase("bot", true);
   });
@@ -1227,7 +1229,6 @@ export async function launchTUI(
       if (bootComplete) { updateStatusDots(s); }
       else {
         markPhase("azure", s.azure?.logged_in ?? false);
-        markPhase("github", s.copilot?.authenticated ?? false);
         markPhase("tunnel", s.tunnel?.active ?? false);
         markPhase("bot", s.bot_configured ?? false);
       }

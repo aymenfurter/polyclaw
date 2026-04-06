@@ -10,6 +10,7 @@ from aiohttp import web
 
 from ...sandbox import SandboxExecutor
 from ...services.cloud.azure import AzureCLI
+from ...services.deployment.bicep_deployer import BicepDeployer, BicepDeployRequest
 from ...state.deploy_state import DeployStateStore
 from ...state.sandbox_config import BLACKLIST, DEFAULT_WHITELIST, SandboxConfigStore
 from ...util.async_helpers import run_sync
@@ -34,6 +35,7 @@ class SandboxRoutes:
         self._executor = executor
         self._az = az
         self._deploy_store = deploy_store
+        self._bicep = BicepDeployer(az, deploy_store) if az and deploy_store else None
 
     def register(self, router: web.UrlDispatcher) -> None:
         router.add_get("/api/sandbox/config", self.get_config)
@@ -118,7 +120,7 @@ class SandboxRoutes:
         )
 
     async def provision_pool(self, req: web.Request) -> web.Response:
-        if not self._az:
+        if not self._bicep:
             return _no_az()
         try:
             body = await req.json() if req.can_read_body else {}
@@ -127,12 +129,6 @@ class SandboxRoutes:
 
         location = body.get("location", "eastus").strip()
         rg = body.get("resource_group", "").strip() or _DEFAULT_SANDBOX_RG
-        pool_name = (
-            body.get("pool_name", "").strip()
-            or f"polyclaw-sandbox-{_secrets.token_hex(4)}"
-        )
-
-        steps: list[dict[str, Any]] = []
 
         if self._store.is_provisioned:
             return web.json_response({
@@ -143,30 +139,34 @@ class SandboxRoutes:
                 "is_provisioned": True,
             })
 
-        if not await self._ensure_rg(rg, location, steps):
-            return _fail_response(steps)
+        bicep_req = BicepDeployRequest(
+            resource_group=rg,
+            location=location,
+            deploy_foundry=False,
+            deploy_key_vault=False,
+            deploy_session_pool=True,
+        )
+        result = await run_sync(self._bicep.deploy, bicep_req)
 
-        pool_result = await self._create_pool(rg, location, pool_name, steps)
-        if not pool_result:
-            return _fail_response(steps)
+        if not result.ok or not result.session_pool_endpoint:
+            return _fail_response(result.steps)
 
-        endpoint, pool_id = pool_result
         self._store.set_pool_metadata(
             resource_group=rg,
             location=location,
-            pool_name=pool_name,
-            pool_id=pool_id,
-            endpoint=endpoint,
+            pool_name=result.session_pool_name,
+            pool_id=result.session_pool_id,
+            endpoint=result.session_pool_endpoint,
         )
-        steps.append({
+        result.steps.append({
             "step": "save_config", "status": "ok", "detail": "Configuration saved"
         })
 
-        logger.info("Sandbox pool provisioned: %s (rg=%s)", pool_name, rg)
+        logger.info("Sandbox pool provisioned (Bicep): %s (rg=%s)", result.session_pool_name, rg)
         return web.json_response({
             "status": "ok",
-            "message": f"Session pool '{pool_name}' provisioned",
-            "steps": steps,
+            "message": f"Session pool '{result.session_pool_name}' provisioned",
+            "steps": result.steps,
             **self._store.to_dict(),
             "is_provisioned": True,
         })
@@ -229,89 +229,3 @@ class SandboxRoutes:
             **self._store.to_dict(),
             "is_provisioned": False,
         })
-
-    # -- internal helpers --
-
-    async def _ensure_rg(
-        self, rg: str, location: str, steps: list[dict[str, Any]]
-    ) -> bool:
-        existing = await run_sync(self._az.json, "group", "show", "--name", rg)
-        if existing:
-            steps.append({
-                "step": "resource_group", "status": "ok", "detail": f"{rg} (existing)"
-            })
-            return True
-
-        tag_args: list[str] = []
-        if self._deploy_store:
-            rec = self._deploy_store.current_local()
-            if rec:
-                tag_args = ["--tags", f"polyclaw_deploy={rec.tag}"]
-
-        result = await run_sync(
-            self._az.json,
-            "group", "create", "--name", rg, "--location", location, *tag_args,
-        )
-        ok = bool(result)
-        steps.append({
-            "step": "resource_group",
-            "status": "ok" if ok else "failed",
-            "detail": rg if ok else (self._az.last_stderr or "Unknown error"),
-        })
-        if ok and self._deploy_store:
-            rec = self._deploy_store.current_local()
-            if rec and rg not in rec.resource_groups:
-                rec.resource_groups.append(rg)
-                self._deploy_store.update(rec)
-        return ok
-
-    async def _create_pool(
-        self,
-        rg: str,
-        location: str,
-        pool_name: str,
-        steps: list[dict[str, Any]],
-    ) -> tuple[str, str] | None:
-        logger.info("Creating session pool '%s' in rg '%s'...", pool_name, rg)
-        result = await run_sync(
-            self._az.json,
-            "containerapp", "sessionpool", "create",
-            "--name", pool_name, "--resource-group", rg,
-            "--location", location, "--container-type", "PythonLTS",
-            "--cooldown-period", "300",
-        )
-        if not result or not isinstance(result, dict):
-            err = self._az.last_stderr or "Unknown error"
-            steps.append({
-                "step": "create_pool", "status": "failed", "detail": err[:300]
-            })
-            return None
-
-        props = result.get("properties", {})
-        endpoint = props.get("poolManagementEndpoint", "")
-        pool_id = result.get("id", "")
-        if not endpoint:
-            endpoint = (
-                f"https://{location}.dynamicsessions.io"
-                f"/subscriptions/pools/{pool_name}"
-            )
-
-        steps.append({
-            "step": "create_pool", "status": "ok",
-            "detail": f"{pool_name} -> {endpoint}",
-        })
-
-        if self._deploy_store:
-            rec = self._deploy_store.current_local()
-            if rec:
-                rec.add_resource(
-                    resource_type="session_pool",
-                    resource_group=rg,
-                    resource_name=pool_name,
-                    purpose="Agent sandbox session pool",
-                    resource_id=pool_id,
-                )
-                self._deploy_store.update(rec)
-
-        return endpoint, pool_id
-

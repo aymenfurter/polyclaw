@@ -9,6 +9,7 @@ from typing import Any
 from aiohttp import web
 
 from ...services.cloud.azure import AzureCLI
+from ...services.deployment.bicep_deployer import BicepDeployer, BicepDeployRequest
 from ...services.otel import configure_otel, get_status, is_active, shutdown_otel
 from ...state.deploy_state import DeployStateStore
 from ...state.monitoring_config import MonitoringConfigStore
@@ -32,6 +33,7 @@ class MonitoringRoutes:
         self._store = store
         self._az = az
         self._deploy_store = deploy_store
+        self._bicep = BicepDeployer(az, deploy_store) if az and deploy_store else None
 
     def register(self, router: web.UrlDispatcher) -> None:
         router.add_get("/api/monitoring/config", self._get_config)
@@ -151,10 +153,7 @@ class MonitoringRoutes:
     # ------------------------------------------------------------------
 
     async def _provision(self, req: web.Request) -> web.Response:
-        """Provision a Log Analytics workspace + Application Insights resource."""
-        if not self._az:
-            return _no_az()
-
+        """Provision Log Analytics + Application Insights via the central Bicep template."""
         if self._store.is_provisioned:
             return web.json_response({
                 "status": "ok",
@@ -163,6 +162,9 @@ class MonitoringRoutes:
                 **self._store.to_dict(),
             })
 
+        if not self._bicep:
+            return _no_az()
+
         try:
             body = await req.json() if req.can_read_body else {}
         except Exception:
@@ -170,81 +172,50 @@ class MonitoringRoutes:
 
         location = body.get("location", "eastus").strip()
         rg = body.get("resource_group", "").strip() or _DEFAULT_MONITORING_RG
-        suffix = _secrets.token_hex(4)
-        ai_name = body.get("app_insights_name", "").strip() or f"polyclaw-insights-{suffix}"
-        ws_name = body.get("workspace_name", "").strip() or f"polyclaw-logs-{suffix}"
 
-        steps: list[dict[str, Any]] = []
+        bicep_req = BicepDeployRequest(
+            resource_group=rg,
+            location=location,
+            deploy_foundry=False,
+            deploy_key_vault=False,
+            deploy_monitoring=True,
+        )
+        result = await run_sync(self._bicep.deploy, bicep_req)
 
-        # 1. Ensure the application-insights CLI extension is installed
-        if not await self._ensure_extension(steps):
-            return _fail_response(steps)
+        if not result.ok or not result.app_insights_connection_string:
+            return _fail_response(result.steps)
 
-        # 2. Ensure resource group
-        if not await self._ensure_rg(rg, location, steps):
-            return _fail_response(steps)
-
-        # 3. Create Log Analytics workspace
-        ws_id = await self._create_workspace(rg, location, ws_name, steps)
-        if not ws_id:
-            return _fail_response(steps)
-
-        # 4. Create Application Insights component linked to the workspace
-        cs = await self._create_app_insights(rg, location, ai_name, ws_id, steps)
-        if not cs:
-            return _fail_response(steps)
-
-        # 5. Persist metadata and enable OTel
+        # Persist metadata and enable OTel
         sub_id = ""
         if self._az:
             account = self._az.account_info()
             sub_id = account.get("id", "") if account else ""
         self._store.set_provisioned_metadata(
-            app_insights_name=ai_name,
-            workspace_name=ws_name,
+            app_insights_name=result.app_insights_name,
+            workspace_name=result.log_analytics_workspace_name,
             resource_group=rg,
             location=location,
-            connection_string=cs,
+            connection_string=result.app_insights_connection_string,
             subscription_id=sub_id,
         )
-        steps.append({"step": "save_config", "status": "ok", "detail": "Configuration saved"})
+        result.steps.append({"step": "save_config", "status": "ok", "detail": "Configuration saved"})
 
-        # Register resources in deploy state
-        if self._deploy_store:
-            rec = self._deploy_store.current_local()
-            if rec:
-                rec.add_resource(
-                    resource_type="log_analytics_workspace",
-                    resource_group=rg,
-                    resource_name=ws_name,
-                    purpose="Monitoring Log Analytics workspace",
-                )
-                rec.add_resource(
-                    resource_type="app_insights",
-                    resource_group=rg,
-                    resource_name=ai_name,
-                    purpose="Application Insights for OTel telemetry",
-                )
-                if rg not in rec.resource_groups:
-                    rec.resource_groups.append(rg)
-                self._deploy_store.update(rec)
-
-        # 6. Activate OTel immediately
+        # Activate OTel immediately
         configure_otel(
-            cs,
+            result.app_insights_connection_string,
             sampling_ratio=self._store.config.sampling_ratio,
             enable_live_metrics=self._store.config.enable_live_metrics,
         )
-        steps.append({"step": "otel_bootstrap", "status": "ok", "detail": "OTel configured"})
+        result.steps.append({"step": "otel_bootstrap", "status": "ok", "detail": "OTel configured"})
 
         logger.info(
-            "[monitoring.provision] App Insights '%s' provisioned (rg=%s)",
-            ai_name, rg,
+            "[monitoring.provision] App Insights '%s' provisioned via Bicep (rg=%s)",
+            result.app_insights_name, rg,
         )
         return web.json_response({
             "status": "ok",
-            "message": f"Application Insights '{ai_name}' provisioned and monitoring enabled.",
-            "steps": steps,
+            "message": f"Application Insights '{result.app_insights_name}' provisioned and monitoring enabled.",
+            "steps": result.steps,
             **self._store.to_dict(),
         })
 
@@ -326,114 +297,3 @@ class MonitoringRoutes:
             "steps": steps,
             **self._store.to_dict(),
         })
-
-    # -- internal helpers --
-
-    async def _ensure_extension(self, steps: list[dict[str, Any]]) -> bool:
-        """Ensure the ``application-insights`` CLI extension is installed."""
-        ok, msg = await run_sync(
-            self._az.ok,
-            "extension", "add", "--name", "application-insights", "--yes",
-        )
-        steps.append({
-            "step": "cli_extension",
-            "status": "ok" if ok else "failed",
-            "detail": "application-insights extension ready" if ok else (msg or "Unknown error"),
-        })
-        return ok
-
-    async def _ensure_rg(
-        self, rg: str, location: str, steps: list[dict[str, Any]]
-    ) -> bool:
-        existing = await run_sync(self._az.json, "group", "show", "--name", rg)
-        if existing:
-            steps.append({"step": "resource_group", "status": "ok", "detail": f"{rg} (existing)"})
-            return True
-
-        tag_args: list[str] = []
-        if self._deploy_store:
-            rec = self._deploy_store.current_local()
-            if rec:
-                tag_args = ["--tags", f"polyclaw_deploy={rec.tag}"]
-
-        result = await run_sync(
-            self._az.json,
-            "group", "create", "--name", rg, "--location", location, *tag_args,
-        )
-        ok = bool(result)
-        steps.append({
-            "step": "resource_group",
-            "status": "ok" if ok else "failed",
-            "detail": rg if ok else (self._az.last_stderr or "Unknown error"),
-        })
-        if ok and self._deploy_store:
-            rec = self._deploy_store.current_local()
-            if rec and rg not in rec.resource_groups:
-                rec.resource_groups.append(rg)
-                self._deploy_store.update(rec)
-        return ok
-
-    async def _create_workspace(
-        self,
-        rg: str,
-        location: str,
-        ws_name: str,
-        steps: list[dict[str, Any]],
-    ) -> str | None:
-        """Create a Log Analytics workspace. Returns the workspace resource ID."""
-        logger.info("[monitoring.provision] Creating Log Analytics workspace '%s'...", ws_name)
-        result = await run_sync(
-            self._az.json,
-            "monitor", "log-analytics", "workspace", "create",
-            "--workspace-name", ws_name, "--resource-group", rg, "--location", location,
-        )
-        if not result or not isinstance(result, dict):
-            err = self._az.last_stderr or "Unknown error"
-            steps.append({"step": "create_workspace", "status": "failed", "detail": err[:300]})
-            return None
-
-        ws_id = result.get("id", "")
-        steps.append({
-            "step": "create_workspace", "status": "ok",
-            "detail": f"{ws_name} created",
-        })
-        return ws_id
-
-    async def _create_app_insights(
-        self,
-        rg: str,
-        location: str,
-        ai_name: str,
-        ws_id: str,
-        steps: list[dict[str, Any]],
-    ) -> str | None:
-        """Create an Application Insights component. Returns the connection string."""
-        logger.info("[monitoring.provision] Creating Application Insights '%s'...", ai_name)
-        result = await run_sync(
-            self._az.json,
-            "monitor", "app-insights", "component", "create",
-            "--app", ai_name,
-            "--location", location,
-            "--resource-group", rg,
-            "--workspace", ws_id,
-            "--application-type", "web",
-        )
-        if not result or not isinstance(result, dict):
-            err = self._az.last_stderr or "Unknown error"
-            steps.append({"step": "create_app_insights", "status": "failed", "detail": err[:300]})
-            return None
-
-        cs = result.get("connectionString", "")
-        if not cs:
-            steps.append({
-                "step": "create_app_insights", "status": "failed",
-                "detail": "Resource created but connectionString not found in response",
-            })
-            return None
-
-        steps.append({
-            "step": "create_app_insights", "status": "ok",
-            "detail": f"{ai_name} created",
-        })
-        return cs
-

@@ -178,12 +178,12 @@ def init_services(mode: ServerMode) -> dict[str, Any]:
     Returns a dict of service/store references keyed by name.
     """
     from ..state.deploy_state import DeployStateStore
-    from ..state.foundry_iq_config import FoundryIQConfigStore
-    from ..state.guardrails import GuardrailsConfigStore
-    from ..state.infra_config import InfraConfigStore
+    from ..state.foundry_iq_config import get_foundry_iq_config
+    from ..state.guardrails import get_guardrails_config
+    from ..state.infra_config import get_infra_config
     from ..state.mcp_config import McpConfigStore
-    from ..state.monitoring_config import MonitoringConfigStore
-    from ..state.sandbox_config import SandboxConfigStore
+    from ..state.monitoring_config import get_monitoring_config
+    from ..state.sandbox_config import get_sandbox_config
 
     is_admin = mode in (ServerMode.admin, ServerMode.combined)
     is_runtime = mode in (ServerMode.runtime, ServerMode.combined)
@@ -191,12 +191,12 @@ def init_services(mode: ServerMode) -> dict[str, Any]:
     result: dict[str, Any] = {
         "tunnel": None,
         "deploy_store": DeployStateStore(),
-        "infra_store": InfraConfigStore(),
+        "infra_store": get_infra_config(),
         "mcp_store": McpConfigStore(),
-        "sandbox_store": SandboxConfigStore(),
-        "foundry_iq_store": FoundryIQConfigStore(),
-        "guardrails_store": GuardrailsConfigStore(),
-        "monitoring_store": MonitoringConfigStore(),
+        "sandbox_store": get_sandbox_config(),
+        "foundry_iq_store": get_foundry_iq_config(),
+        "guardrails_store": get_guardrails_config(),
+        "monitoring_store": get_monitoring_config(),
         "az": None,
         "gh": None,
         "deployer": None,

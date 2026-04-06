@@ -30,6 +30,7 @@ import {
   getAdminSecret,
   resolveKvSecret,
   waitForReady,
+  writeAzureOverride,
 } from "./docker.js";
 
 const PROJECT_ROOT = resolve(import.meta.dir, "../../../..");
@@ -270,6 +271,8 @@ export class AcaDeployTarget implements DeployTarget {
     try {
       await exec(["docker", "compose", "down", "--remove-orphans"], PROJECT_ROOT);
     } catch { /* may not be running */ }
+
+    writeAzureOverride();
 
     const { exitCode, stderr } = await exec(
       ["docker", "compose", "up", "-d", "admin"],

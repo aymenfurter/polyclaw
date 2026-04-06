@@ -30,28 +30,35 @@ PreToolHook = Callable[[dict, Any], Awaitable[dict]]
 async def run_one_shot(
     prompt: str,
     *,
-    model: str = "gpt-4.1",
+    model: str = "",
     system_message: str = "",
     timeout: float = 300,
     tools: list[Any] | None = None,
     on_pre_tool_use: PreToolHook | None = None,
 ) -> str | None:
     opts: dict[str, Any] = {"log_level": "error"}
-    if cfg.github_token:
-        opts["github_token"] = cfg.github_token
 
     hook = on_pre_tool_use or auto_approve
     client = CopilotClient(opts)
     await client.start()
     try:
         session_cfg: dict[str, Any] = {
-            "model": model,
+            "model": model or cfg.copilot_model,
             "hooks": {"on_pre_tool_use": hook},
         }
         if system_message:
             session_cfg["system_message"] = {"mode": "append", "content": system_message}
         if tools:
             session_cfg["tools"] = tools
+
+        # Inject BYOK provider when Foundry is configured.
+        if cfg.foundry_endpoint:
+            from .byok import build_session_overrides
+
+            overrides = build_session_overrides()
+            if overrides:
+                session_cfg.update(overrides)
+
         session = await client.create_session(session_cfg)
         return await _send_and_wait(session, prompt, timeout)
     finally:

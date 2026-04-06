@@ -109,9 +109,6 @@ class AitlReviewer:
         if self._client and self._started:
             return self._client
         opts: dict[str, Any] = {"log_level": "error"}
-        token = cfg.github_token
-        if token:
-            opts["github_token"] = token
         self._client = CopilotClient(opts)
         await self._client.start()
         self._started = True

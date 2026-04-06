@@ -10,13 +10,14 @@ from aiohttp import web
 
 from ...config.settings import cfg
 from ...services.cloud.azure import AzureCLI
+from ...services.deployment.bicep_deployer import BicepDeployer, BicepDeployRequest
 from ...services.security.prompt_shield import PromptShieldService
+from ...state.deploy_state import DeployStateStore
 from ...state.guardrails import GuardrailsConfigStore
 from ...util.async_helpers import run_sync
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_RESOURCE_NAME = "polyclaw-content-safety"
 _DEFAULT_RG = "polyclaw-rg"
 _DEFAULT_LOCATION = "eastus"
 
@@ -37,9 +38,12 @@ class ContentSafetyRoutes:
         self,
         az: AzureCLI | None = None,
         guardrails_store: GuardrailsConfigStore | None = None,
+        deploy_store: DeployStateStore | None = None,
     ) -> None:
         self._az = az
         self._store = guardrails_store
+        self._deploy_store = deploy_store
+        self._bicep = BicepDeployer(az, deploy_store) if az and deploy_store else None
 
     def register(self, router: web.UrlDispatcher) -> None:
         router.add_post("/api/content-safety/deploy", self._deploy)
@@ -93,19 +97,10 @@ class ContentSafetyRoutes:
         })
 
     async def _deploy(self, req: web.Request) -> web.Response:
-        """Provision an Azure AI Content Safety resource.
-
-        Steps:
-        1. Create the Cognitive Services account (``--kind ContentSafety``).
-        2. Retrieve the endpoint URL.
-        3. Assign *Cognitive Services User* RBAC to the runtime identity.
-        4. Update guardrails config.
-
-        No API keys are retrieved or stored.
-        """
-        if not self._az:
+        """Provision an Azure AI Content Safety resource via the central Bicep template."""
+        if not self._bicep:
             return web.json_response(
-                {"status": "error", "message": "Azure CLI not available"},
+                {"status": "error", "message": "Azure CLI or deploy store not available"},
                 status=400,
             )
         if not self._store:
@@ -119,31 +114,29 @@ class ContentSafetyRoutes:
         except Exception:
             data = {}
 
-        resource_name = data.get("resource_name", _DEFAULT_RESOURCE_NAME).strip()
         resource_group = data.get("resource_group", _DEFAULT_RG).strip()
         location = data.get("location", _DEFAULT_LOCATION).strip()
 
-        steps: list[dict[str, Any]] = []
-
-        # 1. Create the Content Safety resource
-        resource_id, endpoint = await self._create_resource(
-            resource_group, location, resource_name, steps,
+        bicep_req = BicepDeployRequest(
+            resource_group=resource_group,
+            location=location,
+            deploy_foundry=False,
+            deploy_key_vault=False,
+            deploy_content_safety=True,
         )
+        result = await run_sync(self._bicep.deploy, bicep_req)
 
-        if not endpoint:
+        if not result.ok or not result.content_safety_endpoint:
             return web.json_response({
                 "status": "error",
-                "message": "Failed to create Content Safety resource",
-                "steps": steps,
+                "message": result.error or "Failed to deploy Content Safety resource",
+                "steps": result.steps,
             }, status=500)
 
-        # 2. Assign RBAC to the runtime identity
-        await self._assign_rbac(resource_id, steps)
-
-        # 3. Update guardrails config
-        self._store.set_content_safety_endpoint(endpoint)
+        # Update guardrails config
+        self._store.set_content_safety_endpoint(result.content_safety_endpoint)
         self._store.set_filter_mode("prompt_shields")
-        steps.append({
+        result.steps.append({
             "step": "update_config",
             "status": "ok",
             "detail": (
@@ -154,8 +147,8 @@ class ContentSafetyRoutes:
 
         return web.json_response({
             "status": "ok",
-            "steps": steps,
-            "endpoint": endpoint,
+            "steps": result.steps,
+            "endpoint": result.content_safety_endpoint,
             "filter_mode": "prompt_shields",
         })
 
@@ -268,73 +261,6 @@ class ContentSafetyRoutes:
             if acct_ep == normalised:
                 return acct.get("id", "")
         return ""
-
-    async def _create_resource(
-        self,
-        rg: str,
-        location: str,
-        name: str,
-        steps: list[dict[str, Any]],
-    ) -> tuple[str, str]:
-        """Create Azure AI Content Safety resource and retrieve endpoint.
-
-        Returns ``(resource_id, endpoint)`` -- either may be empty on
-        failure.
-        """
-        assert self._az is not None
-
-        result = await run_sync(
-            self._az.json,
-            "cognitiveservices", "account", "create",
-            "--name", name, "--resource-group", rg,
-            "--location", location, "--kind", "ContentSafety",
-            "--sku", "S0", "--custom-domain", name,
-        )
-        resource_id = ""
-        if not result or not isinstance(result, dict):
-            err = self._az.last_stderr or "Unknown error"
-            if "already exists" in err.lower() or "conflict" in err.lower():
-                steps.append({
-                    "step": "create_resource",
-                    "status": "ok",
-                    "detail": f"{name} already exists, reusing",
-                })
-            else:
-                steps.append({
-                    "step": "create_resource",
-                    "status": "failed",
-                    "detail": err[:300],
-                })
-                return ("", "")
-        else:
-            resource_id = result.get("id", "")
-            steps.append({
-                "step": "create_resource",
-                "status": "ok",
-                "detail": f"Content Safety resource '{name}' created in {rg}",
-            })
-
-        # Retrieve endpoint (and resource id if missing from create)
-        info = await run_sync(
-            self._az.json,
-            "cognitiveservices", "account", "show",
-            "--name", name, "--resource-group", rg,
-        )
-        endpoint = ""
-        if isinstance(info, dict):
-            endpoint = info.get("properties", {}).get("endpoint", "")
-            if not resource_id:
-                resource_id = info.get("id", "")
-        if not endpoint:
-            endpoint = f"https://{name}.cognitiveservices.azure.com/"
-
-        steps.append({
-            "step": "get_endpoint",
-            "status": "ok",
-            "detail": endpoint,
-        })
-
-        return (resource_id, endpoint)
 
     async def _resolve_runtime_principal(
         self,

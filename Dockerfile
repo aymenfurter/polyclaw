@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
     libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 \
     libasound2 libatspi2.0-0 libxshmfence1 \
+    libicu76 \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js (for Playwright MCP via npx) + Copilot CLI
@@ -33,7 +34,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && rm -rf /var/lib/apt/lists/*
 
 # Azure CLI (for automated bot provisioning)
-RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash \
+    && az bicep install
 
 # Docker CLI only (no daemon) -- used to push the locally-built image to ACR
 RUN install -m 0755 -d /etc/apt/keyrings \
@@ -77,6 +79,7 @@ COPY app/cli/ app/cli/
 RUN pip install --no-cache-dir --no-deps -e .
 COPY skills/ skills/
 COPY plugins/ plugins/
+COPY infra/ infra/
 
 # Embed the built frontend at the path _FRONTEND_DIR resolves to
 COPY --from=frontend-build /build/dist/ /app/frontend/dist/

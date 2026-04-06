@@ -112,8 +112,18 @@ class RuntimeIdentityProvisioner:
             logger.info("Created runtime SP: %s", app_id)
             steps.append({"step": "create_sp", "status": "ok", "detail": app_id})
 
-        # 5. Rotate credentials
-        cred = self._az.json("ad", "app", "credential", "reset", "--id", app_id, "--years", "2")
+        # 5. Rotate credentials -- try shorter lifetimes for tenant policies.
+        cred = self._az.json(
+            "ad", "app", "credential", "reset", "--id", app_id, "--years", "2",
+        )
+        if (not isinstance(cred, dict) or not cred.get("password")) and \
+                "Credential lifetime" in (self._az.last_stderr or ""):
+            from datetime import datetime, timedelta
+            end_date = (datetime.utcnow() + timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            cred = self._az.json(
+                "ad", "app", "credential", "reset", "--id", app_id,
+                "--end-date", end_date,
+            )
         if not isinstance(cred, dict) or not cred.get("password"):
             steps.append({"step": "rotate_creds", "status": "failed",
                           "detail": self._az.last_stderr})

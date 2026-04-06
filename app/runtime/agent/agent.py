@@ -39,6 +39,7 @@ class Agent:
         self._client: CopilotClient | None = None
         self._session: Any = None
         self._authenticated: bool = False
+        self._byok: bool = False
         self.request_counts: dict[str, int] = {}
         self._sandbox: SandboxExecutor | None = None
         self._interceptor: SandboxToolInterceptor | None = None
@@ -65,13 +66,15 @@ class Agent:
     async def start(self) -> None:
         cfg.ensure_dirs()
         opts: dict[str, Any] = {"log_level": "error"}
-        if cfg.github_token:
-            opts["github_token"] = cfg.github_token
-            logger.info("[agent.start] GITHUB_TOKEN provided (%d chars)", len(cfg.github_token))
+
+        # Auth is handled per-session via the Foundry BYOK provider block.
+        self._byok = bool(cfg.foundry_endpoint)
+
+        if self._byok:
+            logger.info("[agent.start] Foundry BYOK mode")
         else:
             logger.warning(
-                "[agent.start] No GITHUB_TOKEN found -- Copilot CLI will try the "
-                "logged-in gh session (may fail in containers)"
+                "[agent.start] No FOUNDRY_ENDPOINT -- authentication may fail"
             )
 
         for attempt in range(1, MAX_START_RETRIES + 1):
@@ -106,25 +109,28 @@ class Agent:
         await self._safe_stop_client()
 
     async def reload_auth(self) -> dict[str, Any]:
-        """Reload GITHUB_TOKEN from ``.env`` and restart the Copilot client.
+        """Reload configuration from ``.env`` and restart the Copilot client.
 
         Called by the ``/api/runtime/reload-auth`` endpoint when the admin
-        container writes a new token to ``/data/.env`` after the runtime has
-        already booted.
+        container writes new config to ``/data/.env`` after the runtime has
+        already booted.  Handles Foundry BYOK endpoint changes.
         """
-        old_token = cfg.github_token
+        old_endpoint = cfg.foundry_endpoint
         cfg.reload()
-        new_token = cfg.github_token
+        new_endpoint = cfg.foundry_endpoint
 
-        if not new_token:
-            return {"status": "no_token", "authenticated": False}
+        endpoint_changed = new_endpoint != old_endpoint
 
-        if new_token == old_token and self._authenticated:
+        if not endpoint_changed and self._authenticated:
             return {"status": "unchanged", "authenticated": True}
 
+        if not new_endpoint:
+            return {"status": "no_auth", "authenticated": False}
+
         logger.info(
-            "[agent.reload_auth] GITHUB_TOKEN changed (%d chars), restarting Copilot client ...",
-            len(new_token),
+            "[agent.reload_auth] config changed (endpoint=%s), "
+            "restarting Copilot client ...",
+            "changed" if endpoint_changed else "same",
         )
         await self.stop()
         await self.start()
@@ -132,6 +138,7 @@ class Agent:
         return {
             "status": "ok" if self._authenticated else "auth_failed",
             "authenticated": self._authenticated,
+            "byok": bool(new_endpoint),
         }
 
     async def _verify_auth(self) -> None:
@@ -139,9 +146,18 @@ class Agent:
 
         Sets ``_authenticated`` so that :meth:`send` can fail fast with a
         useful error message instead of silently hanging for 120 seconds.
+
+        In BYOK mode (Foundry endpoint configured), GitHub auth is not
+        required -- authentication happens per-session via bearer token.
         """
         if not self._client:
             return
+
+        if self._byok:
+            logger.info("[agent.auth] BYOK mode -- skipping GitHub auth check")
+            self._authenticated = True
+            return
+
         try:
             auth = await self._client.get_auth_status()
             if auth.isAuthenticated:
@@ -150,8 +166,8 @@ class Agent:
             else:
                 logger.error(
                     "[agent.auth] Copilot CLI is NOT authenticated. "
-                    "Chat will not work. Set GITHUB_TOKEN in /data/.env "
-                    "or use the admin setup wizard to authenticate."
+                    "Chat will not work. Configure FOUNDRY_ENDPOINT "
+                    "for Foundry BYOK mode."
                 )
         except Exception:
             # auth.getStatus may not be supported on older CLI versions;
@@ -162,6 +178,12 @@ class Agent:
     async def _verify_model(self) -> None:
         """Log whether the configured model is available and enabled."""
         if not self._client:
+            return
+        if self._byok:
+            logger.info(
+                "[agent.model] BYOK mode -- using Foundry model %s",
+                cfg.copilot_model,
+            )
             return
         model_id = cfg.copilot_model
         try:
@@ -262,9 +284,7 @@ class Agent:
         if not self._authenticated:
             msg = (
                 "Not authenticated. Please authenticate first.\n\n"
-                "Open the setup wizard and either:\n"
-                "- Sign in with GitHub, or\n"
-                "- Paste a GitHub personal access token."
+                "Open the setup wizard and deploy Foundry infrastructure."
             )
             logger.error("[agent.send] aborting -- Copilot CLI not authenticated")
             if on_delta:
@@ -274,9 +294,14 @@ class Agent:
         model = cfg.copilot_model
         self.request_counts[model] = self.request_counts.get(model, 0) + 1
 
+        t_lock_wait = _now()
         logger.info("[agent.send] waiting for send lock ...")
         async with self._send_lock:
-            logger.info("[agent.send] send lock acquired")
+            t_lock_acq = _now()
+            logger.info(
+                "[agent.send] send lock acquired (waited %.0fms)",
+                (t_lock_acq - t_lock_wait) * 1000,
+            )
             if not self._session:
                 logger.info("[agent.send] no session -- creating one")
                 await self._new_session_inner()
@@ -295,9 +320,13 @@ class Agent:
         unsub = self._session.on(handler)
         try:
             try:
+                t_sdk = _now()
                 logger.info("[agent.send] calling session.send() ...")
                 await self._session.send({"prompt": prompt})
-                logger.info("[agent.send] session.send() returned, waiting for completion ...")
+                logger.info(
+                    "[agent.send] session.send() returned in %.0fms, waiting for completion ...",
+                    (_now() - t_sdk) * 1000,
+                )
             except Exception as exc:
                 logger.error("[agent.send] session.send() raised: %s", exc, exc_info=True)
                 if "Session not found" in str(exc):
@@ -361,6 +390,11 @@ class Agent:
     async def list_models(self) -> list[dict]:
         if not self._client:
             raise RuntimeError("Agent not started")
+
+        # BYOK mode: return Foundry-deployed models from .env
+        if self._byok:
+            return self._list_foundry_models()
+
         try:
             models = await self._client.list_models()
             return [
@@ -376,6 +410,28 @@ class Agent:
         except Exception as exc:
             logger.warning("Failed to list models: %s", exc)
             return []
+
+    @staticmethod
+    def _list_foundry_models() -> list[dict]:
+        """Return models deployed on the Foundry endpoint.
+
+        Reads ``DEPLOYED_MODELS`` (comma-separated) from ``.env``.
+        Falls back to the current ``COPILOT_MODEL`` if not set.
+        """
+        raw = cfg.env.read("DEPLOYED_MODELS") or ""
+        names = [n.strip() for n in raw.split(",") if n.strip()] if raw else []
+        if not names:
+            names = [cfg.copilot_model]
+        return [
+            {
+                "id": name,
+                "name": name,
+                "policy": "enabled",
+                "billing_multiplier": 1.0,
+                "reasoning_efforts": [],
+            }
+            for name in names
+        ]
 
     def _build_hooks(self) -> dict[str, Any]:
         """Compose pre/post-tool-use hooks from active interceptors."""
@@ -483,6 +539,19 @@ class Agent:
                     "tools": ["*"],
                 },
             }
+
+        # Inject BYOK provider when Foundry is configured.
+        if self._byok:
+            from .byok import build_session_overrides
+
+            overrides = build_session_overrides()
+            if overrides:
+                session_cfg.update(overrides)
+                logger.info(
+                    "[agent.config] BYOK provider injected: endpoint=%s model=%s",
+                    cfg.foundry_endpoint, session_cfg.get("model"),
+                )
+
         return session_cfg
 
     async def _abort_and_destroy_session(self) -> None:

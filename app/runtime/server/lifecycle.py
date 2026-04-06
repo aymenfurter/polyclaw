@@ -83,10 +83,9 @@ async def on_startup_runtime(
     bot_endpoint = os.environ.get("BOT_ENDPOINT", "")
 
     if mode != ServerMode.combined:
-        github_token = cfg.github_token
-        if not github_token:
+        if not cfg.foundry_endpoint:
             logger.warning(
-                "[startup.runtime] Setup incomplete -- missing GITHUB_TOKEN. "
+                "[startup.runtime] Setup incomplete -- missing FOUNDRY_ENDPOINT. "
                 "Complete the setup wizard in the admin container, "
                 "then recreate the agent container.",
             )

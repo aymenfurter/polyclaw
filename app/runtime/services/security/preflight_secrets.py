@@ -12,7 +12,6 @@ from .security_preflight import PreflightCheck, PreflightResult, add_check as _a
 def run_secret_checks(result: PreflightResult) -> None:
     """Execute all secret-isolation checks."""
     check_admin_cli_isolated(result)
-    check_no_github_in_runtime(result)
     check_bot_credentials(result)
     check_admin_secret(result)
     check_kv_reachable(result)
@@ -71,53 +70,6 @@ def check_admin_cli_isolated(result: PreflightResult) -> None:
             ),
             evidence=f"POLYCLAW_SERVER_MODE={mode}",
             command="cfg.server_mode",
-        )
-
-
-def check_no_github_in_runtime(result: PreflightResult) -> None:
-    env_data = cfg.env.read_all()
-    gh_token = env_data.get("GITHUB_TOKEN", "")
-    gh2 = env_data.get("GH_TOKEN", "")
-    mode = cfg.server_mode.value
-
-    if mode == "runtime":
-        has = bool(gh_token or gh2)
-        _add(
-            result, id="secret_no_github_runtime", category="secrets",
-            name="No GitHub Token in Runtime",
-            status="fail" if has else "pass",
-            detail=(
-                "GitHub token NOT present in runtime environment"
-                if not has
-                else "RISK: GitHub token accessible in runtime env"
-            ),
-            evidence=(
-                f"GITHUB_TOKEN={'set (' + str(len(gh_token)) + ' chars)' if gh_token else 'empty'}\n"
-                f"GH_TOKEN={'set' if gh2 else 'empty'}"
-            ),
-            command="env: GITHUB_TOKEN, GH_TOKEN",
-        )
-    elif mode == "admin":
-        has = bool(gh_token or gh2)
-        _add(
-            result, id="secret_no_github_runtime", category="secrets",
-            name="GitHub Token (Admin Only)",
-            status="pass",
-            detail=f"GitHub token on admin: {'present' if has else 'not configured'}",
-            evidence=(
-                f"GITHUB_TOKEN={'set' if gh_token else 'empty'}\n"
-                f"GH_TOKEN={'set' if gh2 else 'empty'}"
-            ),
-            command="env: GITHUB_TOKEN, GH_TOKEN",
-        )
-    else:
-        _add(
-            result, id="secret_no_github_runtime", category="secrets",
-            name="GitHub Token Isolation",
-            status="warn",
-            detail="Combined mode -- GitHub token shared with agent runtime",
-            evidence=f"POLYCLAW_SERVER_MODE={mode}",
-            command="cfg.server_mode + env",
         )
 
 

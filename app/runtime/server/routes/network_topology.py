@@ -94,12 +94,12 @@ def build_components(
             "status": "configured",
         })
 
-    # GitHub Copilot (model backend)
-    if cfg.github_token:
+    # Foundry (model backend)
+    if cfg.foundry_endpoint:
         components.append({
-            "name": "GitHub Copilot",
+            "name": "Foundry",
             "type": "ai",
-            "endpoint": "https://api.githubcopilot.com",
+            "endpoint": cfg.foundry_endpoint,
             "model": cfg.copilot_model,
             "status": "configured",
         })
