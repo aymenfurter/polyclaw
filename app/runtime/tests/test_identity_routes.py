@@ -255,11 +255,14 @@ class TestIdentityRoles:
         mock_cfg.runtime_sp_app_id = "app-id"
         mock_cfg.aca_mi_client_id = ""
         mock_cfg.runtime_sp_tenant = ""
+        mock_cfg.env.read.return_value = "polyclaw-rg"
 
         az = MagicMock()
         az.json.side_effect = [
             None,  # _sp_show fails
             [{"roleDefinitionName": "Reader", "scope": "/sub/rg", "condition": ""}],
+            [],  # _discover_session_pool (RG-scoped)
+            [],  # _discover_session_pool (subscription-wide)
         ]
 
         routes = IdentityRoutes(az=az)
@@ -318,6 +321,8 @@ class TestIdentityFixRoles:
         az = MagicMock()
         az.json.side_effect = [
             {"id": "sp-oid", "objectId": "sp-oid"},  # resolve principal
+            [],  # _discover_cs_resource (RG-scoped)
+            [],  # _discover_cs_resource (subscription-wide)
             [],  # _discover_session_pool (RG-scoped)
             [],  # _discover_session_pool (subscription-wide)
         ]
