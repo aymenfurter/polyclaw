@@ -109,20 +109,6 @@ class FoundryIQConfigStore(BaseConfigStore[FoundryIQConfig]):
 
 # -- singleton -------------------------------------------------------------
 
-_store: FoundryIQConfigStore | None = None
+from ..util.singletons import Singleton  # noqa: E402
 
-
-def get_foundry_iq_config() -> FoundryIQConfigStore:
-    global _store
-    if _store is None:
-        _store = FoundryIQConfigStore()
-    return _store
-
-
-def _reset_store() -> None:
-    global _store
-    _store = None
-
-
-from ..util.singletons import register_singleton
-register_singleton(_reset_store)
+get_foundry_iq_config, _reset_foundry_iq_config = Singleton.create(FoundryIQConfigStore)

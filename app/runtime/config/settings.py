@@ -5,7 +5,6 @@ from __future__ import annotations
 import enum
 import os
 import secrets
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
 
@@ -32,39 +31,6 @@ class ServerMode(enum.Enum):
     runtime = "runtime"
 
 
-@dataclass
-class BotConfig:
-    resource_group: str = "polyclaw-rg"
-    location: str = "eastus"
-    display_name: str = "polyclaw"
-    bot_handle: str = ""
-
-
-@dataclass
-class VoiceConfig:
-    acs_connection_string: str = ""
-    acs_source_number: str = ""
-    voice_target_number: str = ""
-    azure_openai_endpoint: str = ""
-    azure_openai_api_key: str = ""
-    azure_openai_realtime_deployment: str = ""
-    acs_callback_token: str = ""
-    acs_resource_id: str = ""
-
-
-@dataclass
-class AdminConfig:
-    port: int = 8000
-    lockdown_mode: bool = False
-    tunnel_restricted: bool = False
-
-
-@dataclass
-class ModelConfig:
-    copilot_model: str = "gpt-4.1"
-    copilot_agent: str = ""
-
-
 class Settings:
 
     _DATA_DIR_ENV: ClassVar[str] = "POLYCLAW_DATA_DIR"
@@ -84,7 +50,11 @@ class Settings:
     def reload(self) -> None:
         e = self._read
 
-        raw_mode = os.getenv("POLYCLAW_SERVER_MODE", "combined").lower()
+        raw_mode = (
+            os.getenv("POLYCLAW_SERVER_MODE")
+            or os.getenv("POLYCLAW_MODE")
+            or "combined"
+        ).lower()
         try:
             self.server_mode: ServerMode = ServerMode(raw_mode)
         except ValueError:
@@ -97,8 +67,6 @@ class Settings:
 
         self.copilot_model: str = e("COPILOT_MODEL") or "gpt-4.1"
         self.copilot_agent: str = e("COPILOT_AGENT") or ""
-
-        # Foundry (BYOK) configuration
         self.foundry_endpoint: str = e("FOUNDRY_ENDPOINT")
         self.foundry_name: str = e("FOUNDRY_NAME")
         self.foundry_resource_group: str = e("FOUNDRY_RESOURCE_GROUP")
@@ -112,9 +80,7 @@ class Settings:
         self.voice_target_number: str = e("VOICE_TARGET_NUMBER")
         self.azure_openai_endpoint: str = e("AZURE_OPENAI_ENDPOINT")
         self.azure_openai_api_key: str = e("AZURE_OPENAI_API_KEY")
-        self.azure_openai_realtime_deployment: str = (
-            e("AZURE_OPENAI_REALTIME_DEPLOYMENT") or "gpt-realtime-mini"
-        )
+        self.azure_openai_realtime_deployment: str = e("AZURE_OPENAI_REALTIME_DEPLOYMENT") or "gpt-realtime-mini"
         self._acs_callback_token = e("ACS_CALLBACK_TOKEN") or secrets.token_urlsafe(32)
 
         self.acs_resource_id: str = self._derive_acs_resource_id()
@@ -123,7 +89,9 @@ class Settings:
 
         self.memory_model: str = e("MEMORY_MODEL") or "gpt-4.1"
         self.memory_idle_minutes: int = int(e("MEMORY_IDLE_MINUTES") or "5")
-        self.proactive_enabled: bool = e("PROACTIVE_ENABLED").lower() in ("1", "true", "yes") if e("PROACTIVE_ENABLED") else False
+        self.proactive_enabled: bool = e("PROACTIVE_ENABLED").lower() in (
+            "1", "true", "yes",
+        ) if e("PROACTIVE_ENABLED") else False
 
         self.runtime_sp_app_id: str = e("RUNTIME_SP_APP_ID")
         self.runtime_sp_password: str = e("RUNTIME_SP_PASSWORD")
@@ -160,10 +128,6 @@ class Settings:
     @property
     def memory_topics_dir(self) -> Path:
         return self.memory_dir / "topics"
-
-    @property
-    def skills_dir(self) -> Path:
-        return self.data_dir / "skills"
 
     @property
     def user_skills_dir(self) -> Path:
@@ -255,7 +219,7 @@ class Settings:
             self.memory_dir,
             self.memory_daily_dir,
             self.memory_topics_dir,
-            self.skills_dir,
+            self.user_skills_dir,
             self.sessions_dir,
         ):
             d.mkdir(parents=True, exist_ok=True)

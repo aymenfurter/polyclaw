@@ -1,9 +1,4 @@
-"""Agent-in-the-Loop (AITL) reviewer.
-
-A background agent that reviews tool calls and conversation history to
-decide whether to approve or deny a tool execution.  The reviewer runs
-as a separate Copilot SDK session with a single tool: ``submit_decision``.
-"""
+"""Agent-in-the-Loop (AITL) reviewer."""
 
 from __future__ import annotations
 
@@ -185,57 +180,27 @@ class AitlReviewer:
             nonlocal event_count
             event_count += 1
             etype = event.type
-            logger.debug(
-                "[aitl.event] #%d type=%s tool=%s", event_count, etype, tool_name
-            )
-            if etype == SessionEventType.TOOL_EXECUTION_COMPLETE:
-                logger.info(
-                    "[aitl.event] tool completed inside reviewer for tool=%s, "
-                    "decision so far: approved=%s reason=%s",
-                    tool_name,
-                    decision["approved"],
-                    decision["reason"],
-                )
-            elif etype == SessionEventType.SESSION_IDLE:
-                logger.info(
-                    "[aitl.event] SESSION_IDLE -- review done for tool=%s "
-                    "(events=%d, approved=%s)",
-                    tool_name,
-                    event_count,
-                    decision["approved"],
-                )
+            logger.debug("[aitl.event] #%d type=%s tool=%s", event_count, etype, tool_name)
+            if etype == SessionEventType.SESSION_IDLE:
+                logger.info("[aitl.event] SESSION_IDLE -- review done for tool=%s (events=%d)", tool_name, event_count)
                 done.set()
             elif etype == SessionEventType.SESSION_ERROR:
                 err = str(event.data) if hasattr(event, "data") else "unknown"
-                logger.error(
-                    "[aitl.event] SESSION_ERROR for tool=%s: %s", tool_name, err
-                )
+                logger.error("[aitl.event] SESSION_ERROR for tool=%s: %s", tool_name, err)
                 decision["reason"] = f"Review session error: {err}"
                 done.set()
 
         unsub = session.on(on_event)
         try:
-            logger.info(
-                "[aitl.review] sending prompt to reviewer for tool=%s "
-                "(prompt_len=%d, timeout=%.0fs)",
-                tool_name, len(prompt), _REVIEW_TIMEOUT,
-            )
+            logger.info("[aitl.review] sending prompt for tool=%s (len=%d)", tool_name, len(prompt))
             await session.send({"prompt": prompt})
-            logger.info("[aitl.review] prompt sent, waiting for reviewer decision...")
             await asyncio.wait_for(done.wait(), timeout=_REVIEW_TIMEOUT)
-            logger.info(
-                "[aitl.review] reviewer finished for tool=%s in %d events",
-                tool_name, event_count,
-            )
+            logger.info("[aitl.review] reviewer finished for tool=%s in %d events", tool_name, event_count)
         except TimeoutError:
-            logger.warning(
-                "[aitl.review] timed out after %.0fs", _REVIEW_TIMEOUT
-            )
+            logger.warning("[aitl.review] timed out after %.0fs", _REVIEW_TIMEOUT)
             decision["reason"] = "Review timed out"
         except Exception as exc:
-            logger.error(
-                "[aitl.review] send failed: %s", exc, exc_info=True
-            )
+            logger.error("[aitl.review] send failed: %s", exc, exc_info=True)
             decision["reason"] = f"Review error: {exc}"
         finally:
             unsub()
@@ -246,9 +211,7 @@ class AitlReviewer:
 
         logger.info(
             "[aitl.review] tool=%s approved=%s reason=%s",
-            tool_name,
-            decision["approved"],
-            decision["reason"],
+            tool_name, decision["approved"], decision["reason"],
         )
         return decision["approved"], decision["reason"]
 

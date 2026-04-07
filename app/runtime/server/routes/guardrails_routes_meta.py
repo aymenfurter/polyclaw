@@ -63,7 +63,6 @@ async def list_contexts_handler(_req: web.Request) -> web.Response:
 
 async def list_templates_handler(_req: web.Request) -> web.Response:
     """Return the list of prompt template names."""
-    from pathlib import Path as _Path
 
     from ...agent.prompt import TEMPLATES_DIR
     from ...config.settings import cfg

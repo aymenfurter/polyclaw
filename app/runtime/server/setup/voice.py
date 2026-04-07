@@ -17,7 +17,7 @@ from .voice_provision import (
     ensure_rg,
     persist_config,
 )
-from ._helpers import error_response as _error, ok_response as _ok
+from ._helpers import error_response as _error, fail_response, ok_response as _ok
 
 logger = logging.getLogger(__name__)
 
@@ -463,8 +463,4 @@ class VoiceSetupRoutes:
 
 
 def _voice_fail(steps: list[dict]) -> web.Response:
-    failed = [s for s in steps if s.get("status") == "failed"]
-    msg = failed[0].get("name", "Unknown step") if failed else "Unknown error"
-    return web.json_response(
-        {"status": "error", "steps": steps, "message": f"Voice deploy failed at: {msg}"},
-    )
+    return fail_response(steps, "Voice deploy failed at", key="name", status=200)

@@ -1,7 +1,4 @@
-"""Copilot SDK session event handler.
-
-Dispatch table replaces deep if/elif chains for session events.
-"""
+"""Copilot SDK session event handler."""
 
 from __future__ import annotations
 

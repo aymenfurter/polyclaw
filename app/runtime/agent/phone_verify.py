@@ -76,10 +76,8 @@ class PhoneVerifier:
         cleanup = _register_verify_tools(middleware, call_id, self)
 
         logger.info(
-            "[phone_verify] setting exclusive prompt: call_id=%s tool=%s "
-            "tools=%d prompt_len=%d opening_len=%d",
-            call_id, tool_name, len(VERIFY_TOOL_SCHEMAS),
-            len(prompt), len(opening),
+            "[phone_verify] setting exclusive prompt: call_id=%s tool=%s",
+            call_id, tool_name,
         )
         middleware.set_pending_prompt(
             prompt,
@@ -91,16 +89,9 @@ class PhoneVerifier:
         target = cfg.voice_target_number
         try:
             caller = voice_handler._caller
-            logger.info(
-                "[phone_verify] initiating call: number=%s tool=%s call_id=%s",
-                target, tool_name, call_id,
-            )
+            logger.info("[phone_verify] initiating call: number=%s tool=%s", target, tool_name)
             await caller.initiate_call(target)
-            logger.info(
-                "[phone_verify] call initiated successfully, waiting for "
-                "decision: call_id=%s",
-                call_id,
-            )
+            logger.info("[phone_verify] call initiated, waiting for decision: call_id=%s", call_id)
         except Exception:
             logger.exception("[phone_verify] call initiation failed")
             self._pending.pop(call_id, None)
@@ -110,20 +101,13 @@ class PhoneVerifier:
         try:
             approved = await asyncio.wait_for(future, timeout=_PHONE_VERIFY_TIMEOUT)
         except TimeoutError:
-            logger.warning(
-                "[phone_verify] timed out waiting for decision: call_id=%s", call_id,
-            )
+            logger.warning("[phone_verify] timed out: call_id=%s", call_id)
             approved = False
         finally:
             self._pending.pop(call_id, None)
             cleanup()
-            logger.info(
-                "[phone_verify] cleaned up verify tools: call_id=%s", call_id,
-            )
 
-        logger.info(
-            "[phone_verify] decision: call_id=%s approved=%s", call_id, approved,
-        )
+        logger.info("[phone_verify] decision: call_id=%s approved=%s", call_id, approved)
         return approved
 
     def resolve(self, call_id: str, approved: bool) -> bool:

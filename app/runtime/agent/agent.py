@@ -109,12 +109,7 @@ class Agent:
         await self._safe_stop_client()
 
     async def reload_auth(self) -> dict[str, Any]:
-        """Reload configuration from ``.env`` and restart the Copilot client.
-
-        Called by the ``/api/runtime/reload-auth`` endpoint when the admin
-        container writes new config to ``/data/.env`` after the runtime has
-        already booted.  Handles Foundry BYOK endpoint changes.
-        """
+        """Reload configuration and restart the Copilot client."""
         old_endpoint = cfg.foundry_endpoint
         cfg.reload()
         new_endpoint = cfg.foundry_endpoint
@@ -142,14 +137,7 @@ class Agent:
         }
 
     async def _verify_auth(self) -> None:
-        """Check that the Copilot CLI is authenticated and log the result.
-
-        Sets ``_authenticated`` so that :meth:`send` can fail fast with a
-        useful error message instead of silently hanging for 120 seconds.
-
-        In BYOK mode (Foundry endpoint configured), GitHub auth is not
-        required -- authentication happens per-session via bearer token.
-        """
+        """Check that the Copilot CLI is authenticated."""
         if not self._client:
             return
 
@@ -170,52 +158,42 @@ class Agent:
                     "for Foundry BYOK mode."
                 )
         except Exception:
-            # auth.getStatus may not be supported on older CLI versions;
-            # assume OK and let send() surface any real error.
+            # auth.getStatus may not be supported on older CLI versions.
             logger.debug("[agent.auth] auth status check unavailable", exc_info=True)
-            self._authenticated = True  # optimistic
+            self._authenticated = True
 
     async def _verify_model(self) -> None:
         """Log whether the configured model is available and enabled."""
         if not self._client:
             return
         if self._byok:
-            logger.info(
-                "[agent.model] BYOK mode -- using Foundry model %s",
-                cfg.copilot_model,
-            )
+            logger.info("[agent.model] BYOK mode -- using Foundry model %s", cfg.copilot_model)
             return
         model_id = cfg.copilot_model
         try:
             models = await self._client.list_models()
-            available_ids = [m.id for m in models]
             match = next((m for m in models if m.id == model_id), None)
             if match:
                 policy = match.policy.state if match.policy else "unknown"
-                if policy == "enabled":
-                    logger.info("[agent.model] model %s is available (policy=enabled)", model_id)
-                else:
+                if policy != "enabled":
                     logger.warning(
                         "[agent.model] model %s found but policy=%s -- "
                         "requests may fail silently. Change COPILOT_MODEL in .env",
                         model_id, policy,
                     )
+                else:
+                    logger.info("[agent.model] model %s is available (policy=enabled)", model_id)
             else:
+                available_ids = [m.id for m in models]
                 logger.warning(
-                    "[agent.model] model %s NOT found in %d available models: %s. "
-                    "Requests may fail silently. Change COPILOT_MODEL in .env",
+                    "[agent.model] model %s NOT found in %d available models: %s",
                     model_id, len(available_ids), available_ids[:10],
                 )
         except Exception:
             logger.debug("[agent.model] could not list models", exc_info=True)
 
     def _start_stderr_monitor(self) -> None:
-        """Read the Copilot CLI subprocess stderr in a daemon thread.
-
-        The SDK pipes stderr but never reads it, so auth failures, rate
-        limits, and API errors are completely invisible.  This drains and
-        logs every line at WARNING level.
-        """
+        """Drain Copilot CLI stderr in a daemon thread and log at WARNING."""
         proc = getattr(self._client, "_process", None)
         if not proc:
             return
@@ -257,18 +235,12 @@ class Agent:
         return self._session
 
     async def ensure_session(self) -> Any:
-        """Return the existing SDK session, or create one if none exists.
-
-        Safe to call from multiple connections -- will not destroy an
-        active session that another caller may be using.
-        """
+        """Return the existing SDK session, or create one if none exists."""
         if self._session:
             return self._session
         if not self._client:
             raise RuntimeError("Agent not started")
         async with self._send_lock:
-            # Double-check after acquiring lock -- another caller may have
-            # created the session while we were waiting.
             if self._session:
                 return self._session
             return await self._new_session_inner()
@@ -315,7 +287,7 @@ class Agent:
         on_event: Callable[[str, dict], None] | None,
         otel_span: object | None,
     ) -> str | None:
-        """Execute the actual send, wrapped by :meth:`send`'s OTel span."""
+        """Execute the actual send within the OTel span."""
         handler = EventHandler(on_delta, on_event)
         unsub = self._session.on(handler)
         try:
@@ -413,11 +385,7 @@ class Agent:
 
     @staticmethod
     def _list_foundry_models() -> list[dict]:
-        """Return models deployed on the Foundry endpoint.
-
-        Reads ``DEPLOYED_MODELS`` (comma-separated) from ``.env``.
-        Falls back to the current ``COPILOT_MODEL`` if not set.
-        """
+        """Return models deployed on the Foundry endpoint."""
         raw = cfg.env.read("DEPLOYED_MODELS") or ""
         names = [n.strip() for n in raw.split(",") if n.strip()] if raw else []
         if not names:
@@ -555,12 +523,7 @@ class Agent:
         return session_cfg
 
     async def _abort_and_destroy_session(self) -> None:
-        """Abort any in-flight request, then destroy the session.
-
-        Used after timeouts and cancellations to ensure the next ``send()``
-        gets a clean session instead of reusing one stuck on a pending
-        model request.
-        """
+        """Abort any in-flight request, then destroy the session."""
         if self._session:
             try:
                 await self._session.abort()

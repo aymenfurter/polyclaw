@@ -129,30 +129,16 @@ def check_identity_valid(
     if info["strategy"] == "sp":
         app_id = info["app_id"]
         cmd = f"az ad sp show --id {app_id}"
-        sp = az.json("ad", "sp", "show", "--id", app_id)
-        if isinstance(sp, dict) and sp.get("appId"):
-            display = sp.get("displayName", "?")
-            _add(
-                result, id="identity_valid", category="identity",
-                name="Service Principal Exists in Azure AD",
-                status="pass",
-                detail=f"{display} ({app_id})",
-                evidence=(
-                    f"displayName={display}\n"
-                    f"appId={app_id}\n"
-                    f"objectId={sp.get('id', '?')}"
-                ),
-                command=cmd,
-            )
+        data = az.json("ad", "sp", "show", "--id", app_id)
+        label = "Service Principal"
+        ok = isinstance(data, dict) and data.get("appId")
+        if ok:
+            display = data.get("displayName", "?")
+            detail = f"{display} ({app_id})"
+            evidence = f"displayName={display}\nappId={app_id}\nobjectId={data.get('id', '?')}"
         else:
-            _add(
-                result, id="identity_valid", category="identity",
-                name="Service Principal Exists in Azure AD",
-                status="fail",
-                detail=f"SP not found: {app_id}",
-                evidence=az.last_stderr or "No response",
-                command=cmd,
-            )
+            detail = f"SP not found: {app_id}"
+            evidence = az.last_stderr or "No response"
     else:
         resource_id = info.get("resource_id", "")
         if not resource_id:
@@ -164,29 +150,26 @@ def check_identity_valid(
             )
             return
         cmd = f"az identity show --ids {resource_id}"
-        mi = az.json("identity", "show", "--ids", resource_id)
-        if isinstance(mi, dict) and mi.get("clientId"):
-            _add(
-                result, id="identity_valid", category="identity",
-                name="Managed Identity Exists",
-                status="pass",
-                detail=f"{mi.get('name', '?')} (client={mi.get('clientId', '?')})",
-                evidence=(
-                    f"name={mi.get('name', '?')}\n"
-                    f"clientId={mi.get('clientId', '?')}\n"
-                    f"principalId={mi.get('principalId', '?')}"
-                ),
-                command=cmd,
+        data = az.json("identity", "show", "--ids", resource_id)
+        label = "Managed Identity"
+        ok = isinstance(data, dict) and data.get("clientId")
+        if ok:
+            detail = f"{data.get('name', '?')} (client={data.get('clientId', '?')})"
+            evidence = (
+                f"name={data.get('name', '?')}\n"
+                f"clientId={data.get('clientId', '?')}\n"
+                f"principalId={data.get('principalId', '?')}"
             )
         else:
-            _add(
-                result, id="identity_valid", category="identity",
-                name="Managed Identity Exists",
-                status="fail",
-                detail=f"MI not found: {resource_id}",
-                evidence=az.last_stderr or "No response",
-                command=cmd,
-            )
+            detail = f"MI not found: {resource_id}"
+            evidence = az.last_stderr or "No response"
+
+    _add(
+        result, id="identity_valid", category="identity",
+        name=f"{label} Exists in Azure AD",
+        status="pass" if ok else "fail",
+        detail=detail, evidence=evidence, command=cmd,
+    )
 
 
 def check_credential_expiry(

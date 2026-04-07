@@ -64,6 +64,12 @@ _REQUIRED_ROLES: list[dict[str, str]] = [
         "role_id": "0fb8eba5-a2bb-4abe-b1c1-49dfad359bb0",
         "data_action": "",
     },
+    {
+        "feature": "Foundry BYOK (OpenAI Chat)",
+        "role": "Cognitive Services OpenAI User",
+        "role_id": "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd",
+        "data_action": "",
+    },
 ]
 
 
@@ -278,6 +284,12 @@ class IdentityRoutes:
                 ),
             })
 
+        # Fix Foundry OpenAI role (BYOK chat)
+        await self._fix_foundry_openai_role(
+            principal_id, principal_type, steps,
+            use_object_id=use_object_id,
+        )
+
         # Fix Session Pool Executor role
         await self._fix_session_pool_role(
             principal_id, principal_type, steps,
@@ -353,6 +365,67 @@ class IdentityRoutes:
             f"Expected: {expected_scope} -- "
             f"Found: {scopes_str}"
         )
+
+    async def _fix_foundry_openai_role(
+        self,
+        principal_id: str,
+        principal_type: str,
+        steps: list[dict[str, Any]],
+        *,
+        use_object_id: bool = True,
+    ) -> None:
+        """Assign Cognitive Services OpenAI User on the Foundry AI resource."""
+        assert self._az is not None
+        resource_id = await self._resolve_foundry_resource()
+        if not resource_id:
+            steps.append({
+                "step": "foundry_openai_rbac",
+                "status": "skipped",
+                "detail": "No Foundry endpoint configured or resource not found",
+            })
+            return
+
+        await self._assign_role(
+            principal_id, principal_type,
+            "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd",
+            resource_id,
+            "Cognitive Services OpenAI User",
+            steps,
+            use_object_id=use_object_id,
+        )
+
+    async def _resolve_foundry_resource(self) -> str:
+        """Resolve the ARM resource ID for the configured FOUNDRY_ENDPOINT."""
+        endpoint = cfg.foundry_endpoint
+        if not endpoint or not self._az:
+            return ""
+
+        stripped = endpoint.rstrip("/").lower()
+        for prefix in ("https://", "http://"):
+            if stripped.startswith(prefix):
+                stripped = stripped[len(prefix):]
+                break
+        host = stripped.split("/")[0]
+
+        resource_name = ""
+        for suffix in (".cognitiveservices.azure.com", ".openai.azure.com"):
+            if suffix in host:
+                resource_name = host.split(suffix)[0]
+                break
+
+        if resource_name:
+            resources = await run_sync(
+                self._az.json,
+                "resource", "list",
+                "--name", resource_name,
+                "--resource-type", "Microsoft.CognitiveServices/accounts",
+                "--query", "[].id",
+            )
+            if isinstance(resources, list) and resources:
+                logger.info("[identity.resolve] Foundry resource: %s", resources[0])
+                return resources[0]
+
+        return ""
 
     async def _fix_session_pool_role(
         self,
@@ -482,56 +555,40 @@ class IdentityRoutes:
         # Fallback to RG-scoped discovery
         return await self._discover_cs_resource()
 
-    async def _discover_cs_resource(self) -> str:
-        """Find a ContentSafety Cognitive Services account.
-
-        Checks the configured / default resource group first, then falls
-        back to a subscription-wide search (covers dedicated service RGs).
-        """
+    async def _discover_resource(
+        self, resource_type: str, query: str, label: str,
+    ) -> str:
+        """Find an Azure resource by type, checking configured RG then subscription-wide."""
         if not self._az:
             return ""
         rg = cfg.env.read("FOUNDRY_RESOURCE_GROUP") or _DEFAULT_RG
-        for rg_args in (
-            ["--resource-group", rg],
-            [],  # subscription-wide fallback
-        ):
+        for rg_args in (["--resource-group", rg], []):
             resources = await run_sync(
                 self._az.json,
                 "resource", "list",
                 *rg_args,
-                "--resource-type", "Microsoft.CognitiveServices/accounts",
-                "--query", "[?kind=='ContentSafety'].id",
+                "--resource-type", resource_type,
+                "--query", query,
             )
             if isinstance(resources, list) and resources:
                 rid = resources[0]
-                logger.info("[identity.discover] found CS resource: %s", rid)
+                logger.info("[identity.discover] found %s: %s", label, rid)
                 return rid
         return ""
+
+    async def _discover_cs_resource(self) -> str:
+        """Find a ContentSafety Cognitive Services account."""
+        return await self._discover_resource(
+            "Microsoft.CognitiveServices/accounts",
+            "[?kind=='ContentSafety'].id",
+            "CS resource",
+        )
 
     async def _discover_session_pool(self) -> str:
-        """Find a session pool ARM id.
-
-        Checks the default RG first, then falls back to subscription-wide.
-        """
-        if not self._az:
-            return ""
-        rg = cfg.env.read("FOUNDRY_RESOURCE_GROUP") or _DEFAULT_RG
-        for rg_args in (
-            ["--resource-group", rg],
-            [],  # subscription-wide fallback
-        ):
-            resources = await run_sync(
-                self._az.json,
-                "resource", "list",
-                *rg_args,
-                "--resource-type", "Microsoft.App/sessionPools",
-                "--query", "[].id",
-            )
-            if isinstance(resources, list) and resources:
-                rid = resources[0]
-                logger.info("[identity.discover] found session pool: %s", rid)
-                return rid
-        return ""
+        """Find a session pool ARM id."""
+        return await self._discover_resource(
+            "Microsoft.App/sessionPools", "[].id", "session pool",
+        )
 
     async def _assign_role(
         self,
@@ -564,22 +621,12 @@ class IdentityRoutes:
             "--role", role_id,
             "--scope", scope,
         )
+        step_name = f"assign_{role_name.lower().replace(' ', '_')}"
         if ok:
-            steps.append({
-                "step": f"assign_{role_name.lower().replace(' ', '_')}",
-                "status": "ok",
-                "detail": f"{role_name} assigned to {principal_id}",
-            })
+            status, detail = "ok", f"{role_name} assigned to {principal_id}"
         elif "already exists" in (msg or "").lower() or "conflict" in (msg or "").lower():
-            steps.append({
-                "step": f"assign_{role_name.lower().replace(' ', '_')}",
-                "status": "ok",
-                "detail": "Already assigned",
-            })
+            status, detail = "ok", "Already assigned"
         else:
-            steps.append({
-                "step": f"assign_{role_name.lower().replace(' ', '_')}",
-                "status": "failed",
-                "detail": f"Assignment failed: {msg}",
-            })
+            status, detail = "failed", f"Assignment failed: {msg}"
             logger.warning("[identity.fix] role assignment failed: %s", msg, exc_info=True)
+        steps.append({"step": step_name, "status": status, "detail": detail})

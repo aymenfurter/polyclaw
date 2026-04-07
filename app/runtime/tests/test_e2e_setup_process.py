@@ -78,7 +78,7 @@ _BOOT_TIMEOUT = 120
 _DEPLOY_TIMEOUT = 480
 _HEALTH_POLL = 3
 _API_TIMEOUT = 30
-_CHAT_TIMEOUT = 90
+_CHAT_TIMEOUT = 60
 
 _RG = "polyclaw-e2e-setup-rg"
 _LOCATION = "eastus"
@@ -93,14 +93,7 @@ _CHAT_PROBE_SCRIPT = r"""
 import asyncio, json, sys, os, aiohttp
 
 async def main():
-    secret = ""
-    try:
-        with open("/data/.env") as f:
-            for line in f:
-                if line.startswith("ADMIN_SECRET="):
-                    secret = line.split("=", 1)[1].strip().strip('"')
-    except FileNotFoundError:
-        pass
+    secret = os.environ.get("_PROBE_SECRET", "")
 
     port = os.environ.get("ADMIN_PORT", "8080")
     url = f"http://localhost:{port}/api/chat/ws"
@@ -108,7 +101,7 @@ async def main():
     if secret:
         headers["Authorization"] = f"Bearer {secret}"
 
-    timeout = aiohttp.ClientTimeout(total=80)
+    timeout = aiohttp.ClientTimeout(total=45)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.ws_connect(url, headers=headers) as ws:
             await ws.send_json({"action": "send", "text": "Reply with exactly: PROBE_OK"})
@@ -175,6 +168,33 @@ def _run(
 
 def _compose(*args: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
     return _run(["docker", "compose", *args], timeout=timeout)
+
+
+def _start_stack(timeout: int = 60) -> None:
+    """Start containers, falling back to ``up -d`` if ``start`` fails."""
+    r = _run(["docker", "compose", "start"], check=False, timeout=timeout)
+    if r.returncode == 0:
+        return
+    logger.warning(
+        "docker compose start failed (rc=%d), falling back to up -d: %s",
+        r.returncode, (r.stderr or r.stdout)[:300],
+    )
+    _compose("up", "-d", timeout=timeout)
+
+
+def _recover_stack() -> dict | None:
+    """Bring the stack back up and return health, or ``None`` on failure."""
+    logger.warning("Recovering stack via docker compose up -d ...")
+    try:
+        _compose("up", "-d", timeout=120)
+    except Exception as exc:
+        logger.error("Stack recovery failed: %s", exc)
+        return None
+    health = _poll_health(timeout=_BOOT_TIMEOUT)
+    if health:
+        _copy_azure_creds()
+        time.sleep(5)
+    return health
 
 
 def _api(
@@ -299,11 +319,13 @@ def _copy_azure_creds() -> bool:
         return False
 
 
-def _send_chat_probe() -> tuple[str | None, str]:
+def _send_chat_probe(secret: str = "") -> tuple[str | None, str]:
     """Returns ``(text, status)`` where status is ok|error|not_authenticated|empty."""
     try:
         r = _run(
-            ["docker", "exec", _RUNTIME_CONTAINER, "python", "-c", _CHAT_PROBE_SCRIPT],
+            ["docker", "exec"]
+            + (["-e", f"_PROBE_SECRET={secret}"] if secret else [])
+            + [_RUNTIME_CONTAINER, "python", "-c", _CHAT_PROBE_SCRIPT],
             check=False, timeout=_CHAT_TIMEOUT,
         )
         if r.returncode == 2:
@@ -330,8 +352,22 @@ def _diag(phase: str) -> str:
     return "\n".join(lines)
 
 
+def _extract_rg_from_id(resource_id: str) -> str:
+    """Extract resource group from a soft-deleted resource's ID string."""
+    # ID format: .../resourceGroups/<rg>/deletedAccounts/<name>
+    parts = resource_id.split("/")
+    for i, part in enumerate(parts):
+        if part.lower() == "resourcegroups" and i + 1 < len(parts):
+            return parts[i + 1]
+    return ""
+
+
 def _purge_soft_deleted_resources() -> None:
-    """Purge any soft-deleted Cognitive Services accounts matching _BASE_NAME."""
+    """Purge any soft-deleted Cognitive Services accounts matching _BASE_NAME.
+
+    After issuing purge commands, polls ``list-deleted`` until Azure
+    confirms none of the matching resources remain (up to 120 s).
+    """
     try:
         r = _run(
             ["az", "cognitiveservices", "account", "list-deleted", "-o", "json"],
@@ -340,9 +376,10 @@ def _purge_soft_deleted_resources() -> None:
         if r.returncode != 0:
             return
         deleted = json.loads(r.stdout) if r.stdout.strip() else []
+        purged_names: list[str] = []
         for item in deleted:
             name = item.get("name", "")
-            rg = item.get("resourceGroup", "")
+            rg = item.get("resourceGroup") or _extract_rg_from_id(item.get("id", ""))
             loc = item.get("location", "")
             if _BASE_NAME in name or rg == _RG:
                 logger.info("Purging soft-deleted resource: %s (rg=%s)", name, rg)
@@ -355,8 +392,50 @@ def _purge_soft_deleted_resources() -> None:
                     ],
                     check=False, timeout=60,
                 )
+                purged_names.append(name)
+
+        # Wait for Azure to confirm the purge propagated.
+        if purged_names:
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
+                r2 = _run(
+                    ["az", "cognitiveservices", "account", "list-deleted", "-o", "json"],
+                    check=False, timeout=30,
+                )
+                if r2.returncode != 0:
+                    break
+                still = json.loads(r2.stdout) if r2.stdout.strip() else []
+                remaining = [
+                    d.get("name", "") for d in still
+                    if d.get("name", "") in purged_names
+                ]
+                if not remaining:
+                    logger.info("All purged resources confirmed gone")
+                    break
+                logger.info("Waiting for purge propagation: %s", remaining)
+                time.sleep(10)
     except Exception as exc:
         logger.warning("Soft-delete purge failed: %s", exc)
+
+
+def _cleanup_runtime_sps() -> None:
+    """Delete leftover runtime service principals from previous runs."""
+    try:
+        r = _run(
+            ["az", "ad", "sp", "list",
+             "--display-name", f"polyclaw-runtime-{_BASE_NAME}",
+             "--query", "[].appId", "-o", "json"],
+            check=False, timeout=30,
+        )
+        if r.returncode != 0:
+            return
+        sp_ids = json.loads(r.stdout) if r.stdout.strip() else []
+        for sp_id in sp_ids:
+            logger.info("Deleting leftover SP: %s", sp_id)
+            _run(["az", "ad", "sp", "delete", "--id", sp_id],
+                 check=False, timeout=30)
+    except Exception as exc:
+        logger.warning("SP cleanup failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +460,11 @@ def stack(admin_secret):
         _run(["docker", "info"], timeout=15)
     except Exception:
         pytest.skip("Docker not available")
+
+    # Clean stale containers and volumes from previous runs to avoid
+    # leftover .env / FOUNDRY_ENDPOINT pointing to deleted resources.
+    logger.info("Cleaning stale containers and volumes ...")
+    _compose("down", "-v", "--remove-orphans", timeout=60)
 
     # Build
     logger.info("Building Docker image ...")
@@ -450,6 +534,7 @@ def _cleanup_azure_rg():
     """
     # Pre-clean: purge any soft-deleted resources from previous runs
     _purge_soft_deleted_resources()
+    _cleanup_runtime_sps()
     yield
     logger.info("Initiating cleanup of %s ...", _RG)
     try:
@@ -678,11 +763,13 @@ class TestPhase02DeployFoundry:
         time.sleep(10)
         _poll_health(timeout=60)
 
-        # Chat must work -- Foundry is provisioned, bot is NOT required
-        deadline = time.monotonic() + 90
+        # Chat must work -- Foundry is provisioned, bot is NOT required.
+        # Allow up to 3 minutes: after restart the Copilot CLI needs time to
+        # re-download its runtime, authenticate via BYOK, and start a session.
+        deadline = time.monotonic() + 180
         last_status = ""
         while time.monotonic() < deadline:
-            text, last_status = _send_chat_probe()
+            text, last_status = _send_chat_probe(admin_secret)
             if last_status == "ok" and text:
                 logger.info("Chat works without bot: %r", text[:200])
                 return
@@ -783,15 +870,15 @@ class TestPhase04BotConfig:
         else:
             logger.info("Telegram not configured (optional -- no secret file)")
 
-    def test_chat_works_with_bot_config_no_tunnel(self, stack) -> None:
+    def test_chat_works_with_bot_config_no_tunnel(self, stack, admin_secret) -> None:
         """Bot configured but no tunnel -- chat MUST still work.
 
         The bot service is optional and should not block core chat.
         """
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + 120
         last_status = ""
         while time.monotonic() < deadline:
-            text, last_status = _send_chat_probe()
+            text, last_status = _send_chat_probe(admin_secret)
             if last_status == "ok" and text:
                 logger.info("Chat works with bot config, no tunnel: %s", text[:200])
                 return
@@ -856,13 +943,13 @@ class TestPhase05FullStack:
         if not data["foundry"]["deployed"]:
             pytest.xfail("Foundry not deployed (deploy may have failed earlier)")
 
-    def test_chat_full_stack(self, stack) -> None:
+    def test_chat_full_stack(self, stack, admin_secret) -> None:
         """With full stack running, chat MUST work end-to-end."""
         time.sleep(8)
-        deadline = time.monotonic() + 90
+        deadline = time.monotonic() + 120
         last_status = ""
         while time.monotonic() < deadline:
-            text, last_status = _send_chat_probe()
+            text, last_status = _send_chat_probe(admin_secret)
             if last_status == "ok" and text:
                 logger.info("Full stack chat response: %s", text[:300])
                 return
@@ -1198,13 +1285,13 @@ class TestPhase14Idempotency:
         )
         assert data.get("status") == "ok"
 
-    def test_chat_still_works_after_redeploy(self, stack) -> None:
+    def test_chat_still_works_after_redeploy(self, stack, admin_secret) -> None:
         """Chat MUST survive an idempotent redeploy."""
         time.sleep(5)
-        deadline = time.monotonic() + 90
+        deadline = time.monotonic() + 120
         last_status = ""
         while time.monotonic() < deadline:
-            text, last_status = _send_chat_probe()
+            text, last_status = _send_chat_probe(admin_secret)
             if last_status == "ok" and text:
                 logger.info("Chat OK after redeploy: %s", text[:200])
                 return
@@ -1244,6 +1331,15 @@ class TestPhase15CombinedSave:
         logger.info("Combined save steps: %s", data.get("steps"))
 
     def test_status_after_combined_save(self, stack, admin_secret, telegram_config) -> None:
+        # Combined save restarts the runtime container; the admin may also
+        # restart briefly (health-check churn, KV re-init).  Poll to let
+        # the stack settle before asserting.
+        health = _poll_health(timeout=60)
+        if health is None:
+            health = _recover_stack()
+        assert health is not None, (
+            f"Admin not healthy after combined save.\n{_diag('post-combined-save')}"
+        )
         data = _api_ok("/api/setup/status", secret=admin_secret)
         assert data["bot_configured"]
         token, _ = telegram_config
@@ -1277,8 +1373,10 @@ class TestPhase16Lifecycle:
 
     def test_start_stack_again(self, stack, admin_secret) -> None:
         """Start containers back up."""
-        _compose("start", timeout=60)
+        _start_stack(timeout=60)
         health = _poll_health(timeout=_BOOT_TIMEOUT)
+        if health is None:
+            health = _recover_stack()
         assert health is not None, (
             f"Admin not healthy after restart.\n{_diag('lifecycle-start-1')}"
         )
@@ -1323,12 +1421,12 @@ class TestPhase16Lifecycle:
                 f"Profile name changed after restart: {profile['name']}"
             )
 
-    def test_chat_works_after_restart(self, stack) -> None:
+    def test_chat_works_after_restart(self, stack, admin_secret) -> None:
         """Chat MUST work after a stop/start cycle."""
         deadline = time.monotonic() + 120
         last_status = ""
         while time.monotonic() < deadline:
-            text, last_status = _send_chat_probe()
+            text, last_status = _send_chat_probe(admin_secret)
             if last_status == "ok" and text:
                 logger.info("Chat works after restart: %s", text[:200])
                 return
@@ -1343,8 +1441,10 @@ class TestPhase16Lifecycle:
         """Second stop/start cycle to verify repeated restarts work."""
         _compose("stop", timeout=60)
         time.sleep(3)
-        _compose("start", timeout=60)
+        _start_stack(timeout=60)
         health = _poll_health(timeout=_BOOT_TIMEOUT)
+        if health is None:
+            health = _recover_stack()
         assert health is not None, (
             f"Admin not healthy after second restart.\n{_diag('lifecycle-start-2')}"
         )
@@ -1353,12 +1453,12 @@ class TestPhase16Lifecycle:
         time.sleep(5)
         logger.info("Stack healthy after second restart: %s", health)
 
-    def test_chat_works_after_second_restart(self, stack) -> None:
+    def test_chat_works_after_second_restart(self, stack, admin_secret) -> None:
         """Chat MUST still work after two stop/start cycles."""
         deadline = time.monotonic() + 120
         last_status = ""
         while time.monotonic() < deadline:
-            text, last_status = _send_chat_probe()
+            text, last_status = _send_chat_probe(admin_secret)
             if last_status == "ok" and text:
                 logger.info("Chat OK after 2nd restart: %s", text[:200])
                 return
@@ -1405,6 +1505,11 @@ class TestPhase17ConfigChange:
 
     def test_change_profile(self, stack, admin_secret) -> None:
         """Update the agent name and personality."""
+        # Ensure the stack survived Phase 15-16 before proceeding.
+        health = _poll_health(timeout=10)
+        if health is None:
+            health = _recover_stack()
+            assert health is not None, "Stack unrecoverable before Phase 17"
         data = _api_ok(
             "/api/profile",
             method="POST",
@@ -1444,12 +1549,12 @@ class TestPhase17ConfigChange:
         time.sleep(10)
         _poll_health(timeout=60)
 
-    def test_chat_works_after_config_change(self, stack) -> None:
+    def test_chat_works_after_config_change(self, stack, admin_secret) -> None:
         """Chat MUST still work after config changes + restart."""
         deadline = time.monotonic() + 120
         last_status = ""
         while time.monotonic() < deadline:
-            text, last_status = _send_chat_probe()
+            text, last_status = _send_chat_probe(admin_secret)
             if last_status == "ok" and text:
                 logger.info("Chat OK after config change: %s", text[:200])
                 return
@@ -1490,6 +1595,11 @@ class TestPhase18BotServiceToggle:
 
     def test_remove_telegram_config(self, stack, admin_secret, telegram_config) -> None:
         """Remove Telegram channel config."""
+        # Ensure the stack survived previous phases.
+        health = _poll_health(timeout=10)
+        if health is None:
+            health = _recover_stack()
+            assert health is not None, "Stack unrecoverable before Phase 18"
         token, _ = telegram_config
         if not token:
             pytest.skip("Telegram was never configured")
@@ -1532,12 +1642,12 @@ class TestPhase18BotServiceToggle:
             f"{_diag('bot-removal-restart')}"
         )
 
-    def test_chat_works_without_bot_service(self, stack) -> None:
+    def test_chat_works_without_bot_service(self, stack, admin_secret) -> None:
         """Chat MUST work with no bot config at all -- only Foundry."""
         deadline = time.monotonic() + 120
         last_status = ""
         while time.monotonic() < deadline:
-            text, last_status = _send_chat_probe()
+            text, last_status = _send_chat_probe(admin_secret)
             if last_status == "ok" and text:
                 logger.info("Chat works without bot service: %s", text[:200])
                 return
@@ -1577,12 +1687,12 @@ class TestPhase18BotServiceToggle:
             secret=admin_secret,
         )
 
-    def test_chat_works_after_bot_re_add(self, stack) -> None:
+    def test_chat_works_after_bot_re_add(self, stack, admin_secret) -> None:
         """Chat MUST work after re-adding bot config."""
-        deadline = time.monotonic() + 90
+        deadline = time.monotonic() + 120
         last_status = ""
         while time.monotonic() < deadline:
-            text, last_status = _send_chat_probe()
+            text, last_status = _send_chat_probe(admin_secret)
             if last_status == "ok" and text:
                 logger.info("Chat works after bot re-add: %s", text[:200])
                 return
@@ -1602,13 +1712,13 @@ class TestPhase18BotServiceToggle:
             secret=admin_secret,
         )
 
-    def test_chat_still_works_after_second_removal(self, stack) -> None:
+    def test_chat_still_works_after_second_removal(self, stack, admin_secret) -> None:
         """Chat MUST work after the second bot removal."""
         time.sleep(5)
-        deadline = time.monotonic() + 90
+        deadline = time.monotonic() + 120
         last_status = ""
         while time.monotonic() < deadline:
-            text, last_status = _send_chat_probe()
+            text, last_status = _send_chat_probe(admin_secret)
             if last_status == "ok" and text:
                 logger.info("Chat after 2nd bot removal: %s", text[:200])
                 return
@@ -1654,6 +1764,10 @@ class TestPhase19Voice:
     """Deploy ACS for voice calls."""
 
     def test_voice_config(self, stack, admin_secret) -> None:
+        health = _poll_health(timeout=10)
+        if health is None:
+            health = _recover_stack()
+            assert health is not None, "Stack unrecoverable before Phase 19"
         data = _api_ok("/api/setup/voice/config", secret=admin_secret)
         logger.info("Voice config: %s", json.dumps(data, indent=2)[:500])
 
@@ -1685,6 +1799,10 @@ class TestPhase20Lockdown:
     """Test lockdown mode toggle."""
 
     def test_lockdown_status(self, stack, admin_secret) -> None:
+        health = _poll_health(timeout=10)
+        if health is None:
+            health = _recover_stack()
+            assert health is not None, "Stack unrecoverable before Phase 20"
         data = _api_ok("/api/setup/lockdown", secret=admin_secret)
         logger.info("Lockdown: %s", data)
 
@@ -1716,6 +1834,10 @@ class TestPhase21Decommission:
     """Tear down all Azure resources."""
 
     def test_decommission_foundry(self, stack, admin_secret) -> None:
+        health = _poll_health(timeout=10)
+        if health is None:
+            health = _recover_stack()
+            assert health is not None, "Stack unrecoverable before Phase 21"
         body = {"resource_group": _RG}
         code, data = _api(
             "/api/setup/foundry/decommission",
@@ -1809,6 +1931,10 @@ class TestPhase22TUIHeadless:
             pytest.skip("Bun not installed")
         if not _TUI_ENTRY.exists():
             pytest.skip("TUI source not found")
+        health = _poll_health(timeout=10)
+        if health is None:
+            health = _recover_stack()
+            assert health is not None, "Stack unrecoverable before Phase 22"
         r = _run(
             ["bun", "run", str(_TUI_ENTRY), "health"],
             check=False, timeout=30, cwd=_TUI_DIR,

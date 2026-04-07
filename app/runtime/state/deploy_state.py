@@ -128,19 +128,15 @@ class DeployStateStore:
     def by_kind(self, kind: str) -> list[DeploymentRecord]:
         return [d for d in self._deployments.values() if d.kind == kind]
 
+    def _latest_active(self, kind: str) -> DeploymentRecord | None:
+        active = [d for d in self._deployments.values() if d.kind == kind and d.status == "active"]
+        return max(active, key=lambda d: d.updated_at) if active else None
+
     def current_local(self) -> DeploymentRecord | None:
-        local = [
-            d for d in self._deployments.values()
-            if d.kind == "local" and d.status == "active"
-        ]
-        return max(local, key=lambda d: d.updated_at) if local else None
+        return self._latest_active("local")
 
     def current_aca(self) -> DeploymentRecord | None:
-        aca = [
-            d for d in self._deployments.values()
-            if d.kind == "aca" and d.status == "active"
-        ]
-        return max(aca, key=lambda d: d.updated_at) if aca else None
+        return self._latest_active("aca")
 
     def register(self, record: DeploymentRecord) -> None:
         self._deployments[record.deploy_id] = record
@@ -174,18 +170,15 @@ class DeployStateStore:
         return {"deployments": {did: asdict(rec) for did, rec in self._deployments.items()}}
 
     def summary(self) -> list[dict[str, Any]]:
-        result = []
-        for rec in self._deployments.values():
-            result.append({
-                "deploy_id": rec.deploy_id,
-                "tag": rec.tag,
-                "kind": rec.kind,
-                "status": rec.status,
-                "created_at": rec.created_at,
-                "updated_at": rec.updated_at,
-                "resource_groups": rec.resource_groups,
-                "resource_count": len(rec.resources),
-            })
+        result = [
+            {
+                "deploy_id": r.deploy_id, "tag": r.tag, "kind": r.kind,
+                "status": r.status, "created_at": r.created_at,
+                "updated_at": r.updated_at, "resource_groups": r.resource_groups,
+                "resource_count": len(r.resources),
+            }
+            for r in self._deployments.values()
+        ]
         return sorted(result, key=lambda r: r["updated_at"], reverse=True)
 
     def _load(self) -> None:

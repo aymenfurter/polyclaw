@@ -1,11 +1,4 @@
-"""Proactive message delivery -- background loop.
-
-Two responsibilities:
-1. **Deliver** pending messages that are due (scheduled by memory agent).
-2. **Generate** new proactive messages autonomously when nothing is
-   pending and enough idle time has passed, using memory context to
-   craft something genuinely useful.
-"""
+"""Proactive message delivery -- background loop."""
 
 from __future__ import annotations
 
@@ -27,19 +20,21 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
-# Minimum hours since last user activity before we proactively reach out.
-_MIN_USER_IDLE_HOURS = 1.0
+_RETRY_DELAY_MINUTES = 5
 
-# Cooldown between autonomous generation attempts (even if LLM says NO_FOLLOWUP).
+
+def _schedule_retry(store: object, pending: object) -> None:
+    """Re-queue a pending message for delivery in *_RETRY_DELAY_MINUTES*."""
+    retry_at = (datetime.now(UTC) + timedelta(minutes=_RETRY_DELAY_MINUTES)).isoformat()
+    store.schedule_followup(message=pending.message, deliver_at=retry_at, context=pending.context)
+
+
+_MIN_USER_IDLE_HOURS = 1.0
 _GENERATION_COOLDOWN_MINUTES = 60
 
 
 def _in_preferred_window(prefs_times: str) -> bool:
-    """Return True if current UTC hour falls within any preferred time range.
-
-    *prefs_times* is a comma-separated string like ``"9:00-12:00, 14:00-17:00"``.
-    If empty/blank, any time is allowed.
-    """
+    """Return True if current UTC hour falls in any preferred time range."""
     if not prefs_times or not prefs_times.strip():
         return True
 
@@ -64,10 +59,8 @@ def _in_preferred_window(prefs_times: str) -> bool:
 
 
 def _gather_memory_context() -> str:
-    """Read the most recent daily log and a few topic files for LLM context."""
+    """Read recent daily logs and topic files for LLM context."""
     lines: list[str] = []
-
-    # Latest daily log
     daily_dir = cfg.memory_daily_dir
     if daily_dir.is_dir():
         logs = sorted(daily_dir.glob("*.md"), reverse=True)
@@ -77,8 +70,6 @@ def _gather_memory_context() -> str:
                 lines.append(f"--- {log_path.name} ---\n{content}")
             except OSError:
                 pass
-
-    # A couple of topic notes
     topics_dir = cfg.memory_topics_dir
     if topics_dir.is_dir():
         topics = sorted(topics_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -109,12 +100,10 @@ def _hours_since_last_session() -> float | None:
     """Return hours since the most recent session's last update."""
     from ..state.session_store import SessionStore
 
-    store = SessionStore()
-    sessions = store.list_sessions()
+    sessions = SessionStore().list_sessions()
     if not sessions:
         return None
-    latest = sessions[0]
-    ts = latest.get("updated_at") or latest.get("created_at")
+    ts = sessions[0].get("updated_at") or sessions[0].get("created_at")
     if not ts:
         return None
     try:
@@ -132,17 +121,11 @@ def _hours_since_last_session() -> float | None:
 
 
 async def _generate_proactive_message() -> str | None:
-    """Use a one-shot LLM call to generate a proactive message.
-
-    Returns the message string or ``None`` if the LLM decided nothing
-    is worth sending (``NO_FOLLOWUP``).
-    """
+    """Use a one-shot LLM call to generate a proactive message."""
     from ..agent.one_shot import run_one_shot
 
     template = (_TEMPLATES_DIR / "proactive_generate_prompt.md").read_text()
     store = get_proactive_store()
-
-    # Build history context
     history = store.history[-5:]
     if history:
         history_lines = []
@@ -182,7 +165,6 @@ async def _generate_proactive_message() -> str | None:
         logger.info("[proactive] LLM decided: NO_FOLLOWUP")
         return None
 
-    # Sanity: reject very short or suspiciously long responses
     if len(text) < 10 or len(text) > 500:
         logger.warning("[proactive] LLM response rejected (len=%d): %s", len(text), text[:80])
         return None
@@ -194,30 +176,20 @@ def _should_auto_generate(store: "ProactiveStore") -> bool:  # noqa: F821
     """Decide whether the loop should autonomously generate a proactive message."""
     if not store.enabled:
         return False
-
-    # Already have a pending message
     if store.pending:
         return False
 
     prefs = store.preferences
-
-    # Daily limit
     if store.messages_sent_today() >= prefs.max_daily:
         logger.debug("[proactive] daily limit reached (%d/%d)", store.messages_sent_today(), prefs.max_daily)
         return False
-
-    # Min gap since last sent
     hours_since = store.hours_since_last_sent()
     if hours_since is not None and hours_since < prefs.min_gap_hours:
         logger.debug("[proactive] too soon since last sent (%.1fh < %dh)", hours_since, prefs.min_gap_hours)
         return False
-
-    # Preferred time window
     if not _in_preferred_window(prefs.preferred_times):
         logger.debug("[proactive] outside preferred time window")
         return False
-
-    # User must have been idle for a minimum period
     user_idle = _hours_since_last_session()
     if user_idle is not None and user_idle < _MIN_USER_IDLE_HOURS:
         logger.debug("[proactive] user active too recently (%.1fh)", user_idle)
@@ -231,11 +203,7 @@ async def proactive_delivery_loop(
     interval_seconds: int = 60,
     session_store: "SessionStore | None" = None,
 ) -> None:
-    """Check every *interval_seconds* for due proactive messages and deliver them.
-
-    Also autonomously generates proactive messages when nothing is pending
-    and the conditions are right (idle time, preferred window, limits).
-    """
+    """Check every *interval_seconds* for due messages and deliver or generate them."""
     store = get_proactive_store()
     logger.info("[proactive] delivery loop started (interval=%ds)", interval_seconds)
 
@@ -253,7 +221,7 @@ async def proactive_delivery_loop(
                 store.is_due() if pending_obj else "n/a",
             )
 
-            # ── 1. Deliver pending messages that are due ──────────────
+            # ── 1. Deliver pending messages ──
             if store.enabled and store.is_due():
                 pending = store.clear_pending()
                 if pending:
@@ -262,7 +230,7 @@ async def proactive_delivery_loop(
             elif not store.enabled and pending_obj:
                 logger.debug("[proactive] has pending message but proactive is DISABLED")
 
-            # ── 2. Autonomous generation when nothing is pending ──────
+            # ── 2. Autonomous generation ──
             elif _should_auto_generate(store):
                 cooldown_ok = (
                     last_generation_attempt is None
@@ -324,17 +292,7 @@ async def _deliver_message(
                 "[proactive] message NOT delivered (no active channels): %s -- will retry in 5 min",
                 pending.id,
             )
-            retry_at = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
-            store.schedule_followup(
-                message=pending.message,
-                deliver_at=retry_at,
-                context=pending.context,
-            )
+            _schedule_retry(store, pending)
     except Exception as exc:
         logger.error("[proactive] delivery failed: %s", exc, exc_info=True)
-        retry_at = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
-        store.schedule_followup(
-            message=pending.message,
-            deliver_at=retry_at,
-            context=pending.context,
-        )
+        _schedule_retry(store, pending)

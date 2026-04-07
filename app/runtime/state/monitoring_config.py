@@ -58,6 +58,11 @@ class MonitoringConfigStore(BaseConfigStore[MonitoringConfig]):
                 setattr(self._config, k, v)
         self._save()
 
+    _PROVISIONING_FIELDS = (
+        "app_insights_name", "workspace_name", "resource_group",
+        "location", "connection_string", "subscription_id",
+    )
+
     def set_provisioned_metadata(
         self,
         *,
@@ -69,25 +74,18 @@ class MonitoringConfigStore(BaseConfigStore[MonitoringConfig]):
         subscription_id: str = "",
     ) -> None:
         """Persist provisioning metadata after a successful deploy."""
+        kw = {k: v for k, v in locals().items() if k != "self"}
+        for k, v in kw.items():
+            setattr(self._config, k, v)
         self._config.provisioned = True
-        self._config.app_insights_name = app_insights_name
-        self._config.workspace_name = workspace_name
-        self._config.resource_group = resource_group
-        self._config.location = location
-        self._config.connection_string = connection_string
-        self._config.subscription_id = subscription_id
         self._config.enabled = True
         self._save()
 
     def clear_provisioned_metadata(self) -> None:
         """Clear all provisioning metadata after decommission."""
+        for f in self._PROVISIONING_FIELDS:
+            setattr(self._config, f, "")
         self._config.provisioned = False
-        self._config.app_insights_name = ""
-        self._config.workspace_name = ""
-        self._config.resource_group = ""
-        self._config.location = ""
-        self._config.connection_string = ""
-        self._config.subscription_id = ""
         self._config.enabled = False
         self._save()
 
@@ -146,23 +144,8 @@ class MonitoringConfigStore(BaseConfigStore[MonitoringConfig]):
 
 # -- singleton -------------------------------------------------------------
 
-_instance: MonitoringConfigStore | None = None
+from ..util.singletons import Singleton  # noqa: E402
 
-
-def get_monitoring_config() -> MonitoringConfigStore:
-    global _instance
-    if _instance is None:
-        _instance = MonitoringConfigStore()
-    return _instance
-
-
-def _reset_monitoring_config() -> None:
-    global _instance
-    _instance = None
-
-
-from ..util.singletons import register_singleton  # noqa: E402
-
-register_singleton(_reset_monitoring_config)
+get_monitoring_config, _reset_monitoring_config = Singleton.create(MonitoringConfigStore)
 
 

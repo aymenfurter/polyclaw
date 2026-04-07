@@ -44,8 +44,6 @@ from .risk import (  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-_instance: GuardrailsConfigStore | None = None
-
 
 class GuardrailsConfigStore:
     """JSON-file-backed guardrails configuration.
@@ -108,31 +106,29 @@ class GuardrailsConfigStore:
         self._config.default_channel = channel
         self._save()
 
-    def set_phone_number(self, number: str) -> None:
-        self._config.phone_number = number
+    def _set_and_save(self, attr: str, value: Any) -> None:
+        setattr(self._config, attr, value)
         self._save()
+
+    def set_phone_number(self, number: str) -> None:
+        self._set_and_save("phone_number", number)
 
     def set_aitl_model(self, model: str) -> None:
-        self._config.aitl_model = model
-        self._save()
+        self._set_and_save("aitl_model", model)
 
     def set_aitl_spotlighting(self, enabled: bool) -> None:
-        self._config.aitl_spotlighting = enabled
-        self._save()
+        self._set_and_save("aitl_spotlighting", enabled)
+
+    def set_content_safety_endpoint(self, endpoint: str) -> None:
+        self._set_and_save("content_safety_endpoint", endpoint)
+
+    def set_content_safety_key(self, key: str) -> None:
+        self._set_and_save("content_safety_key", key)
 
     def set_filter_mode(self, mode: str) -> None:
         if mode != "prompt_shields":
             raise ValueError("filter_mode must be 'prompt_shields'")
-        self._config.filter_mode = mode
-        self._save()
-
-    def set_content_safety_endpoint(self, endpoint: str) -> None:
-        self._config.content_safety_endpoint = endpoint
-        self._save()
-
-    def set_content_safety_key(self, key: str) -> None:
-        self._config.content_safety_key = key
-        self._save()
+        self._set_and_save("filter_mode", mode)
 
     def set_context_default(self, context: str, strategy: str) -> None:
         if strategy not in _VALID_STRATEGIES:
@@ -343,34 +339,31 @@ class GuardrailsConfigStore:
         return self._config.default_channel
 
     def to_dict(self) -> dict[str, Any]:
+        c = self._config
+        ctx_defaults = dict(c.context_defaults)
+        tool_policies = {ctx: dict(p) for ctx, p in c.tool_policies.items()}
+        model_cols = list(c.model_columns)
+        model_policies = {
+            m: {ctx: dict(tm) for ctx, tm in cp.items()}
+            for m, cp in c.model_policies.items()
+        }
         return {
-            # Frontend-canonical fields
-            "enabled": self._config.hitl_enabled,
-            "default_strategy": self._config.default_action,
-            "hitl_channel": self._config.default_channel,
-            "context_defaults": dict(self._config.context_defaults),
-            "tool_policies": {
-                ctx: dict(policies)
-                for ctx, policies in self._config.tool_policies.items()
-            },
-            "model_columns": list(self._config.model_columns),
-            "model_policies": {
-                model: {
-                    ctx: dict(tool_map)
-                    for ctx, tool_map in ctx_policies.items()
-                }
-                for model, ctx_policies in self._config.model_policies.items()
-            },
-            # Backend / legacy fields
-            "hitl_enabled": self._config.hitl_enabled,
-            "default_action": self._config.default_action,
-            "default_channel": self._config.default_channel,
-            "phone_number": self._config.phone_number,
-            "aitl_model": self._config.aitl_model,
-            "aitl_spotlighting": self._config.aitl_spotlighting,
-            "filter_mode": self._config.filter_mode,
-            "content_safety_endpoint": self._config.content_safety_endpoint,
-            "rules": [asdict(r) for r in self._config.rules],
+            "enabled": c.hitl_enabled,
+            "default_strategy": c.default_action,
+            "hitl_channel": c.default_channel,
+            "context_defaults": ctx_defaults,
+            "tool_policies": tool_policies,
+            "model_columns": model_cols,
+            "model_policies": model_policies,
+            "hitl_enabled": c.hitl_enabled,
+            "default_action": c.default_action,
+            "default_channel": c.default_channel,
+            "phone_number": c.phone_number,
+            "aitl_model": c.aitl_model,
+            "aitl_spotlighting": c.aitl_spotlighting,
+            "filter_mode": c.filter_mode,
+            "content_safety_endpoint": c.content_safety_endpoint,
+            "rules": [asdict(r) for r in c.rules],
         }
 
     @staticmethod
@@ -487,19 +480,6 @@ class GuardrailsConfigStore:
         self._rebuild_engine()
 
 
-def get_guardrails_config(path: Path | None = None) -> GuardrailsConfigStore:
-    """Module-level singleton accessor."""
-    global _instance
-    if _instance is None:
-        _instance = GuardrailsConfigStore(path)
-    return _instance
+from ...util.singletons import Singleton  # noqa: E402
 
-
-def _reset_guardrails_config() -> None:
-    global _instance
-    _instance = None
-
-
-from ...util.singletons import register_singleton  # noqa: E402
-
-register_singleton(_reset_guardrails_config)
+get_guardrails_config, _reset_guardrails_config = Singleton.create(GuardrailsConfigStore)

@@ -99,6 +99,9 @@ export async function buildAcaImage(
     [
       "docker", "build",
       "--platform", "linux/amd64",
+      "--provenance=false",
+      "--sbom=false",
+      "--output", "type=docker",
       "-t", `polyclaw:${tag}`,
       ".",
     ],

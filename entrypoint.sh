@@ -134,16 +134,26 @@ if [[ "$MODE" == "runtime" ]]; then
         fi
     elif [[ -n "${RUNTIME_SP_APP_ID:-}" && -n "${RUNTIME_SP_PASSWORD:-}" && -n "${RUNTIME_SP_TENANT:-}" ]]; then
         echo "Runtime (Docker): logging in with scoped service principal..."
-        if az login --service-principal \
-            -u "$RUNTIME_SP_APP_ID" \
-            -p "$RUNTIME_SP_PASSWORD" \
-            --tenant "$RUNTIME_SP_TENANT" \
-            --output none 2>/dev/null; then
-            echo "Runtime (Docker): Azure CLI authenticated (scoped SP)."
-            _RUNTIME_AUTH_OK=true
-        else
-            echo "Runtime (Docker): WARNING -- service principal login failed. Bot endpoint sync will be unavailable."
-        fi
+        _SP_ATTEMPTS=0
+        _SP_MAX=3
+        while (( _SP_ATTEMPTS < _SP_MAX )); do
+            (( _SP_ATTEMPTS++ )) || true
+            if az login --service-principal \
+                -u "$RUNTIME_SP_APP_ID" \
+                -p "$RUNTIME_SP_PASSWORD" \
+                --tenant "$RUNTIME_SP_TENANT" \
+                --output none 2>/dev/null; then
+                echo "Runtime (Docker): Azure CLI authenticated (scoped SP)."
+                _RUNTIME_AUTH_OK=true
+                break
+            fi
+            if (( _SP_ATTEMPTS < _SP_MAX )); then
+                echo "Runtime (Docker): SP login attempt $_SP_ATTEMPTS/$_SP_MAX failed -- retrying in 10s (credential propagation)..."
+                sleep 10
+            else
+                echo "Runtime (Docker): WARNING -- service principal login failed after $_SP_MAX attempts. Bot endpoint sync will be unavailable."
+            fi
+        done
     else
         echo "Runtime: no identity credentials found. Running without Azure CLI access."
         echo "         Bot endpoint updates will not work until admin provisions a runtime identity."

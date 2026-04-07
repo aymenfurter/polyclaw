@@ -244,20 +244,6 @@ class ProactiveStore:
 
 # -- singleton -------------------------------------------------------------
 
-_store: ProactiveStore | None = None
+from ..util.singletons import Singleton  # noqa: E402
 
-
-def get_proactive_store() -> ProactiveStore:
-    global _store
-    if _store is None:
-        _store = ProactiveStore()
-    return _store
-
-
-def _reset_proactive_store() -> None:
-    global _store
-    _store = None
-
-
-from ..util.singletons import register_singleton
-register_singleton(_reset_proactive_store)
+get_proactive_store, _reset_proactive_store = Singleton.create(ProactiveStore)

@@ -41,16 +41,28 @@ function usage(): void {
   console.log("  bot             Bot Framework server only (headless)");
   console.log("  start           Build, start, and print admin URL (scriptable)");
   console.log("  run <prompt>    Start stack, send prompt, print response, exit");
+  console.log("  setup           Headless full setup: build, deploy Foundry, verify chat");
+  console.log("  decommission    Tear down Azure resources provisioned by setup");
+  console.log("  aca-setup       Headless ACA setup: build, Foundry + ACA deploy, verify chat");
+  console.log("  aca-decommission  Tear down ACA + Foundry resources");
+  console.log("  aca-restart     Restart the ACA runtime container");
+  console.log("  aca-setup       Headless ACA setup: build, Foundry + ACA deploy, verify chat");
+  console.log("  aca-decommission  Tear down ACA + Foundry resources");
+  console.log("  aca-restart     Restart the ACA runtime container");
   console.log("  health          Check if the stack is running and healthy");
   console.log("  stop            Stop the running stack");
   console.log("");
   console.log("Environment:");
   console.log("  ADMIN_PORT      Admin server port (default: 8080)");
   console.log("  BOT_PORT        Bot Framework port (default: 3978)");
+  console.log("  POLYCLAW_SETUP_RG              Resource group for setup (default: polyclaw-e2e-rg)");
+  console.log("  POLYCLAW_SETUP_LOCATION        Azure region (default: eastus)");
+  console.log("  POLYCLAW_SETUP_BASE_NAME       Cognitive Services base name (auto if empty)");
+  console.log("  POLYCLAW_SETUP_SUBSCRIPTION_ID Target subscription ID (first if empty)");
   console.log("");
 }
 
-const VALID_MODES = ["admin", "bot", "start", "run", "health", "stop"];
+const VALID_MODES = ["admin", "bot", "start", "run", "setup", "decommission", "aca-setup", "aca-decommission", "aca-restart", "health", "stop"];
 
 // -----------------------------------------------------------------------
 // CLI helpers
@@ -141,6 +153,39 @@ async function main(): Promise<void> {
     return;
   }
 
+  // ---- Headless setup mode -----------------------------------------------
+  if (mode === "setup") {
+    const { runHeadlessSetup } = await import("./headless/setup.js");
+    await runHeadlessSetup();
+    return;
+  }
+
+  // ---- Headless decommission mode ----------------------------------------
+  if (mode === "decommission") {
+    const { runHeadlessDecommission } = await import("./headless/setup.js");
+    await runHeadlessDecommission();
+    return;
+  }
+
+  // ---- ACA headless modes -------------------------------------------------
+  if (mode === "aca-setup") {
+    const { runAcaHeadlessSetup } = await import("./headless/aca_setup.js");
+    await runAcaHeadlessSetup();
+    return;
+  }
+
+  if (mode === "aca-decommission") {
+    const { runAcaHeadlessDecommission } = await import("./headless/aca_setup.js");
+    await runAcaHeadlessDecommission();
+    return;
+  }
+
+  if (mode === "aca-restart") {
+    const { runAcaHeadlessRestart } = await import("./headless/aca_setup.js");
+    await runAcaHeadlessRestart();
+    return;
+  }
+
   // ---- Health check (no build, no start) --------------------------------
   if (mode === "health") {
     try {
@@ -195,17 +240,29 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
-    console.log("Building and starting polyclaw...");
-    const instanceId = await ensureStack(adminPort, botPort, (line) => {
-      // Suppress build output in run mode unless verbose
-      if (process.env.VERBOSE) console.log(line);
-    });
-
-    const { secret } = await resolveAdminUrl(composeAdminPort);
     const baseUrl = `http://localhost:${composeAdminPort}`;
 
-    console.log("Waiting for server...");
-    await waitOrDie(baseUrl, instanceId);
+    // Check if the stack is already running -- skip build/start if so.
+    let instanceId = "";
+    let alreadyRunning = false;
+    try {
+      const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(3_000) });
+      alreadyRunning = res.ok;
+    } catch { /* not running */ }
+
+    if (alreadyRunning) {
+      instanceId = "polyclaw-admin";
+    } else {
+      console.log("Building and starting polyclaw...");
+      instanceId = await ensureStack(adminPort, botPort, (line) => {
+        if (process.env.VERBOSE) console.log(line);
+      });
+
+      console.log("Waiting for server...");
+      await waitOrDie(baseUrl, instanceId);
+    }
+
+    const { secret } = await resolveAdminUrl(composeAdminPort);
 
     // Send the prompt via the chat WebSocket
     let response = "";
@@ -264,12 +321,12 @@ async function main(): Promise<void> {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`Chat failed: ${msg}`);
-      await stopContainer(instanceId);
+      if (!alreadyRunning) await stopContainer(instanceId);
       process.exit(1);
     }
 
     console.log(response);
-    await stopContainer(instanceId);
+    if (!alreadyRunning) await stopContainer(instanceId);
     process.exit(0);
   }
 

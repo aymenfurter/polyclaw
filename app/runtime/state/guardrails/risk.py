@@ -68,21 +68,16 @@ _CUSTOM_TOOL_RISK: dict[str, str] = {
 
 def _risk_of(tool_id: str) -> str:
     """Return the risk level for any tool/MCP/skill id."""
-    if tool_id in _MCP_RISK:
-        return _MCP_RISK[tool_id]
-    if tool_id in _SKILL_RISK:
-        return _SKILL_RISK[tool_id]
-    if tool_id in _CUSTOM_TOOL_RISK:
-        return _CUSTOM_TOOL_RISK[tool_id]
-    # SDK tools
+    combined = {**_MCP_RISK, **_SKILL_RISK, **_CUSTOM_TOOL_RISK}
+    if tool_id in combined:
+        return combined[tool_id]
     if tool_id in ("view", "grep", "glob"):
         return "low"
     if tool_id in ("create", "edit"):
         return "medium"
     if tool_id in ("run", "bash"):
         return "high"
-    # Unknown MCP or skill -- default to high for safety
-    if tool_id.startswith("mcp:") or tool_id.startswith("skill:"):
+    if tool_id.startswith(("mcp:", "skill:")):
         return "high"
     return "medium"
 

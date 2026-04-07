@@ -26,15 +26,20 @@ class AzureSetupRoutes:
         router.add_post("/api/setup/azure/subscription", self.set_subscription)
         router.add_get("/api/setup/azure/resource-groups", self.list_resource_groups)
 
-    async def azure_login(self, _req: web.Request) -> web.Response:
+    def _account_status(self) -> tuple[dict | None, bool]:
+        """Return (account, needs_subscription)."""
         account = self._az.account_info()
-        if account and not account.get("_no_default_subscription"):
+        return account, bool(account and account.get("_no_default_subscription"))
+
+    async def azure_login(self, _req: web.Request) -> web.Response:
+        account, needs_sub = self._account_status()
+        if account and not needs_sub:
             return web.json_response({
                 "status": "already_logged_in",
                 "user": account.get("user", {}).get("name"),
                 "subscription": account.get("name"),
             })
-        if account and account.get("_no_default_subscription"):
+        if needs_sub:
             return web.json_response({
                 "status": "needs_subscription",
                 "message": "Logged in but no default subscription. Please select one.",
@@ -43,14 +48,14 @@ class AzureSetupRoutes:
         return web.json_response({"status": "device_code_pending", **info})
 
     async def azure_check(self, _req: web.Request) -> web.Response:
-        account = self._az.account_info()
-        if account and not account.get("_no_default_subscription"):
+        account, needs_sub = self._account_status()
+        if account and not needs_sub:
             return web.json_response({
                 "status": "logged_in",
                 "user": account.get("user", {}).get("name"),
                 "subscription": account.get("name"),
             })
-        if account and account.get("_no_default_subscription"):
+        if needs_sub:
             return web.json_response({"status": "needs_subscription"})
         return web.json_response({"status": "pending"})
 

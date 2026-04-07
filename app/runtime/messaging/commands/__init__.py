@@ -1,11 +1,4 @@
-"""Slash-command dispatcher and command implementations.
-
-Sub-modules group commands by domain:
-
-- ``agent``   -- skills, plugins, MCP, schedules
-- ``session`` -- session lifecycle and model switching
-- ``system``  -- status, infra, and connectivity commands
-"""
+"""Slash-command dispatcher and command implementations."""
 
 from ._dispatcher import (
     ChannelContext,

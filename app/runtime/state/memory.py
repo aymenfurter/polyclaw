@@ -371,20 +371,6 @@ class MemoryFormation:
 
 # -- singleton -------------------------------------------------------------
 
-_memory: MemoryFormation | None = None
+from ..util.singletons import Singleton  # noqa: E402
 
-
-def get_memory() -> MemoryFormation:
-    global _memory
-    if _memory is None:
-        _memory = MemoryFormation()
-    return _memory
-
-
-def _reset_memory() -> None:
-    global _memory
-    _memory = None
-
-
-from ..util.singletons import register_singleton
-register_singleton(_reset_memory)
+get_memory, _reset_memory = Singleton.create(MemoryFormation)

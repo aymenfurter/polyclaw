@@ -21,18 +21,11 @@ EXTENSION_TO_MIME: dict[str, str] = {
     ".mov": "video/quicktime",
 }
 
-_IMAGE_TYPES = {v for v in EXTENSION_TO_MIME.values() if v.startswith("image/")}
-_AUDIO_TYPES = {v for v in EXTENSION_TO_MIME.values() if v.startswith("audio/")}
-_VIDEO_TYPES = {v for v in EXTENSION_TO_MIME.values() if v.startswith("video/")}
+_KNOWN_MIMES = frozenset(EXTENSION_TO_MIME.values())
 
 
 def classify(content_type: str) -> str:
     """Return ``'image'``, ``'audio'``, ``'video'``, or ``'file'``."""
     mime = content_type.lower().split(";")[0].strip()
-    if mime in _IMAGE_TYPES:
-        return "image"
-    if mime in _AUDIO_TYPES:
-        return "audio"
-    if mime in _VIDEO_TYPES:
-        return "video"
-    return "file"
+    prefix = mime.split("/")[0]
+    return prefix if prefix in ("image", "audio", "video") and mime in _KNOWN_MIMES else "file"

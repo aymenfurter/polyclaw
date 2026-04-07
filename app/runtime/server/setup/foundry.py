@@ -13,12 +13,11 @@ from typing import Any
 
 from aiohttp import web
 
-from ...config.settings import cfg
 from ...services.cloud.azure import AzureCLI
 from ...services.deployment.bicep_deployer import BicepDeployer, BicepDeployRequest
+from ...services.keyvault import kv as _kv
 from ...state.deploy_state import DeployStateStore
 from ...util.async_helpers import run_sync
-from ._helpers import error_response as _error, ok_response as _ok
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +41,9 @@ class FoundryDeployRoutes:
         router.add_get("/api/setup/foundry/deploy/stream", self.foundry_deploy_stream)
         router.add_post("/api/setup/foundry/decommission", self.foundry_decommission)
 
-    async def foundry_status(self, _req: web.Request) -> web.Response:
-        status = self._deployer.status()
-        return web.json_response(status)
-
-    async def foundry_deploy(self, req: web.Request) -> web.Response:
-        body = await req.json() if req.can_read_body else {}
-        deploy_req = BicepDeployRequest(
+    @staticmethod
+    def _build_request(body: dict[str, Any]) -> BicepDeployRequest:
+        req = BicepDeployRequest(
             resource_group=body.get("resource_group", "polyclaw-rg"),
             location=body.get("location", "eastus"),
             base_name=body.get("base_name", ""),
@@ -61,9 +56,21 @@ class FoundryDeployRoutes:
             deploy_session_pool=body.get("deploy_session_pool", False),
         )
         if body.get("models"):
-            deploy_req.models = body["models"]
+            req.models = body["models"]
+        return req
+
+    async def foundry_status(self, _req: web.Request) -> web.Response:
+        status = self._deployer.status()
+        return web.json_response(status)
+
+    async def foundry_deploy(self, req: web.Request) -> web.Response:
+        body = await req.json() if req.can_read_body else {}
+        deploy_req = self._build_request(body)
 
         result = await run_sync(self._deployer.deploy, deploy_req)
+
+        if result.ok and result.key_vault_url:
+            _kv.reinit()
 
         if result.ok and self._restart_runtime:
             try:
@@ -95,20 +102,7 @@ class FoundryDeployRoutes:
         except json.JSONDecodeError:
             body = {}
 
-        deploy_req = BicepDeployRequest(
-            resource_group=body.get("resource_group", "polyclaw-rg"),
-            location=body.get("location", "eastus"),
-            base_name=body.get("base_name", ""),
-            deploy_key_vault=body.get("deploy_key_vault", True),
-            deploy_acs=body.get("deploy_acs", False),
-            deploy_content_safety=body.get("deploy_content_safety", False),
-            deploy_search=body.get("deploy_search", False),
-            deploy_embedding_aoai=body.get("deploy_embedding_aoai", False),
-            deploy_monitoring=body.get("deploy_monitoring", False),
-            deploy_session_pool=body.get("deploy_session_pool", False),
-        )
-        if body.get("models"):
-            deploy_req.models = body["models"]
+        deploy_req = self._build_request(body)
 
         resp = web.StreamResponse(
             status=200,
@@ -150,6 +144,9 @@ class FoundryDeployRoutes:
                 return resp
 
         result = await task
+
+        if result.ok and result.key_vault_url:
+            _kv.reinit()
 
         if result.ok and self._restart_runtime:
             try:

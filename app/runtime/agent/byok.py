@@ -1,12 +1,4 @@
-"""BYOK provider configuration for the Copilot SDK.
-
-Builds a ``provider`` dict for ``CopilotClient.create_session()`` that
-points at a Foundry (Azure AI Services) endpoint using Entra ID
-bearer-token authentication -- no API keys required.
-
-Token acquisition uses ``az account get-access-token`` so it works with
-whatever identity is logged in (user, service principal, managed identity).
-"""
+"""BYOK provider configuration for the Copilot SDK."""
 
 from __future__ import annotations
 
@@ -46,11 +38,7 @@ def get_bearer_token() -> str:
 
 
 def build_provider_config() -> dict[str, Any] | None:
-    """Build the BYOK provider dict for a Copilot SDK session.
-
-    Returns ``None`` when Foundry is not configured, which signals the
-    caller to fall back to GitHub Copilot authentication.
-    """
+    """Build the BYOK provider dict for a Copilot SDK session."""
     endpoint = cfg.foundry_endpoint
     if not endpoint:
         return None
@@ -69,11 +57,7 @@ def build_provider_config() -> dict[str, Any] | None:
 
 
 def build_session_overrides() -> dict[str, Any]:
-    """Return extra kwargs to merge into session config when BYOK is active.
-
-    These override the model and inject the provider block.  Returns an
-    empty dict when BYOK is not configured.
-    """
+    """Return extra session config kwargs when BYOK is active."""
     provider = build_provider_config()
     if provider is None:
         return {}

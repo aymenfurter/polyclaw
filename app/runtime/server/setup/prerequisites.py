@@ -17,6 +17,7 @@ from ...services.keyvault import kv as _kv
 from ...state.deploy_state import DeployStateStore
 from ...state.infra_config import InfraConfigStore
 from ...util.async_helpers import run_sync
+from ._helpers import fail_response
 
 logger = logging.getLogger(__name__)
 
@@ -255,9 +256,4 @@ class PrerequisitesRoutes:
 
 
 def _fail(steps: list[dict]) -> web.Response:
-    failed = [s for s in steps if s.get("status") == "failed"]
-    msg = failed[0].get("detail", "Unknown") if failed else "Unknown"
-    return web.json_response(
-        {"status": "error", "steps": steps, "message": f"Prerequisites failed: {msg}"},
-        status=500,
-    )
+    return fail_response(steps, "Prerequisites failed")

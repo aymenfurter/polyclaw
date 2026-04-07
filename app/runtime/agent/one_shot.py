@@ -1,8 +1,4 @@
-"""One-shot Copilot session runner.
-
-Spawns an ephemeral CopilotClient to execute a single prompt. Used by the
-scheduler and memory formation to avoid re-using the interactive session.
-"""
+"""Ephemeral one-shot Copilot session runner."""
 
 from __future__ import annotations
 

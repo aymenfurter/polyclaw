@@ -99,17 +99,13 @@ def shutdown_otel() -> None:
         from opentelemetry import trace, metrics
         from opentelemetry._logs import get_logger_provider
 
-        tp = trace.get_tracer_provider()
-        if hasattr(tp, "shutdown"):
-            tp.shutdown()
-
-        mp = metrics.get_meter_provider()
-        if hasattr(mp, "shutdown"):
-            mp.shutdown()
-
-        lp = get_logger_provider()
-        if hasattr(lp, "shutdown"):
-            lp.shutdown()
+        for provider in (
+            trace.get_tracer_provider(),
+            metrics.get_meter_provider(),
+            get_logger_provider(),
+        ):
+            if hasattr(provider, "shutdown"):
+                provider.shutdown()
 
         _otel_active = False
         logger.info("[otel.shutdown] OpenTelemetry providers shut down")

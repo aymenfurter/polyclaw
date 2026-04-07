@@ -11,7 +11,7 @@ from typing import Any
 
 from ..config.settings import cfg
 from ..state.plugin_config import PluginConfigStore
-from ..util.singletons import register_singleton
+from ..util.singletons import Singleton
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,10 @@ class PluginRegistry:
                     manifest = _parse_manifest(manifest_path)
                     if manifest and manifest.id not in self._plugins:
                         self._plugins[manifest.id] = manifest
+                        logger.info(
+                            "  plugin: %s (%s) -- %d skill(s)",
+                            manifest.id, manifest.name, len(manifest.skills),
+                        )
         logger.info("Discovered %d plugin(s)", len(self._plugins))
 
     def refresh(self) -> None:
@@ -242,19 +246,4 @@ class PluginRegistry:
         return True
 
 
-_registry: PluginRegistry | None = None
-
-
-def get_plugin_registry() -> PluginRegistry:
-    global _registry
-    if _registry is None:
-        _registry = PluginRegistry()
-    return _registry
-
-
-def _reset_plugin_registry() -> None:
-    global _registry
-    _registry = None
-
-
-register_singleton(_reset_plugin_registry)
+get_plugin_registry, _reset_plugin_registry = Singleton.create(PluginRegistry)

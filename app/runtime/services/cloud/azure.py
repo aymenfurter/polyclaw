@@ -75,12 +75,15 @@ class AzureCLI:
             stderr=proc.stderr.read() if proc.stderr else "",
         )
 
-    def json(self, *args: str, quiet: bool = False) -> dict | list | None:
+    def _exec(
+        self, args: list[str], *, quiet: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run an ``az`` command with unified logging."""
         cmd_summary = " ".join(args[:5])
         _log = logger.debug if quiet else logger.info
         _log("[az] starting: az %s", cmd_summary)
         t0 = _time()
-        result = self._run(["az", *args, "--output", "json"], cmd_summary)
+        result = self._run(["az", *args], cmd_summary)
         elapsed = _time() - t0
         self.last_stderr = result.stderr.strip()
         if result.returncode != 0:
@@ -88,12 +91,18 @@ class AzureCLI:
                 "[az] FAILED (%.1fs, rc=%d): az %s -- %s",
                 elapsed, result.returncode, cmd_summary, self.last_stderr[:800],
             )
+        else:
+            _log("[az] OK (%.1fs): az %s", elapsed, cmd_summary)
+        return result
+
+    def json(self, *args: str, quiet: bool = False) -> dict | list | None:
+        result = self._exec([*args, "--output", "json"], quiet=quiet)
+        if result.returncode != 0:
             return None
-        _log("[az] OK (%.1fs): az %s", elapsed, cmd_summary)
         try:
             return json.loads(result.stdout)
         except (json.JSONDecodeError, ValueError):
-            logger.warning("[az] could not parse JSON output for: az %s", cmd_summary)
+            logger.warning("[az] could not parse JSON output for: az %s", " ".join(args[:5]))
             return None
 
     def json_cached(self, *args: str, ttl: int | None = None) -> dict | list | None:
@@ -116,20 +125,8 @@ class AzureCLI:
             self._cache.clear()
 
     def ok(self, *args: str) -> Result:
-        cmd_summary = " ".join(args[:5])
-        logger.info("[az] starting: az %s", cmd_summary)
-        t0 = _time()
-        result = self._run(["az", *args], cmd_summary)
-        elapsed = _time() - t0
-        success = result.returncode == 0
-        if success:
-            logger.info("[az] OK (%.1fs): az %s", elapsed, cmd_summary)
-        else:
-            logger.warning(
-                "[az] FAILED (%.1fs, rc=%d): az %s -- %s",
-                elapsed, result.returncode, cmd_summary, result.stderr.strip()[:300],
-            )
-        return Result(success=success, message=result.stderr.strip())
+        result = self._exec(list(args))
+        return Result(success=result.returncode == 0, message=self.last_stderr)
 
     def account_info(self) -> dict[str, Any] | None:
         """Return the active subscription, or ``None`` if not logged in.

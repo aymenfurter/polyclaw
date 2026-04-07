@@ -8,12 +8,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.runtime.services.deployment import StepTracker
 from app.runtime.services.deployment.bicep_deployer import (
     BicepDeployer,
     BicepDeployRequest,
     BicepDeployResult,
     _BICEP_TEMPLATE,
-    _ObservableSteps,
 )
 from app.runtime.state.deploy_state import DeployStateStore
 
@@ -190,7 +190,7 @@ class TestBicepDeployer:
             })
 
             req = BicepDeployRequest(base_name="test", resource_group="rg")
-            result = deployer._ensure_runtime_sp(req, [])
+            result = deployer._ensure_runtime_sp(req, StepTracker())
 
         assert result is not None
         assert result["app_id"] == "new-sp-id"
@@ -214,7 +214,7 @@ class TestBicepDeployer:
             })
 
             req = BicepDeployRequest(base_name="test", resource_group="rg")
-            result = deployer._ensure_runtime_sp(req, [])
+            result = deployer._ensure_runtime_sp(req, StepTracker())
 
         assert result is not None
         assert result["app_id"] == "existing-id"
@@ -392,12 +392,12 @@ class TestSettingsFoundry:
         assert s.memory_model == "gpt-4.1"
 
 
-class TestObservableSteps:
-    """Tests for the _ObservableSteps callback list."""
+class TestStepTracker:
+    """Tests for the StepTracker callback list."""
 
     def test_callback_fires_on_append(self) -> None:
         received: list[dict] = []
-        steps = _ObservableSteps(lambda s: received.append(s))
+        steps = StepTracker(lambda s: received.append(s))
         steps.append({"step": "a", "status": "ok"})
         steps.append({"step": "b", "status": "failed"})
         assert len(received) == 2
@@ -406,7 +406,7 @@ class TestObservableSteps:
         assert list(steps) == received
 
     def test_no_callback(self) -> None:
-        steps = _ObservableSteps(None)
+        steps = StepTracker(None)
         steps.append({"step": "a", "status": "ok"})
         assert len(steps) == 1
 
@@ -414,7 +414,7 @@ class TestObservableSteps:
         def bad_cb(_: dict) -> None:
             raise RuntimeError("boom")
 
-        steps = _ObservableSteps(bad_cb)
+        steps = StepTracker(bad_cb)
         steps.append({"step": "a", "status": "ok"})
         assert len(steps) == 1
 

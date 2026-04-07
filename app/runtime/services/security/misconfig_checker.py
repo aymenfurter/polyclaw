@@ -63,138 +63,134 @@ class MisconfigChecker:
                     self._check_acr(rg, rname, result)
         return result
 
+    @staticmethod
+    def _assert(
+        result: CheckResult, fail: bool, *,
+        severity: str, category: str, rtype: str,
+        rg: str, name: str, title: str, detail: str,
+        recommendation: str = "",
+    ) -> None:
+        """Record a pass or fail finding on *result*."""
+        if fail:
+            result.findings.append(Finding(
+                severity=severity, category=category, resource_name=name,
+                resource_group=rg, resource_type=rtype, title=title,
+                detail=detail, recommendation=recommendation,
+            ))
+            result.checks_failed += 1
+        else:
+            result.checks_passed += 1
+
     def _check_storage_account(self, rg: str, name: str, result: CheckResult) -> None:
         info = self._az.json("storage", "account", "show", "--name", name, "--resource-group", rg)
         if not isinstance(info, dict):
             return
         props = info.get("properties", info)
+        kw = dict(category="storage", rtype="Storage Account", rg=rg, name=name)
 
-        if props.get("allowBlobPublicAccess", True):
-            result.findings.append(Finding(
-                severity="high", category="storage", resource_name=name, resource_group=rg,
-                resource_type="Storage Account", title="Public blob access enabled",
-                detail=f"Storage account '{name}' allows public access to blobs.",
-                recommendation=f"az storage account update --name {name} --resource-group {rg} --allow-blob-public-access false",
-            ))
-            result.checks_failed += 1
-        else:
-            result.checks_passed += 1
+        self._assert(
+            result, props.get("allowBlobPublicAccess", True),
+            severity="high", title="Public blob access enabled",
+            detail=f"Storage account '{name}' allows public access to blobs.",
+            recommendation=f"az storage account update --name {name} --resource-group {rg} --allow-blob-public-access false",
+            **kw,
+        )
 
         https_only = info.get("enableHttpsTrafficOnly", props.get("supportsHttpsTrafficOnly", True))
-        if not https_only:
-            result.findings.append(Finding(
-                severity="high", category="storage", resource_name=name, resource_group=rg,
-                resource_type="Storage Account", title="HTTP traffic allowed (HTTPS not enforced)",
-                detail=f"Storage account '{name}' allows non-HTTPS traffic.",
-                recommendation=f"az storage account update --name {name} --resource-group {rg} --https-only true",
-            ))
-            result.checks_failed += 1
-        else:
-            result.checks_passed += 1
+        self._assert(
+            result, not https_only,
+            severity="high", title="HTTP traffic allowed (HTTPS not enforced)",
+            detail=f"Storage account '{name}' allows non-HTTPS traffic.",
+            recommendation=f"az storage account update --name {name} --resource-group {rg} --https-only true",
+            **kw,
+        )
 
         net_rules = props.get("networkRuleSet", props.get("networkAcls", {}))
         default_action = (net_rules.get("defaultAction") or "Allow").lower()
-        if default_action == "allow":
-            result.findings.append(Finding(
-                severity="medium", category="storage", resource_name=name, resource_group=rg,
-                resource_type="Storage Account", title="Network access not restricted",
-                detail=f"Storage account '{name}' allows access from all networks.",
-                recommendation=f"az storage account update --name {name} --resource-group {rg} --default-action Deny",
-            ))
-            result.checks_failed += 1
-        else:
-            result.checks_passed += 1
+        self._assert(
+            result, default_action == "allow",
+            severity="medium", title="Network access not restricted",
+            detail=f"Storage account '{name}' allows access from all networks.",
+            recommendation=f"az storage account update --name {name} --resource-group {rg} --default-action Deny",
+            **kw,
+        )
 
         min_tls = props.get("minimumTlsVersion", "TLS1_0")
-        if min_tls in ("TLS1_0", "TLS1_1"):
-            result.findings.append(Finding(
-                severity="medium", category="storage", resource_name=name, resource_group=rg,
-                resource_type="Storage Account", title=f"Weak minimum TLS version ({min_tls})",
-                detail=f"Storage account '{name}' allows {min_tls} connections.",
-                recommendation=f"az storage account update --name {name} --resource-group {rg} --min-tls-version TLS1_2",
-            ))
-            result.checks_failed += 1
-        else:
-            result.checks_passed += 1
+        self._assert(
+            result, min_tls in ("TLS1_0", "TLS1_1"),
+            severity="medium", title=f"Weak minimum TLS version ({min_tls})",
+            detail=f"Storage account '{name}' allows {min_tls} connections.",
+            recommendation=f"az storage account update --name {name} --resource-group {rg} --min-tls-version TLS1_2",
+            **kw,
+        )
 
     def _check_keyvault(self, rg: str, name: str, result: CheckResult) -> None:
         info = self._az.json("keyvault", "show", "--name", name, "--resource-group", rg)
         if not isinstance(info, dict):
             return
         props = info.get("properties", info)
+        kw = dict(category="keyvault", rtype="Key Vault", rg=rg, name=name)
 
-        if not props.get("enableRbacAuthorization", False):
-            result.findings.append(Finding(
-                severity="high", category="keyvault", resource_name=name, resource_group=rg,
-                resource_type="Key Vault", title="RBAC authorization not enabled",
-                detail=f"Key Vault '{name}' uses access policies instead of RBAC.",
-                recommendation=f"az keyvault update --name {name} --resource-group {rg} --enable-rbac-authorization true",
-            ))
-            result.checks_failed += 1
-        else:
-            result.checks_passed += 1
+        self._assert(
+            result, not props.get("enableRbacAuthorization", False),
+            severity="high", title="RBAC authorization not enabled",
+            detail=f"Key Vault '{name}' uses access policies instead of RBAC.",
+            recommendation=f"az keyvault update --name {name} --resource-group {rg} --enable-rbac-authorization true",
+            **kw,
+        )
 
         soft_delete = props.get("enableSoftDelete", False)
         purge_protect = props.get("enablePurgeProtection", False)
         if not soft_delete:
-            result.findings.append(Finding(
-                severity="medium", category="keyvault", resource_name=name, resource_group=rg,
-                resource_type="Key Vault", title="Soft delete not enabled",
+            self._assert(
+                result, True, severity="medium",
+                title="Soft delete not enabled",
                 detail=f"Key Vault '{name}' does not have soft delete enabled.",
                 recommendation="Enable soft delete (default for new vaults).",
-            ))
-            result.checks_failed += 1
+                **kw,
+            )
         elif not purge_protect:
-            result.findings.append(Finding(
-                severity="low", category="keyvault", resource_name=name, resource_group=rg,
-                resource_type="Key Vault", title="Purge protection not enabled",
+            self._assert(
+                result, True, severity="low",
+                title="Purge protection not enabled",
                 detail=f"Key Vault '{name}' has soft delete but not purge protection.",
                 recommendation=f"az keyvault update --name {name} --enable-purge-protection true",
-            ))
-            result.checks_failed += 1
+                **kw,
+            )
         else:
             result.checks_passed += 1
 
         net_acls = props.get("networkAcls", {})
         network_default = (net_acls.get("defaultAction") or "Allow").lower()
         public_access = props.get("publicNetworkAccess", "Enabled")
-        if network_default == "allow" and public_access != "Disabled":
-            result.findings.append(Finding(
-                severity="medium", category="keyvault", resource_name=name, resource_group=rg,
-                resource_type="Key Vault", title="Public network access not restricted",
-                detail=f"Key Vault '{name}' is accessible from all networks.",
-                recommendation="Restrict network access or use private endpoints.",
-            ))
-            result.checks_failed += 1
-        else:
-            result.checks_passed += 1
+        self._assert(
+            result, network_default == "allow" and public_access != "Disabled",
+            severity="medium", title="Public network access not restricted",
+            detail=f"Key Vault '{name}' is accessible from all networks.",
+            recommendation="Restrict network access or use private endpoints.",
+            **kw,
+        )
 
     def _check_acr(self, rg: str, name: str, result: CheckResult) -> None:
         info = self._az.json("acr", "show", "--name", name, "--resource-group", rg)
         if not isinstance(info, dict):
             return
+        kw = dict(category="acr", rtype="Container Registry", rg=rg, name=name)
 
-        if info.get("adminUserEnabled", False):
-            result.findings.append(Finding(
-                severity="medium", category="acr", resource_name=name, resource_group=rg,
-                resource_type="Container Registry", title="Admin user enabled",
-                detail=f"Container Registry '{name}' has the admin user enabled.",
-                recommendation=f"az acr update --name {name} --admin-enabled false",
-            ))
-            result.checks_failed += 1
-        else:
-            result.checks_passed += 1
-
-        if info.get("publicNetworkAccess", "Enabled") == "Enabled":
-            result.findings.append(Finding(
-                severity="low", category="acr", resource_name=name, resource_group=rg,
-                resource_type="Container Registry", title="Public network access enabled",
-                detail=f"Container Registry '{name}' is accessible from the public internet.",
-                recommendation="Consider restricting via firewall rules or private endpoints.",
-            ))
-            result.checks_failed += 1
-        else:
-            result.checks_passed += 1
+        self._assert(
+            result, info.get("adminUserEnabled", False),
+            severity="medium", title="Admin user enabled",
+            detail=f"Container Registry '{name}' has the admin user enabled.",
+            recommendation=f"az acr update --name {name} --admin-enabled false",
+            **kw,
+        )
+        self._assert(
+            result, info.get("publicNetworkAccess", "Enabled") == "Enabled",
+            severity="low", title="Public network access enabled",
+            detail=f"Container Registry '{name}' is accessible from the public internet.",
+            recommendation="Consider restricting via firewall rules or private endpoints.",
+            **kw,
+        )
 
     @staticmethod
     def to_dict(result: CheckResult) -> dict[str, Any]:

@@ -13,22 +13,10 @@ from botbuilder.schema import Attachment
 from app.runtime.media.outgoing import (
     MAX_OUTGOING_FILE_BYTES,
     _move_to_error,
-    _too_large_msg,
     collect_pending_outgoing,
     move_attachments_to_error,
     read_error_details,
 )
-
-
-class TestTooLargeMsg:
-    def test_basic(self):
-        msg = _too_large_msg(500_000)
-        assert "500,000" in msg
-        assert "190" in msg
-
-    def test_with_extra(self):
-        msg = _too_large_msg(500_000, "Resize failed.")
-        assert "Resize failed." in msg
 
 
 class TestMoveToError:

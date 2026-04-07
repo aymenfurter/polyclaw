@@ -16,7 +16,7 @@ from croniter import croniter
 
 from ..agent import one_shot as one_shot_mod
 from ..config.settings import cfg
-from ..util.singletons import register_singleton
+from ..util.singletons import Singleton
 
 logger = logging.getLogger(__name__)
 
@@ -330,27 +330,11 @@ class Scheduler:
             )
 
 
-_scheduler: Scheduler | None = None
-
-
-def get_scheduler() -> Scheduler:
-    global _scheduler
-    if _scheduler is None:
-        _scheduler = Scheduler()
-    return _scheduler
+get_scheduler, _reset_scheduler = Singleton.create(Scheduler)
 
 
 def set_scheduler(instance: Scheduler) -> None:
-    global _scheduler
-    _scheduler = instance
-
-
-def _reset_scheduler() -> None:
-    global _scheduler
-    _scheduler = None
-
-
-register_singleton(_reset_scheduler)
+    _reset_scheduler(instance)
 
 
 async def scheduler_loop(interval_seconds: int = 60) -> None:

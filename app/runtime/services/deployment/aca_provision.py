@@ -10,15 +10,26 @@ from typing import Any
 
 from ...config.settings import cfg
 from ...state.deploy_state import DeploymentRecord
-from ..cloud.azure import AzureCLI
 from ..cloud._azure_rbac import (
     BOT_CONTRIBUTOR_ROLE as _BOT_CONTRIBUTOR_ROLE,
+)
+from ..cloud._azure_rbac import (
     IMAGE_NAME as _IMAGE_NAME,
+)
+from ..cloud._azure_rbac import (
     MI_NAME as _MI_NAME,
+)
+from ..cloud._azure_rbac import (
     RG_READER_ROLE as _RG_READER_ROLE,
+)
+from ..cloud._azure_rbac import (
     SESSION_EXECUTOR_ROLE as _SESSION_EXECUTOR_ROLE,
+)
+from ..cloud._azure_rbac import (
     session_pool_scope as _session_pool_scope,
 )
+from ..cloud.azure import AzureCLI
+from ._models import StepTracker
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +40,7 @@ def ensure_acr(
     az: AzureCLI,
     resource_group: str,
     location: str,
-    steps: list[dict],
+    steps: StepTracker,
     rec: DeploymentRecord,
     acr_name: str = "",
 ) -> str:
@@ -48,12 +59,9 @@ def ensure_acr(
         "--location", location,
     )
     if not result:
-        steps.append({
-            "step": "acr_create", "status": "failed",
-            "detail": az.last_stderr,
-        })
+        steps.fail("acr_create", detail=az.last_stderr)
         return ""
-    steps.append({"step": "acr_create", "status": "ok", "detail": acr_name})
+    steps.ok("acr_create", detail=acr_name)
     rec.add_resource("acr", resource_group, acr_name, "Container registry")
     return acr_name
 
@@ -73,7 +81,7 @@ def push_image(
     az: AzureCLI,
     acr_name: str,
     tag: str,
-    steps: list[dict],
+    steps: StepTracker,
 ) -> bool:
     """Build, tag, and push the local Docker image to ACR."""
     logger.info("[aca] Step 4/10: Pushing pre-built image to ACR ...")
@@ -91,7 +99,7 @@ def push_image(
             f"-t {local_image} ."
         )
         logger.error("[aca] %s", detail)
-        steps.append({"step": "image_push", "status": "failed", "detail": detail})
+        steps.fail("image_push", detail=detail)
         return False
 
     logger.info("[aca] Logging in to ACR %s ...", acr_name)
@@ -99,7 +107,7 @@ def push_image(
     if not ok:
         detail = f"ACR login failed: {msg or az.last_stderr}"
         logger.error("[aca] %s", detail)
-        steps.append({"step": "image_push", "status": "failed", "detail": detail})
+        steps.fail("image_push", detail=detail)
         return False
 
     logger.info("[aca] Tagging %s -> %s", local_image, remote_image)
@@ -110,7 +118,7 @@ def push_image(
     if tag_result.returncode != 0:
         detail = f"docker tag failed: {tag_result.stderr.strip()}"
         logger.error("[aca] %s", detail)
-        steps.append({"step": "image_push", "status": "failed", "detail": detail})
+        steps.fail("image_push", detail=detail)
         return False
 
     logger.info("[aca] Pushing %s (this may take 1-2 minutes) ...", remote_image)
@@ -121,11 +129,11 @@ def push_image(
     if push_result.returncode != 0:
         detail = f"docker push failed: {push_result.stderr.strip()[:500]}"
         logger.error("[aca] %s", detail)
-        steps.append({"step": "image_push", "status": "failed", "detail": detail})
+        steps.fail("image_push", detail=detail)
         return False
 
     logger.info("[aca] Image pushed: %s", remote_image)
-    steps.append({"step": "image_push", "status": "ok", "detail": remote_image})
+    steps.ok("image_push", detail=remote_image)
     return True
 
 
@@ -133,7 +141,7 @@ def ensure_managed_identity(
     az: AzureCLI,
     resource_group: str,
     location: str,
-    steps: list[dict],
+    steps: StepTracker,
     rec: DeploymentRecord,
 ) -> tuple[str, str]:
     """Create a user-assigned managed identity.  Returns ``(id, client_id)``."""
@@ -145,23 +153,50 @@ def ensure_managed_identity(
         "--location", location,
     )
     if not isinstance(result, dict):
-        steps.append({"step": "managed_identity", "status": "failed",
-                      "detail": az.last_stderr})
+        steps.fail("managed_identity", detail=az.last_stderr)
         return "", ""
 
     mi_id = result.get("id", "")
     client_id = result.get("clientId", "")
-    steps.append({"step": "managed_identity", "status": "ok", "detail": _MI_NAME})
+    steps.ok("managed_identity", detail=_MI_NAME)
     rec.add_resource("managed_identity", resource_group, _MI_NAME,
                      "Runtime scoped identity")
     return mi_id, client_id
+
+
+def _assign_role_with_retry(
+    az: AzureCLI,
+    assignee: str,
+    role: str,
+    scope: str,
+    steps: StepTracker,
+) -> None:
+    """Assign an RBAC role with retries for eventual consistency."""
+    label = role.lower().replace(" ", "_")
+    assigned = False
+    for attempt in range(4):
+        if attempt:
+            delay = 10 * attempt
+            logger.info("[aca] RBAC retry %d/3 for %s in %ds ...", attempt, label, delay)
+            time.sleep(delay)
+        ok, _msg = az.ok(
+            "role", "assignment", "create",
+            "--assignee", assignee,
+            "--role", role,
+            "--scope", scope,
+        )
+        if ok or "already exists" in (az.last_stderr or "").lower():
+            assigned = True
+            break
+    detail = f"{role} on {scope.rsplit('/', 1)[-1]}" if assigned else az.last_stderr
+    steps.record(f"rbac_{label}", ok=assigned, detail=detail)
 
 
 def assign_rbac(
     az: AzureCLI,
     mi_principal_id: str,
     resource_group: str,
-    steps: list[dict],
+    steps: StepTracker,
 ) -> None:
     """Assign RBAC roles to the managed identity."""
     logger.info("[aca] Step 6/10: Assigning RBAC ...")
@@ -170,66 +205,20 @@ def assign_rbac(
     rg_scope = f"/subscriptions/{sub_id}/resourceGroups/{resource_group}"
 
     for role in (_BOT_CONTRIBUTOR_ROLE, _RG_READER_ROLE):
-        label = role.lower().replace(" ", "_")
-        assigned = False
-        for attempt in range(4):
-            if attempt:
-                delay = 10 * attempt
-                logger.info(
-                    "[aca] RBAC retry %d/3 for %s in %ds ...",
-                    attempt, label, delay,
-                )
-                time.sleep(delay)
-            ok, _msg = az.ok(
-                "role", "assignment", "create",
-                "--assignee", mi_principal_id,
-                "--role", role,
-                "--scope", rg_scope,
-            )
-            if ok or "already exists" in (az.last_stderr or "").lower():
-                assigned = True
-                break
-        if assigned:
-            steps.append({"step": f"rbac_{label}", "status": "ok",
-                          "detail": f"{role} on {resource_group}"})
-        else:
-            steps.append({"step": f"rbac_{label}", "status": "failed",
-                          "detail": az.last_stderr})
+        _assign_role_with_retry(az, mi_principal_id, role, rg_scope, steps)
 
     session_scope = _session_pool_scope(sub_id)
     if session_scope:
-        label = _SESSION_EXECUTOR_ROLE.lower().replace(" ", "_")
-        assigned = False
-        for attempt in range(4):
-            if attempt:
-                delay = 10 * attempt
-                logger.info(
-                    "[aca] RBAC retry %d/3 for %s in %ds ...",
-                    attempt, label, delay,
-                )
-                time.sleep(delay)
-            ok, _msg = az.ok(
-                "role", "assignment", "create",
-                "--assignee", mi_principal_id,
-                "--role", _SESSION_EXECUTOR_ROLE,
-                "--scope", session_scope,
-            )
-            if ok or "already exists" in (az.last_stderr or "").lower():
-                assigned = True
-                break
-        if assigned:
-            steps.append({"step": f"rbac_{label}", "status": "ok",
-                          "detail": f"{_SESSION_EXECUTOR_ROLE} on session pool"})
-        else:
-            steps.append({"step": f"rbac_{label}", "status": "failed",
-                          "detail": az.last_stderr})
+        _assign_role_with_retry(
+            az, mi_principal_id, _SESSION_EXECUTOR_ROLE, session_scope, steps,
+        )
 
 
 def ensure_aca_environment(
     az: AzureCLI,
     resource_group: str,
     location: str,
-    steps: list[dict],
+    steps: StepTracker,
     rec: DeploymentRecord,
     env_name: str = "",
 ) -> tuple[str, str]:
@@ -245,14 +234,11 @@ def ensure_aca_environment(
         "--location", location,
     )
     if not isinstance(result, dict):
-        steps.append({
-            "step": "aca_environment", "status": "failed",
-            "detail": az.last_stderr,
-        })
+        steps.fail("aca_environment", detail=az.last_stderr)
         return "", ""
 
     env_id = result.get("id", "")
-    steps.append({"step": "aca_environment", "status": "ok", "detail": env_name})
+    steps.ok("aca_environment", detail=env_name)
     rec.add_resource("aca_environment", resource_group, env_name,
                      "Container Apps environment")
     return env_name, env_id
@@ -270,7 +256,7 @@ def ensure_runtime_app(
     env_vars: dict[str, str],
     image_tag: str,
     runtime_port: int,
-    steps: list[dict],
+    steps: StepTracker,
     rec: DeploymentRecord,
 ) -> str:
     """Create the runtime container app.  Returns the FQDN, or ``""`` on failure."""
@@ -342,10 +328,7 @@ def ensure_runtime_app(
     if not isinstance(result, dict):
         detail = az.last_stderr
         logger.error("[aca] containerapp create failed: %s", detail[:1000])
-        steps.append({
-            "step": "runtime_container_app", "status": "failed",
-            "detail": detail[:500],
-        })
+        steps.fail("runtime_container_app", detail=detail[:500])
         return ""
 
     logger.info("[aca] Assigning managed identity to container app ...")
@@ -371,7 +354,7 @@ def ensure_runtime_app(
             "--set-env-vars", f"BOT_ENDPOINT={bot_endpoint}",
         )
 
-    steps.append({"step": "runtime_container_app", "status": "ok", "detail": fqdn})
+    steps.ok("runtime_container_app", detail=fqdn)
     rec.add_resource("container_app", resource_group, app_name,
                      "Runtime data plane (MI-scoped)")
     return fqdn
@@ -382,16 +365,13 @@ def configure_ip_whitelist(
     resource_group: str,
 ) -> list[dict[str, Any]]:
     """Restrict the runtime container's ingress to the deployer's IP."""
-    ip_steps: list[dict[str, Any]] = []
+    steps = StepTracker()
 
     public_ip = detect_public_ip()
     if not public_ip:
-        ip_steps.append({
-            "step": "ip_whitelist",
-            "status": "skipped",
-            "detail": "Could not detect public IP -- runtime ingress unrestricted",
-        })
-        return ip_steps
+        steps.skip("ip_whitelist",
+                    detail="Could not detect public IP -- runtime ingress unrestricted")
+        return steps.to_list()
 
     ok, msg = az.ok(
         "containerapp", "ingress", "access-restriction", "set",
@@ -403,19 +383,11 @@ def configure_ip_whitelist(
         "--description", "Allow deployer IP",
     )
     if ok:
-        ip_steps.append({
-            "step": "ip_whitelist",
-            "status": "ok",
-            "detail": f"Runtime restricted to {public_ip}/32",
-        })
+        steps.ok("ip_whitelist", detail=f"Runtime restricted to {public_ip}/32")
     else:
-        ip_steps.append({
-            "step": "ip_whitelist",
-            "status": "warning",
-            "detail": f"Could not set IP restriction: {msg}",
-        })
+        steps.warning("ip_whitelist", detail=f"Could not set IP restriction: {msg}")
 
-    return ip_steps
+    return steps.to_list()
 
 
 def detect_public_ip() -> str:

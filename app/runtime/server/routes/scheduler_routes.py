@@ -7,6 +7,7 @@ from dataclasses import asdict
 from aiohttp import web
 
 from ...scheduler import Scheduler
+from ._helpers import api_handler, error_response, ok_response, parse_json
 
 
 class SchedulerRoutes:
@@ -25,46 +26,34 @@ class SchedulerRoutes:
         tasks = self._scheduler.list_tasks()
         return web.json_response([asdict(t) for t in tasks])
 
+    @api_handler
     async def _create(self, req: web.Request) -> web.Response:
-        data = await req.json()
-        try:
-            task = self._scheduler.add(
-                description=data.get("description") or data.get("name", ""),
-                prompt=data.get("prompt", ""),
-                cron=data.get("cron") or data.get("schedule"),
-                run_at=data.get("run_at"),
-            )
-            return web.json_response({"status": "ok", "task": asdict(task)})
-        except ValueError as exc:
-            return web.json_response(
-                {"status": "error", "message": str(exc)}, status=400
-            )
+        data = await parse_json(req)
+        task = self._scheduler.add(
+            description=data.get("description") or data.get("name", ""),
+            prompt=data.get("prompt", ""),
+            cron=data.get("cron") or data.get("schedule"),
+            run_at=data.get("run_at"),
+        )
+        return ok_response(task=asdict(task))
 
+    @api_handler
     async def _update(self, req: web.Request) -> web.Response:
         task_id = req.match_info["task_id"]
-        data = await req.json()
+        data = await parse_json(req)
         # Normalise frontend field aliases
         if "schedule" in data and "cron" not in data:
             data["cron"] = data.pop("schedule")
         if "name" in data and "description" not in data:
             data["description"] = data.pop("name")
-        try:
-            task = self._scheduler.update(task_id, **data)
-        except ValueError as exc:
-            return web.json_response(
-                {"status": "error", "message": str(exc)}, status=400
-            )
+        task = self._scheduler.update(task_id, **data)
         if not task:
-            return web.json_response(
-                {"status": "error", "message": "Task not found"}, status=404
-            )
-        return web.json_response({"status": "ok", "task": asdict(task)})
+            return error_response("Task not found", status=404)
+        return ok_response(task=asdict(task))
 
     async def _delete(self, req: web.Request) -> web.Response:
         task_id = req.match_info["task_id"]
         removed = self._scheduler.remove(task_id)
         if not removed:
-            return web.json_response(
-                {"status": "error", "message": "Task not found"}, status=404
-            )
-        return web.json_response({"status": "ok"})
+            return error_response("Task not found", status=404)
+        return ok_response()

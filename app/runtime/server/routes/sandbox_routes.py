@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import secrets as _secrets
 from typing import Any
 
 from aiohttp import web
@@ -14,7 +13,9 @@ from ...services.deployment.bicep_deployer import BicepDeployer, BicepDeployRequ
 from ...state.deploy_state import DeployStateStore
 from ...state.sandbox_config import BLACKLIST, DEFAULT_WHITELIST, SandboxConfigStore
 from ...util.async_helpers import run_sync
-from ._helpers import fail_response as _fail_response, no_az as _no_az
+from ._helpers import api_handler, error_response, ok_response, parse_json
+from ._helpers import fail_response as _fail_response
+from ._helpers import no_az as _no_az
 
 logger = logging.getLogger(__name__)
 
@@ -57,15 +58,11 @@ class SandboxRoutes:
             "in parallel. Data is synced back on session teardown using "
             "last-writer-wins -- concurrent changes will be overwritten.",
         ]
-        return web.json_response({"status": "ok", **data})
+        return ok_response(**data)
 
+    @api_handler
     async def update_config(self, req: web.Request) -> web.Response:
-        try:
-            body = await req.json()
-        except Exception:
-            return web.json_response(
-                {"status": "error", "message": "Invalid JSON"}, status=400
-            )
+        body = await parse_json(req)
 
         if "enabled" in body:
             self._store.set_enabled(bool(body["enabled"]))
@@ -77,33 +74,24 @@ class SandboxRoutes:
         if "whitelist" in body:
             wl = body["whitelist"]
             if not isinstance(wl, list):
-                return web.json_response(
-                    {"status": "error", "message": "whitelist must be a list"},
-                    status=400,
-                )
+                return error_response("whitelist must be a list")
             self._store.set_whitelist(wl)
 
         if "add_whitelist" in body:
             item = str(body["add_whitelist"])
             if not self._store.add_whitelist_item(item):
-                return web.json_response(
-                    {"status": "error", "message": f"'{item}' is blacklisted"},
-                    status=400,
-                )
+                return error_response(f"'{item}' is blacklisted")
 
         if "remove_whitelist" in body:
             self._store.remove_whitelist_item(str(body["remove_whitelist"]))
         if body.get("reset_whitelist"):
             self._store.reset_whitelist()
 
-        return web.json_response({"status": "ok", **self._store.to_dict()})
+        return ok_response(**self._store.to_dict())
 
     async def test_sandbox(self, req: web.Request) -> web.Response:
         if not self._store.session_pool_endpoint:
-            return web.json_response(
-                {"status": "error", "message": "Session pool endpoint not configured"},
-                status=400,
-            )
+            return error_response("Session pool endpoint not configured")
         try:
             body = await req.json()
         except Exception:
@@ -131,13 +119,12 @@ class SandboxRoutes:
         rg = body.get("resource_group", "").strip() or _DEFAULT_SANDBOX_RG
 
         if self._store.is_provisioned:
-            return web.json_response({
-                "status": "ok",
-                "message": f"Already provisioned: {self._store.pool_name}",
-                "steps": [],
+            return ok_response(
+                message=f"Already provisioned: {self._store.pool_name}",
+                steps=[],
                 **self._store.to_dict(),
-                "is_provisioned": True,
-            })
+                is_provisioned=True,
+            )
 
         bicep_req = BicepDeployRequest(
             resource_group=rg,
@@ -163,21 +150,18 @@ class SandboxRoutes:
         })
 
         logger.info("Sandbox pool provisioned (Bicep): %s (rg=%s)", result.session_pool_name, rg)
-        return web.json_response({
-            "status": "ok",
-            "message": f"Session pool '{result.session_pool_name}' provisioned",
-            "steps": result.steps,
+        return ok_response(
+            message=f"Session pool '{result.session_pool_name}' provisioned",
+            steps=result.steps,
             **self._store.to_dict(),
-            "is_provisioned": True,
-        })
+            is_provisioned=True,
+        )
 
     async def remove_pool(self, _req: web.Request) -> web.Response:
         if not self._az:
             return _no_az()
         if not self._store.is_provisioned:
-            return web.json_response(
-                {"status": "error", "message": "No pool provisioned"}, status=400
-            )
+            return error_response("No pool provisioned")
 
         steps: list[dict[str, Any]] = []
         pool_name = self._store.pool_name
@@ -222,10 +206,9 @@ class SandboxRoutes:
         })
 
         logger.info("Sandbox pool removed: %s", pool_name)
-        return web.json_response({
-            "status": "ok",
-            "message": f"Session pool '{pool_name}' removed",
-            "steps": steps,
+        return ok_response(
+            message=f"Session pool '{pool_name}' removed",
+            steps=steps,
             **self._store.to_dict(),
-            "is_provisioned": False,
-        })
+            is_provisioned=False,
+        )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import subprocess
@@ -19,14 +20,15 @@ from ...services.deployment.provisioner import Provisioner
 from ...state.deploy_state import DeployStateStore
 from ...state.infra_config import InfraConfigStore
 from ...util.async_helpers import run_sync
+from ..smoke_test import SmokeTestRunner
+from ._helpers import error_response as _error
+from ._helpers import ok_response as _ok
 from .azure import AzureSetupRoutes
-from ._helpers import error_response as _error, ok_response as _ok
 from .deploy import DeploymentRoutes
 from .foundry import FoundryDeployRoutes
 from .preflight import PreflightRoutes
 from .prerequisites import PrerequisitesRoutes
 from .voice import VoiceSetupRoutes
-from ..smoke_test import SmokeTestRunner
 
 logger = logging.getLogger(__name__)
 
@@ -153,67 +155,19 @@ class SetupRoutes:
         return _error("GitHub token is no longer used. Configure FOUNDRY_ENDPOINT instead.", 410)
 
     async def _restart_runtime(self) -> None:
-        """Restart or reload the runtime container.
-
-        Docker mode:  full ``docker restart`` so the entrypoint re-runs
-        ``az login --service-principal`` with the SP credentials from
-        ``/data/.env``.  A soft reload cannot replicate this.
-
-        Non-Docker:  HTTP POST to ``/api/internal/reload``.
-        """
+        """Restart or reload the runtime container."""
         runtime_url = os.getenv("RUNTIME_URL", "")
         if not runtime_url or cfg.server_mode == ServerMode.combined:
             return
 
-        # Docker mode -- hard restart (re-runs entrypoint + az login)
-        # Falls back to ``docker compose up -d runtime`` when the container
-        # does not exist yet (first provision).
         if os.getenv("POLYCLAW_CONTAINER") == "1":
-            try:
-                proc = await run_sync(
-                    subprocess.run,
-                    ["docker", "restart", "polyclaw-runtime"],
-                    capture_output=True, text=True, timeout=60,
-                )
-                if proc.returncode == 0:
-                    logger.info("[setup.restart_runtime] docker restart succeeded")
-                else:
-                    stderr = proc.stderr.strip()
-                    logger.warning(
-                        "[setup.restart_runtime] docker restart failed: %s", stderr,
-                    )
-                    # Container doesn't exist yet -- start it via compose
-                    if "No such container" in stderr or "not found" in stderr.lower():
-                        logger.info(
-                            "[setup.restart_runtime] container missing, "
-                            "attempting docker compose up -d runtime",
-                        )
-                        up = await run_sync(
-                            subprocess.run,
-                            ["docker", "compose", "up", "-d", "runtime"],
-                            capture_output=True, text=True, timeout=120,
-                        )
-                        if up.returncode == 0:
-                            logger.info(
-                                "[setup.restart_runtime] compose up succeeded",
-                            )
-                        else:
-                            logger.warning(
-                                "[setup.restart_runtime] compose up failed: %s",
-                                up.stderr.strip(),
-                            )
-            except Exception as exc:
-                logger.warning(
-                    "[setup.restart_runtime] docker restart error: %s",
-                    exc, exc_info=True,
-                )
+            await self._docker_restart()
             return
 
         url = f"{runtime_url.rstrip('/')}/api/internal/reload"
         headers: dict[str, str] = {}
         if cfg.admin_secret:
             headers["Authorization"] = f"Bearer {cfg.admin_secret}"
-
         try:
             async with _aiohttp.ClientSession() as session:
                 async with session.post(
@@ -229,6 +183,66 @@ class SetupRoutes:
             logger.warning(
                 "[setup.restart_runtime] failed to signal runtime reload: %s",
                 exc, exc_info=True,
+            )
+
+    @staticmethod
+    async def _docker_restart() -> None:
+        """Hard-restart the runtime container, falling back to compose up.
+
+        After restart, waits for the runtime health endpoint to confirm
+        the container is alive with valid credentials.
+        """
+        try:
+            proc = await run_sync(
+                subprocess.run,
+                ["docker", "restart", "polyclaw-runtime"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if proc.returncode == 0:
+                logger.info("[setup.restart_runtime] docker restart succeeded")
+            else:
+                stderr = proc.stderr.strip()
+                logger.warning("[setup.restart_runtime] docker restart failed: %s", stderr)
+                if "No such container" not in stderr and "not found" not in stderr.lower():
+                    return
+                logger.info("[setup.restart_runtime] container missing, trying compose up")
+                up = await run_sync(
+                    subprocess.run,
+                    ["docker", "compose", "up", "-d", "runtime"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if up.returncode == 0:
+                    logger.info("[setup.restart_runtime] compose up succeeded")
+                else:
+                    logger.warning(
+                        "[setup.restart_runtime] compose up failed: %s",
+                        up.stderr.strip(),
+                    )
+                    return
+
+            # Wait for the runtime to become healthy (up to 30 s).
+            runtime_url = os.getenv("RUNTIME_URL", "http://runtime:8080")
+            health_url = f"{runtime_url.rstrip('/')}/health"
+            for attempt in range(15):
+                await asyncio.sleep(2)
+                try:
+                    async with _aiohttp.ClientSession() as session:
+                        async with session.get(
+                            health_url,
+                            timeout=_aiohttp.ClientTimeout(total=3),
+                        ) as resp:
+                            if resp.status == 200:
+                                logger.info(
+                                    "[setup.restart_runtime] runtime healthy after %ds",
+                                    (attempt + 1) * 2,
+                                )
+                                return
+                except Exception:
+                    pass
+            logger.warning("[setup.restart_runtime] runtime did not become healthy in 30s")
+        except Exception as exc:
+            logger.warning(
+                "[setup.restart_runtime] docker restart error: %s", exc, exc_info=True,
             )
 
     async def smoke_test(self, _req: web.Request) -> web.Response:
@@ -386,7 +400,9 @@ class SetupRoutes:
             })
 
         try:
-            migrated = self._prerequisites_routes._migrate_existing_secrets()
+            migrated = await run_sync(
+                self._prerequisites_routes._migrate_existing_secrets,
+            )
             if migrated:
                 steps.append({
                     "step": "migrate_env", "status": "ok",

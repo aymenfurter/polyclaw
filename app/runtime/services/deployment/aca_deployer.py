@@ -11,12 +11,12 @@ from typing import Any
 from ...config.settings import cfg
 from ...state.deploy_state import DeploymentRecord, DeployStateStore
 from ..cloud.azure import AzureCLI
-from ..cloud._azure_rbac import IMAGE_NAME as _IMAGE_NAME
+from ._models import StepTracker
 from .aca_provision import (
     assign_rbac,
     configure_ip_whitelist,
-    ensure_acr,
     ensure_aca_environment,
+    ensure_acr,
     ensure_managed_identity,
     ensure_runtime_app,
     get_acr_credentials,
@@ -60,8 +60,8 @@ class AcaDeployer:
         self._deploy_store = deploy_store
 
     def deploy(self, req: AcaDeployRequest) -> AcaDeployResult:
-        steps: list[dict[str, Any]] = []
-        result = AcaDeployResult(steps=steps)
+        steps = StepTracker()
+        result = AcaDeployResult(steps=steps._steps)  # noqa: SLF001
 
         logger.info("[aca] Starting ACA deployment: rg=%s, location=%s", req.resource_group, req.location)
 
@@ -136,7 +136,7 @@ class AcaDeployer:
             )
             os.environ["RUNTIME_URL"] = runtime_url
             logger.info("[aca] RUNTIME_URL set to %s", runtime_url)
-            steps.append({"step": "write_aca_config", "status": "ok"})
+            steps.ok("write_aca_config")
 
             result.ok = True
             logger.info("[aca] Deployment complete: runtime=%s", runtime_fqdn)
@@ -144,7 +144,7 @@ class AcaDeployer:
         except Exception as exc:
             logger.error("[aca] Deployment failed: %s", exc, exc_info=True)
             result.error = str(exc)
-            steps.append({"step": "unexpected_error", "status": "failed", "detail": str(exc)})
+            steps.fail("unexpected_error", detail=str(exc))
 
         if self._deploy_store and rec:
             if result.ok:
@@ -159,8 +159,8 @@ class AcaDeployer:
         return result
 
     def destroy(self, deploy_id: str | None = None) -> AcaDeployResult:
-        steps: list[dict[str, Any]] = []
-        result = AcaDeployResult(steps=steps)
+        steps = StepTracker()
+        result = AcaDeployResult(steps=steps._steps)  # noqa: SLF001
 
         rec = None
         if deploy_id and self._deploy_store:
@@ -188,7 +188,7 @@ class AcaDeployer:
             ACA_MI_CLIENT_ID="",
             RUNTIME_URL="",
         )
-        steps.append({"step": "clear_aca_config", "status": "ok"})
+        steps.ok("clear_aca_config")
 
         if rec and self._deploy_store:
             rec.mark_destroyed()
@@ -262,7 +262,7 @@ class AcaDeployer:
         return {"ok": ok, "results": [result_detail]}
 
     def _delete_aca_resources(
-        self, rg: str, steps: list[dict], *, step_label: str = "cleanup",
+        self, rg: str, steps: StepTracker, *, step_label: str = "cleanup",
     ) -> list[str]:
         rg_exists = self._az.json("group", "show", "--name", rg, quiet=True)
         if not isinstance(rg_exists, dict):
@@ -271,122 +271,58 @@ class AcaDeployer:
 
         cleaned: list[str] = []
 
-        apps = self._az.json(
-            "containerapp", "list",
-            "--resource-group", rg, quiet=True,
-        )
-        for app in (apps if isinstance(apps, list) else []):
-            name = app.get("name", "")
-            if not name:
-                continue
-            logger.info("[aca] Deleting container app: %s (waiting)", name)
-            ok, _ = self._az.ok(
-                "containerapp", "delete", "--name", name,
-                "--resource-group", rg, "--yes",
-            )
-            if ok:
-                cleaned.append(f"containerapp/{name}")
-            steps.append({"step": f"{step_label}/containerapp/{name}",
-                          "status": "ok" if ok else "failed"})
+        # (resource_kind, list_cmd, delete_cmd, name_field, extra_delete_args, filter_fn)
+        _RESOURCE_TYPES: list[tuple[str, list[str], list[str], str, list[str],
+                                    Any]] = [
+            ("containerapp",
+             ["containerapp", "list", "--resource-group", rg],
+             ["containerapp", "delete", "--resource-group", rg, "--yes"],
+             "name", [], None),
+            ("identity",
+             ["identity", "list", "--resource-group", rg],
+             ["identity", "delete", "--resource-group", rg],
+             "name", [], None),
+            ("aca-env",
+             ["containerapp", "env", "list", "--resource-group", rg],
+             ["containerapp", "env", "delete", "--resource-group", rg, "--yes", "--no-wait"],
+             "name", [], None),
+            ("acr",
+             ["acr", "list", "--resource-group", rg],
+             ["acr", "delete", "--resource-group", rg, "--yes"],
+             "name", [], None),
+            ("log-analytics",
+             ["monitor", "log-analytics", "workspace", "list", "--resource-group", rg],
+             ["monitor", "log-analytics", "workspace", "delete", "--resource-group", rg,
+              "--yes", "--force"],
+             "name", ["--workspace-name"], None),
+            ("storage",
+             ["storage", "account", "list", "--resource-group", rg],
+             ["storage", "account", "delete", "--resource-group", rg, "--yes"],
+             "name", [],
+             lambda r: "polyclaw_deploy" in (r.get("tags") or {})
+                       or r.get("kind") == "StorageV2"),
+        ]
 
-        identities = self._az.json(
-            "identity", "list",
-            "--resource-group", rg, quiet=True,
-        )
-        for mi in (identities if isinstance(identities, list) else []):
-            name = mi.get("name", "")
-            if not name:
-                continue
-            logger.info("[aca] Deleting managed identity: %s (waiting)", name)
-            ok, _ = self._az.ok(
-                "identity", "delete", "--name", name,
-                "--resource-group", rg,
-            )
-            if ok:
-                cleaned.append(f"identity/{name}")
-            steps.append({"step": f"{step_label}/identity/{name}",
-                          "status": "ok" if ok else "failed"})
-
-        envs = self._az.json(
-            "containerapp", "env", "list",
-            "--resource-group", rg, quiet=True,
-        )
-        for env in (envs if isinstance(envs, list) else []):
-            name = env.get("name", "")
-            if not name:
-                continue
-            logger.info("[aca] Deleting ACA environment: %s (no-wait)", name)
-            ok, _ = self._az.ok(
-                "containerapp", "env", "delete", "--name", name,
-                "--resource-group", rg, "--yes", "--no-wait",
-            )
-            if ok:
-                cleaned.append(f"aca-env/{name}")
-            steps.append({"step": f"{step_label}/aca-env/{name}",
-                          "status": "ok" if ok else "failed"})
-
-        acrs = self._az.json(
-            "acr", "list",
-            "--resource-group", rg, quiet=True,
-        )
-        for acr in (acrs if isinstance(acrs, list) else []):
-            name = acr.get("name", "")
-            if not name:
-                continue
-            logger.info("[aca] Deleting ACR: %s", name)
-            ok, _ = self._az.ok(
-                "acr", "delete", "--name", name,
-                "--resource-group", rg, "--yes",
-            )
-            if ok:
-                cleaned.append(f"acr/{name}")
-            steps.append({"step": f"{step_label}/acr/{name}",
-                          "status": "ok" if ok else "failed"})
-
-        workspaces = self._az.json(
-            "monitor", "log-analytics", "workspace", "list",
-            "--resource-group", rg, quiet=True,
-        )
-        for ws in (workspaces if isinstance(workspaces, list) else []):
-            name = ws.get("name", "")
-            if not name:
-                continue
-            logger.info("[aca] Deleting Log Analytics workspace: %s", name)
-            ok, _ = self._az.ok(
-                "monitor", "log-analytics", "workspace", "delete",
-                "--workspace-name", name,
-                "--resource-group", rg, "--yes", "--force",
-            )
-            if ok:
-                cleaned.append(f"log-analytics/{name}")
-            steps.append({"step": f"{step_label}/log-analytics/{name}",
-                          "status": "ok" if ok else "failed"})
-
-        storage_accounts = self._az.json(
-            "storage", "account", "list",
-            "--resource-group", rg, quiet=True,
-        )
-        for sa in (storage_accounts if isinstance(storage_accounts, list) else []):
-            name = sa.get("name", "")
-            if not name:
-                continue
-            tags = sa.get("tags", {}) or {}
-            kind = sa.get("kind", "")
-            if "polyclaw_deploy" in tags or kind == "StorageV2":
-                logger.info("[aca] Deleting storage account: %s", name)
-                ok, _ = self._az.ok(
-                    "storage", "account", "delete", "--name", name,
-                    "--resource-group", rg, "--yes",
-                )
+        for kind, list_cmd, delete_cmd, name_field, extra_del, filter_fn in _RESOURCE_TYPES:
+            resources = self._az.json(*list_cmd, quiet=True)
+            for res in (resources if isinstance(resources, list) else []):
+                name = res.get(name_field, "")
+                if not name:
+                    continue
+                if filter_fn and not filter_fn(res):
+                    continue
+                logger.info("[aca] Deleting %s: %s", kind, name)
+                # Some commands use --name, log-analytics uses --workspace-name
+                name_arg = extra_del + [name] if extra_del else ["--name", name]
+                ok, _ = self._az.ok(*delete_cmd, *name_arg)
                 if ok:
-                    cleaned.append(f"storage/{name}")
-                steps.append({"step": f"{step_label}/storage/{name}",
-                              "status": "ok" if ok else "failed"})
+                    cleaned.append(f"{kind}/{name}")
+                steps.record(f"{step_label}/{kind}/{name}", ok=ok)
 
         return cleaned
 
     def _cleanup_stale_resources(
-        self, req: AcaDeployRequest, steps: list[dict],
+        self, req: AcaDeployRequest, steps: StepTracker,
     ) -> None:
         logger.info("[aca] Pre-flight: cleaning all ACA resources in %s ...", req.resource_group)
         cleaned = self._delete_aca_resources(req.resource_group, steps, step_label="cleanup")
@@ -395,10 +331,10 @@ class AcaDeployer:
             logger.info("[aca] Cleaned %d resource(s): %s", len(cleaned), detail)
         else:
             logger.info("[aca] No resources to clean")
-            steps.append({"step": "cleanup", "status": "ok", "detail": "nothing to clean"})
+            steps.ok("cleanup", detail="nothing to clean")
 
     def _ensure_resource_group(
-        self, req: AcaDeployRequest, steps: list[dict], rec: DeploymentRecord,
+        self, req: AcaDeployRequest, steps: StepTracker, rec: DeploymentRecord,
     ) -> bool:
         logger.info("[aca] Step 1/10: Ensuring resource group %s ...", req.resource_group)
         tag_args = ["--tags", f"polyclaw_deploy={rec.tag}"]
@@ -407,14 +343,14 @@ class AcaDeployer:
             "--location", req.location, *tag_args,
         )
         if result:
-            steps.append({"step": "resource_group", "status": "ok", "detail": req.resource_group})
+            steps.ok("resource_group", detail=req.resource_group)
             if req.resource_group not in rec.resource_groups:
                 rec.resource_groups.append(req.resource_group)
             return True
-        steps.append({"step": "resource_group", "status": "failed", "detail": self._az.last_stderr})
+        steps.fail("resource_group", detail=self._az.last_stderr)
         return False
 
-    def _load_env_vars(self, steps: list[dict]) -> dict[str, str]:
+    def _load_env_vars(self, steps: StepTracker) -> dict[str, str]:
         from ..keyvault import is_kv_ref, kv
 
         env_map = cfg.env.read_all()
@@ -452,6 +388,6 @@ class AcaDeployer:
             "(%d @kv: references resolved)",
             count, resolved_count,
         )
-        steps.append({"step": "load_env_vars", "status": "ok",
-                      "detail": f"{count} variable(s), {resolved_count} @kv: resolved"})
+        steps.ok("load_env_vars",
+                 detail=f"{count} variable(s), {resolved_count} @kv: resolved")
         return filtered

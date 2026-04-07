@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import secrets as _secrets
 from typing import Any
 
 from aiohttp import web
@@ -14,7 +13,9 @@ from ...services.otel import configure_otel, get_status, is_active, shutdown_ote
 from ...state.deploy_state import DeployStateStore
 from ...state.monitoring_config import MonitoringConfigStore
 from ...util.async_helpers import run_sync
-from ._helpers import fail_response as _fail_response, no_az as _no_az
+from ._helpers import api_handler, error_response, ok_response, parse_json
+from ._helpers import fail_response as _fail_response
+from ._helpers import no_az as _no_az
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +57,9 @@ class MonitoringRoutes:
         data["otel_status"] = status
         return web.json_response(data)
 
+    @api_handler
     async def _save_config(self, req: web.Request) -> web.Response:
-        data = await req.json()
+        data = await parse_json(req)
 
         connection_string = data.get("connection_string")
         enabled = data.get("enabled")
@@ -86,10 +88,9 @@ class MonitoringRoutes:
                 enable_live_metrics=cfg.enable_live_metrics,
             )
             if ok:
-                return web.json_response({
-                    "status": "ok",
-                    "message": "Monitoring enabled -- telemetry is being exported to Application Insights.",
-                })
+                return ok_response(
+                    message="Monitoring enabled -- telemetry is being exported to Application Insights.",
+                )
             return web.json_response({
                 "status": "warning",
                 "message": (
@@ -100,25 +101,22 @@ class MonitoringRoutes:
 
         if not cfg.enabled and is_active():
             shutdown_otel()
-            return web.json_response({
-                "status": "ok",
-                "message": "Monitoring disabled. OTel providers shut down. Full cleanup requires a restart.",
-            })
+            return ok_response(
+                message="Monitoring disabled. OTel providers shut down. Full cleanup requires a restart.",
+            )
 
-        return web.json_response({"status": "ok", "message": "Monitoring configuration saved."})
+        return ok_response(message="Monitoring configuration saved.")
 
     async def _get_status(self, _req: web.Request) -> web.Response:
         return web.json_response(get_status())
 
+    @api_handler
     async def _test_connection(self, req: web.Request) -> web.Response:
         """Quick validation that the connection string looks correct."""
-        data = await req.json()
+        data = await parse_json(req)
         cs = data.get("connection_string", "")
         if not cs:
-            return web.json_response(
-                {"status": "error", "message": "No connection string provided."},
-                status=400,
-            )
+            return error_response("No connection string provided.")
 
         # Parse the connection string to validate format
         parts: dict[str, str] = {}
@@ -131,22 +129,15 @@ class MonitoringRoutes:
         ingestion = parts.get("ingestionendpoint", "")
 
         if not ikey:
-            return web.json_response(
-                {"status": "error", "message": "Connection string missing InstrumentationKey."},
-                status=400,
-            )
+            return error_response("Connection string missing InstrumentationKey.")
         if not ingestion:
-            return web.json_response(
-                {"status": "error", "message": "Connection string missing IngestionEndpoint."},
-                status=400,
-            )
+            return error_response("Connection string missing IngestionEndpoint.")
 
-        return web.json_response({
-            "status": "ok",
-            "message": "Connection string format is valid.",
-            "instrumentation_key": f"{ikey[:8]}...{ikey[-4:]}" if len(ikey) > 12 else ikey,
-            "ingestion_endpoint": ingestion,
-        })
+        return ok_response(
+            message="Connection string format is valid.",
+            instrumentation_key=f"{ikey[:8]}...{ikey[-4:]}" if len(ikey) > 12 else ikey,
+            ingestion_endpoint=ingestion,
+        )
 
     # ------------------------------------------------------------------
     # Provisioning -- create / destroy App Insights via Azure CLI
@@ -155,12 +146,11 @@ class MonitoringRoutes:
     async def _provision(self, req: web.Request) -> web.Response:
         """Provision Log Analytics + Application Insights via the central Bicep template."""
         if self._store.is_provisioned:
-            return web.json_response({
-                "status": "ok",
-                "message": f"Already provisioned: {self._store.config.app_insights_name}",
-                "steps": [],
+            return ok_response(
+                message=f"Already provisioned: {self._store.config.app_insights_name}",
+                steps=[],
                 **self._store.to_dict(),
-            })
+            )
 
         if not self._bicep:
             return _no_az()
@@ -212,22 +202,18 @@ class MonitoringRoutes:
             "[monitoring.provision] App Insights '%s' provisioned via Bicep (rg=%s)",
             result.app_insights_name, rg,
         )
-        return web.json_response({
-            "status": "ok",
-            "message": f"Application Insights '{result.app_insights_name}' provisioned and monitoring enabled.",
-            "steps": result.steps,
+        return ok_response(
+            message=f"Application Insights '{result.app_insights_name}' provisioned and monitoring enabled.",
+            steps=result.steps,
             **self._store.to_dict(),
-        })
+        )
 
     async def _decommission(self, _req: web.Request) -> web.Response:
         """Delete the provisioned App Insights + Log Analytics resources."""
         if not self._az:
             return _no_az()
         if not self._store.is_provisioned:
-            return web.json_response(
-                {"status": "error", "message": "No monitoring resources provisioned."},
-                status=400,
-            )
+            return error_response("No monitoring resources provisioned.")
 
         steps: list[dict[str, Any]] = []
         ai_name = self._store.config.app_insights_name
@@ -291,9 +277,8 @@ class MonitoringRoutes:
         steps.append({"step": "clear_config", "status": "ok", "detail": "Configuration cleared"})
 
         logger.info("[monitoring.decommission] App Insights '%s' removed", ai_name)
-        return web.json_response({
-            "status": "ok",
-            "message": f"Application Insights '{ai_name}' decommissioned.",
-            "steps": steps,
+        return ok_response(
+            message=f"Application Insights '{ai_name}' decommissioned.",
+            steps=steps,
             **self._store.to_dict(),
-        })
+        )

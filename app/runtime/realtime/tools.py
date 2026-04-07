@@ -13,7 +13,7 @@ from enum import StrEnum
 from typing import Any
 
 from ..config.settings import cfg
-from ..util.singletons import register_singleton
+from ..util.singletons import Singleton
 
 logger = logging.getLogger(__name__)
 
@@ -67,22 +67,7 @@ class TaskStore:
             task.completed_at = datetime.now(UTC).isoformat()
 
 
-_task_store: TaskStore | None = None
-
-
-def get_task_store() -> TaskStore:
-    global _task_store
-    if _task_store is None:
-        _task_store = TaskStore()
-    return _task_store
-
-
-def _reset_task_store() -> None:
-    global _task_store
-    _task_store = None
-
-
-register_singleton(_reset_task_store)
+get_task_store, _reset_task_store = Singleton.create(TaskStore)
 
 
 INVOKE_AGENT_SCHEMA = {

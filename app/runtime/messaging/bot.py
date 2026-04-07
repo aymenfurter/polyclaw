@@ -1,8 +1,4 @@
-"""Bot Framework ActivityHandler -- routes channel messages to the Agent.
-
-Uses background processing + proactive messaging so the Bot Framework
-webhook returns within the 15-second timeout.
-"""
+"""Bot Framework ActivityHandler -- routes channel messages to the Agent."""
 
 from __future__ import annotations
 
@@ -97,27 +93,15 @@ class Bot(ActivityHandler):
         if not user_text and not media_attachments:
             return
 
-        # If there is a pending HITL approval from a scheduled task,
-        # resolve it first so the background session can continue.
-        if self._scheduler and self._scheduler.has_pending_approval and user_text:
-            resolved = self._scheduler.resolve_pending_approval(user_text)
-            if resolved:
-                logger.info(
-                    "[bot] resolved pending SCHEDULER approval with text=%r",
-                    user_text[:60],
-                )
-                return
-
-        # If there is a pending HITL approval, resolve it with the user's text
-        # instead of starting a new agent turn.
-        if self._hitl and self._hitl.has_pending_approval and user_text:
-            resolved = self._hitl.resolve_bot_reply(user_text)
-            if resolved:
-                logger.info(
-                    "[bot] resolved pending HITL approval with text=%r",
-                    user_text[:60],
-                )
-                return
+        # If there is a pending HITL approval (scheduler or direct), resolve it.
+        if user_text:
+            for source, obj in (("SCHEDULER", self._scheduler), ("HITL", self._hitl)):
+                if obj and obj.has_pending_approval:
+                    resolve = (obj.resolve_pending_approval if source == "SCHEDULER"
+                               else obj.resolve_bot_reply)
+                    if resolve(user_text):
+                        logger.info("[bot] resolved pending %s approval with text=%r", source, user_text[:60])
+                        return
 
         channel = (turn_context.activity.channel_id or "unknown").lower()
 
@@ -176,9 +160,8 @@ def _is_authorized(turn_context: TurnContext) -> bool:
     channel = (turn_context.activity.channel_id or "").lower()
     if channel != "telegram" or not cfg.telegram_whitelist:
         return True
-    sender_id = (
-        turn_context.activity.from_property.id if turn_context.activity.from_property else ""
-    )
+    sender_id = (turn_context.activity.from_property.id
+                 if turn_context.activity.from_property else "")
     if sender_id not in cfg.telegram_whitelist:
         logger.warning("Blocked Telegram user %s (not in whitelist)", sender_id)
         return False

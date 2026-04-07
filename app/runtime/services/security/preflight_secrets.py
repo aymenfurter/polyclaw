@@ -9,6 +9,14 @@ from ...config.settings import cfg
 from .security_preflight import PreflightCheck, PreflightResult, add_check as _add
 
 
+def _sec(
+    result: PreflightResult, *, id: str, name: str,
+    status: str, detail: str, evidence: str = "", command: str = "",
+) -> None:
+    _add(result, id=id, category="secrets", name=name, status=status,
+         detail=detail, evidence=evidence, command=command)
+
+
 def run_secret_checks(result: PreflightResult) -> None:
     """Execute all secret-isolation checks."""
     check_admin_cli_isolated(result)
@@ -24,53 +32,37 @@ def check_admin_cli_isolated(result: PreflightResult) -> None:
     admin_home = os.environ.get("POLYCLAW_ADMIN_HOME", "/admin-home")
     azure_dir = Path(admin_home) / ".azure"
     mode = cfg.server_mode.value
+    exists = azure_dir.exists()
+    env_info = (
+        f"HOME={os.environ.get('HOME', '?')}\n"
+        f"AZURE_CONFIG_DIR={os.environ.get('AZURE_CONFIG_DIR', '?')}\n"
+        f"{azure_dir} exists={exists}"
+    )
 
     if mode == "admin":
-        exists = azure_dir.exists()
-        _add(
-            result, id="secret_admin_cli_isolated", category="secrets",
-            name="Admin CLI Session Isolated",
-            status="pass" if exists else "warn",
-            detail=(
-                f"Azure CLI config at {azure_dir}: "
-                f"{'present' if exists else 'not found'}"
-            ),
-            evidence=(
-                f"HOME={os.environ.get('HOME', '?')}\n"
-                f"AZURE_CONFIG_DIR={os.environ.get('AZURE_CONFIG_DIR', '?')}\n"
-                f"exists={exists}"
-            ),
-            command=f"os.path.exists({azure_dir})",
-        )
+        status = "pass" if exists else "warn"
+        detail = f"Azure CLI config at {azure_dir}: {'present' if exists else 'not found'}"
     elif mode == "runtime":
-        exists = azure_dir.exists()
-        _add(
-            result, id="secret_admin_cli_isolated", category="secrets",
-            name="Admin CLI Session Isolated",
-            status="pass" if not exists else "fail",
-            detail=(
-                "Admin CLI config not accessible from runtime"
-                if not exists
-                else f"RISK: Admin CLI config accessible at {azure_dir}"
-            ),
-            evidence=(
-                f"HOME={os.environ.get('HOME', '?')}\n"
-                f"{azure_dir} exists={exists}"
-            ),
-            command=f"os.path.exists({azure_dir})",
+        status = "pass" if not exists else "fail"
+        detail = (
+            "Admin CLI config not accessible from runtime"
+            if not exists
+            else f"RISK: Admin CLI config accessible at {azure_dir}"
         )
     else:
-        _add(
-            result, id="secret_admin_cli_isolated", category="secrets",
-            name="Admin CLI Session Isolated",
-            status="warn",
-            detail=(
-                "Combined mode -- admin and runtime share the same "
-                "container (no credential isolation)"
-            ),
-            evidence=f"POLYCLAW_SERVER_MODE={mode}",
-            command="cfg.server_mode",
+        status = "warn"
+        detail = (
+            "Combined mode -- admin and runtime share the same "
+            "container (no credential isolation)"
         )
+        env_info = f"POLYCLAW_SERVER_MODE={mode}"
+
+    _sec(
+        result, id="secret_admin_cli_isolated",
+        name="Admin CLI Session Isolated",
+        status=status, detail=detail, evidence=env_info,
+        command=f"os.path.exists({azure_dir})" if mode != "combined" else "cfg.server_mode",
+    )
 
 
 def check_bot_credentials(result: PreflightResult) -> None:
@@ -79,8 +71,8 @@ def check_bot_credentials(result: PreflightResult) -> None:
     app_pw = env_data.get("BOT_APP_PASSWORD", "")
     both = bool(app_id and app_pw)
 
-    _add(
-        result, id="secret_bot_creds", category="secrets",
+    _sec(
+        result, id="secret_bot_creds",
         name="Bot Credentials Present",
         status="pass" if both else ("warn" if app_id else "skip"),
         detail=(
@@ -97,8 +89,8 @@ def check_bot_credentials(result: PreflightResult) -> None:
 
 def check_admin_secret(result: PreflightResult) -> None:
     secret = cfg.admin_secret
-    _add(
-        result, id="secret_admin_secret", category="secrets",
+    _sec(
+        result, id="secret_admin_secret",
         name="Admin Secret Configured",
         status="pass" if secret else "fail",
         detail=(
@@ -115,10 +107,9 @@ def check_kv_reachable(result: PreflightResult) -> None:
     from ..keyvault import kv as _kv
 
     if not _kv.enabled:
-        _add(
-            result, id="secret_kv_reachable", category="secrets",
-            name="Key Vault Reachable",
-            status="skip",
+        _sec(
+            result, id="secret_kv_reachable",
+            name="Key Vault Reachable", status="skip",
             detail="Key Vault not configured",
             evidence=f"KEY_VAULT_URL={cfg.env.read('KEY_VAULT_URL') or '(empty)'}",
             command="keyvault.enabled",
@@ -127,19 +118,17 @@ def check_kv_reachable(result: PreflightResult) -> None:
 
     try:
         secrets_list = _kv.list_secrets()
-        _add(
-            result, id="secret_kv_reachable", category="secrets",
-            name="Key Vault Reachable",
-            status="pass",
+        _sec(
+            result, id="secret_kv_reachable",
+            name="Key Vault Reachable", status="pass",
             detail=f"Key Vault accessible, {len(secrets_list)} secret(s) readable",
             evidence=f"url={_kv.url}\nsecrets_count={len(secrets_list)}",
             command="keyvault.list_secrets()",
         )
     except Exception as exc:
-        _add(
-            result, id="secret_kv_reachable", category="secrets",
-            name="Key Vault Reachable",
-            status="fail",
+        _sec(
+            result, id="secret_kv_reachable",
+            name="Key Vault Reachable", status="fail",
             detail=f"Key Vault NOT reachable: {exc}",
             evidence=f"url={_kv.url}\nerror={exc}",
             command="keyvault.list_secrets()",
@@ -154,8 +143,8 @@ def check_acs_credential(result: PreflightResult) -> None:
             for k, _, v in (seg.partition("=") for seg in conn.split(";") if "=" in seg)
         }
         has_ep = bool(parts.get("endpoint"))
-        _add(
-            result, id="secret_acs_present", category="secrets",
+        _sec(
+            result, id="secret_acs_present",
             name="ACS Connection String",
             status="pass" if has_ep else "warn",
             detail=(
@@ -166,10 +155,9 @@ def check_acs_credential(result: PreflightResult) -> None:
             command="env: ACS_CONNECTION_STRING",
         )
     else:
-        _add(
-            result, id="secret_acs_present", category="secrets",
-            name="ACS Connection String",
-            status="skip",
+        _sec(
+            result, id="secret_acs_present",
+            name="ACS Connection String", status="skip",
             detail="ACS not configured",
             evidence="ACS_CONNECTION_STRING=(empty)",
             command="env: ACS_CONNECTION_STRING",
@@ -181,10 +169,9 @@ def check_aoai_credential(result: PreflightResult) -> None:
     key = cfg.azure_openai_api_key
 
     if endpoint:
-        _add(
-            result, id="secret_aoai_present", category="secrets",
-            name="Azure OpenAI Configuration",
-            status="pass",
+        _sec(
+            result, id="secret_aoai_present",
+            name="Azure OpenAI Configuration", status="pass",
             detail=f"Endpoint configured, {'API key' if key else 'identity auth'} mode",
             evidence=(
                 f"AZURE_OPENAI_ENDPOINT={endpoint}\n"
@@ -193,10 +180,9 @@ def check_aoai_credential(result: PreflightResult) -> None:
             command="env: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY",
         )
     else:
-        _add(
-            result, id="secret_aoai_present", category="secrets",
-            name="Azure OpenAI Configuration",
-            status="skip",
+        _sec(
+            result, id="secret_aoai_present",
+            name="Azure OpenAI Configuration", status="skip",
             detail="Azure OpenAI not configured",
             evidence="AZURE_OPENAI_ENDPOINT=(empty)",
             command="env: AZURE_OPENAI_ENDPOINT",
@@ -212,10 +198,9 @@ def check_sp_creds_written(result: PreflightResult) -> None:
     if not sp_id:
         mi_id = env_data.get("ACA_MI_CLIENT_ID", "")
         if mi_id:
-            _add(
-                result, id="secret_identity_creds", category="secrets",
-                name="Runtime Identity Credentials in .env",
-                status="pass",
+            _sec(
+                result, id="secret_identity_creds",
+                name="Runtime Identity Credentials in .env", status="pass",
                 detail="Managed identity credentials written to .env",
                 evidence=(
                     f"ACA_MI_CLIENT_ID={mi_id}\n"
@@ -224,10 +209,9 @@ def check_sp_creds_written(result: PreflightResult) -> None:
                 command="env: ACA_MI_CLIENT_ID, ACA_MI_RESOURCE_ID",
             )
         else:
-            _add(
-                result, id="secret_identity_creds", category="secrets",
-                name="Runtime Identity Credentials in .env",
-                status="skip",
+            _sec(
+                result, id="secret_identity_creds",
+                name="Runtime Identity Credentials in .env", status="skip",
                 detail="No runtime identity credentials in .env",
                 evidence="RUNTIME_SP_APP_ID=(empty)\nACA_MI_CLIENT_ID=(empty)",
                 command="env: RUNTIME_SP_APP_ID, ACA_MI_CLIENT_ID",
@@ -235,8 +219,8 @@ def check_sp_creds_written(result: PreflightResult) -> None:
         return
 
     all_set = bool(sp_id and sp_pw and sp_tenant)
-    _add(
-        result, id="secret_identity_creds", category="secrets",
+    _sec(
+        result, id="secret_identity_creds",
         name="SP Credentials in .env",
         status="pass" if all_set else "fail",
         detail=(

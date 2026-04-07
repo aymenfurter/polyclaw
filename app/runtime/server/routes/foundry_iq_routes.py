@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import secrets as _secrets
 from typing import Any
 
 from aiohttp import web
@@ -22,7 +21,9 @@ from ...services.foundry_iq import (
 from ...state.deploy_state import DeployStateStore
 from ...state.foundry_iq_config import FoundryIQConfigStore
 from ...util.async_helpers import run_sync
-from ._helpers import fail_response as _fail_response, no_az as _no_az
+from ._helpers import api_handler, error_response, ok_response, parse_json
+from ._helpers import fail_response as _fail_response
+from ._helpers import no_az as _no_az
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +60,11 @@ class FoundryIQRoutes:
     async def _get_config(self, _req: web.Request) -> web.Response:
         return web.json_response(self._store.to_safe_dict())
 
+    @api_handler
     async def _save_config(self, req: web.Request) -> web.Response:
-        data = await req.json()
+        data = await parse_json(req)
         self._store.save(**data)
-        return web.json_response({"status": "ok", "config": self._store.to_safe_dict()})
+        return ok_response(config=self._store.to_safe_dict())
 
     async def _test_search(self, _req: web.Request) -> web.Response:
         result = await run_sync(test_search_connection, self._store)
@@ -85,23 +87,19 @@ class FoundryIQRoutes:
             result = await run_sync(index_memories, self._store)
         except Exception as exc:
             logger.exception("Indexing failed")
-            return web.json_response(
-                {"status": "error", "message": f"Indexing crashed: {exc}"},
-                status=500,
-            )
+            return error_response(f"Indexing crashed: {exc}", status=500)
         return web.json_response(result)
 
     async def _get_stats(self, _req: web.Request) -> web.Response:
         result = await run_sync(get_index_stats, self._store)
         return web.json_response(result)
 
+    @api_handler
     async def _search(self, req: web.Request) -> web.Response:
-        data = await req.json()
+        data = await parse_json(req)
         query = data.get("query", "").strip()
         if not query:
-            return web.json_response(
-                {"status": "error", "message": "Query is required"}, status=400
-            )
+            return error_response("Query is required")
         top = data.get("top", 5)
         result = await run_sync(search_memories, query, top, self._store)
         return web.json_response(result)
@@ -110,12 +108,11 @@ class FoundryIQRoutes:
         if not self._bicep:
             return _no_az()
         if self._store.is_provisioned:
-            return web.json_response({
-                "status": "ok",
-                "message": "Already provisioned",
-                "steps": [],
-                "config": self._store.to_safe_dict(),
-            })
+            return ok_response(
+                message="Already provisioned",
+                steps=[],
+                config=self._store.to_safe_dict(),
+            )
 
         try:
             body = await req.json() if req.can_read_body else {}
@@ -203,20 +200,17 @@ class FoundryIQRoutes:
             "Foundry IQ provisioned (Bicep): search=%s, aoai=%s",
             result.search_name, result.embedding_aoai_name,
         )
-        return web.json_response({
-            "status": "ok",
-            "message": f"Foundry IQ provisioned in {rg}",
-            "steps": result.steps,
-            "config": self._store.to_safe_dict(),
-        })
+        return ok_response(
+            message=f"Foundry IQ provisioned in {rg}",
+            steps=result.steps,
+            config=self._store.to_safe_dict(),
+        )
 
     async def _decommission(self, _req: web.Request) -> web.Response:
         if not self._az:
             return _no_az()
         if not self._store.is_provisioned:
-            return web.json_response(
-                {"status": "error", "message": "Nothing provisioned"}, status=400
-            )
+            return error_response("Nothing provisioned")
 
         steps: list[dict[str, Any]] = []
         rg = self._store.config.resource_group
@@ -278,6 +272,4 @@ class FoundryIQRoutes:
         steps.append({"step": "clear_config", "status": "ok", "detail": "Cleared"})
 
         logger.info("Foundry IQ decommissioned: %s, %s", search_name, openai_name)
-        return web.json_response({
-            "status": "ok", "message": "Resources removed", "steps": steps
-        })
+        return ok_response(message="Resources removed", steps=steps)
