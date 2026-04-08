@@ -13,10 +13,10 @@ Polyclaw separates the admin plane from the agent runtime into independent conta
 
 ## Container Split
 
-| Container | Port | Purpose | GitHub Token | Admin Secret |
-|-----------|------|---------|-------------|-------------|
-| **Admin** | 9090 | UI, configuration, deployment, MCP management, identity provisioning | Yes | Yes |
-| **Runtime** | 8080 (internal) / 3978 (Bot webhook) | Agent execution, tool invocation, chat, bot webhook | No | No |
+| Container | Port | Purpose | Admin Secret |
+|-----------|------|---------|-------------|
+| **Admin** | 9090 | UI, configuration, deployment, MCP management, identity provisioning | Yes |
+| **Runtime** | 8080 (internal) / 3978 (Bot webhook) | Agent execution, tool invocation, chat, bot webhook | No |
 
 Both containers share a `/data` volume for session data and configuration. Each has its own HOME directory (`/admin-home` and `/runtime-home` respectively).
 
@@ -133,7 +133,6 @@ The admin container proxies unmatched `/api/*` requests to the runtime container
 The security preflight checker validates the separated runtime setup:
 
 - HOME directories are separated (`secret_admin_cli_isolated`)
-- GitHub token is not present in the runtime environment (`secret_no_github_runtime`)
 - Runtime identity exists and has valid credentials
 - RBAC assignments are correct and scoped to resource group level
 - No elevated roles are assigned

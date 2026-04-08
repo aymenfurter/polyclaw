@@ -5,7 +5,7 @@ weight: 1
 
 # Agent Core
 
-The agent core is the heart of Polyclaw. It wraps the GitHub Copilot SDK to provide streaming AI conversations with tool execution.
+The agent core is the heart of Polyclaw. It wraps the GitHub Copilot SDK to provide streaming AI conversations with tool execution. When `FOUNDRY_ENDPOINT` is configured, the agent operates in BYOK (Bring Your Own Key) mode, routing LLM inference through your Azure AI Services resource with Entra ID bearer tokens.
 
 ## CopilotAgent
 
@@ -27,12 +27,13 @@ Each session is configured with:
 
 | Parameter | Description |
 |---|---|
-| `model` | LLM model identifier (default: `claude-sonnet-4-20250514`) |
+| `model` | LLM model identifier (default: `gpt-4.1`) |
 | `streaming` | Enable token-by-token streaming |
 | `tools` | List of callable tool definitions |
 | `system_message` | System prompt assembled by the prompt builder |
 | `mcp_servers` | MCP server configurations to attach |
 | `skill_dirs` | Skill directories to load |
+| `provider` | BYOK provider config (when `FOUNDRY_ENDPOINT` is set) |
 
 ### Timeouts and Retries
 
@@ -81,12 +82,22 @@ Located in `app/runtime/agent/prompt.py`, `build_system_prompt()` assembles the 
 
 Prompt templates are Markdown files stored in `app/runtime/templates/`. They support variable interpolation for agent profile fields and dynamic MCP server listings.
 
+## BYOK Mode
+
+When `FOUNDRY_ENDPOINT` is set in the configuration, the agent activates BYOK mode. Located in `app/runtime/agent/byok.py`, this module:
+
+1. Acquires an Entra ID bearer token via `az account get-access-token --resource https://cognitiveservices.azure.com`
+2. Configures the Copilot SDK session with a custom provider (`type: azure`, `base_url: <endpoint>`, `bearer_token: <token>`)
+3. Overrides the session model and provider for every conversation
+
+The runtime service principal (or managed identity) must have the `Cognitive Services OpenAI User` role on the AI Services resource. The fix-roles endpoint (`POST /api/identity/fix-roles`) assigns this role automatically if missing.
+
 ## Multi-Model Support
 
-Polyclaw supports any model available through the Copilot SDK. The default model is configured via `COPILOT_MODEL`. Users can switch models at runtime:
+Polyclaw supports any model deployed on the configured Azure AI Services resource (BYOK mode) or available through the Copilot SDK. The default model is configured via `COPILOT_MODEL` (default: `gpt-4.1`). Users can switch models at runtime:
 
 - Via slash command: `/model <model-name>`
 - Via the web dashboard model selector
 - Via API: `GET /api/models` lists available models
 
-The memory system uses a separate model (`MEMORY_MODEL`) for consolidation tasks.
+The memory system uses a separate model (`MEMORY_MODEL`, default: `gpt-4.1`) for consolidation tasks.

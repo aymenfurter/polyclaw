@@ -34,6 +34,8 @@ From the Infrastructure Settings page, select the **Monitoring** tab and choose 
 
 The connection string is automatically written to the agent configuration. No manual setup required.
 
+Alternatively, monitoring resources can be provisioned as part of the Bicep infrastructure deployment by enabling the `deploy_monitoring` flag. See [Bicep Infrastructure](/deployment/bicep/) for details.
+
 ### Connect Existing
 
 If you already have an Application Insights resource, paste its connection string in the **Connect Existing** section. The agent validates the connection string format before saving.

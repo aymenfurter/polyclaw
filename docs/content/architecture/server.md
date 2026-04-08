@@ -84,6 +84,7 @@ Routes are split between admin-only and runtime-only handlers.
 | Handler | Prefix | Purpose |
 |---|---|---|
 | `SetupRoutes` | `/api/setup/` | Setup wizard, lockdown toggle |
+| `FoundryDeployRoutes` | `/api/setup/foundry/` | Bicep-based Foundry infrastructure deployment |
 | `VoiceSetupRoutes` | `/api/voice/setup/` | Voice configuration |
 | `WorkspaceHandler` | `/api/workspace/` | Workspace files |
 | `EnvironmentRoutes` | `/api/environments/` | Deployment environments |

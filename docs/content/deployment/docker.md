@@ -31,9 +31,7 @@ The Dockerfile uses a two-stage build:
 
 The image includes everything the agent needs to operate:
 
-- **GitHub Copilot CLI** (`@github/copilot`) -- the agent engine
-- **GitHub CLI** (`gh`) -- authentication
-- **Azure CLI** (`az`) -- infrastructure provisioning and bot registration
+- **Azure CLI** (`az`) -- infrastructure provisioning, Bicep deployments, BYOK token acquisition
 - **Cloudflare tunnel** (`cloudflared`) -- automatic public endpoint for webhooks
 - **Playwright MCP + Chromium** -- headless browser for web-based skills
 - **Python runtime** -- the Polyclaw server, agent, and all backend services
@@ -53,7 +51,7 @@ The TUI creates two Docker named volumes that persist across restarts:
 | Volume | Mount | Container | Contents |
 |---|---|---|---|
 | `polyclaw-data` | `/data` | both | Agent config, `.env`, skills, plugins, memory, scheduler state |
-| `polyclaw-admin-home` | `/admin-home` | admin only | GitHub and Azure CLI authentication state |
+| `polyclaw-admin-home` | `/admin-home` | admin only | Azure CLI authentication state |
 
 Because these are named Docker volumes, your data survives even when the containers are stopped and recreated on the next TUI launch.
 
@@ -61,11 +59,11 @@ Because these are named Docker volumes, your data survives even when the contain
 
 Each container runs the same entrypoint script, which branches on `POLYCLAW_MODE`:
 
-1. Sets `HOME` based on container mode: `/admin-home` (admin container) or `/runtime-home` (runtime container)
-2. Cleans stale Copilot CLI runtime cache (keeps only the matching version)
+1. Sets `HOME` based on container mode: `/admin-home` (admin container), `/runtime-home` (runtime container), or `/data` (combined/legacy)
+2. Symlinks the Bicep binary into `$AZURE_CONFIG_DIR/bin` so `az bicep` works regardless of HOME
 3. Loads environment variables from the shared persisted `.env` file
 4. Resolves any `@kv:` Key Vault secret references (if configured)
-5. Authenticates the runtime container's Azure identity (service principal or managed identity)
+5. Authenticates the runtime container's Azure identity (service principal with retries, or managed identity)
 6. Starts the server: `polyclaw-admin --admin-only` (admin) or `polyclaw-admin --runtime-only` (runtime)
 
 ## What Happens on Exit

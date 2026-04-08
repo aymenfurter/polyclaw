@@ -499,6 +499,26 @@ Get the current preflight security check status.
 
 Re-run all preflight security checks.
 
+## Foundry Infrastructure
+
+Bicep-based infrastructure provisioning. See [Bicep Infrastructure](/deployment/bicep/) for details.
+
+### `GET /api/setup/foundry/status`
+
+Get current Foundry infrastructure deployment status.
+
+### `POST /api/setup/foundry/deploy`
+
+Deploy Foundry infrastructure via Bicep. Body: `{ resource_group?, location?, base_name?, deploy_key_vault?, deploy_acs?, deploy_content_safety?, deploy_search?, deploy_embedding_aoai?, deploy_monitoring?, deploy_session_pool?, models? }`.
+
+### `GET /api/setup/foundry/deploy/stream`
+
+SSE stream for Bicep deployment progress. Returns step-by-step status updates in real time.
+
+### `POST /api/setup/foundry/decommission`
+
+Decommission Foundry infrastructure. Tears down resources deployed by the Bicep template.
+
 ## Content Safety
 
 ### `GET /api/content-safety/status`

@@ -9,7 +9,7 @@ Polyclaw is in **early preview**. Treat it as experimental software and read thi
 
 ## Understand the Risks
 
-Polyclaw is an autonomous agent. The agent runtime is architecturally separated from the admin plane and operates under its **own Azure managed identity** with least-privilege RBAC -- it does not share your personal Azure credentials. However, it can still execute code, deploy infrastructure, send messages, and make phone calls within the scope of its assigned roles. GitHub authentication remains a prerequisite for the Copilot SDK.
+Polyclaw is an autonomous agent. The agent runtime is architecturally separated from the admin plane and operates under its **own Azure managed identity** with least-privilege RBAC -- it does not share your personal Azure credentials. However, it can still execute code, deploy infrastructure, send messages, and make phone calls within the scope of its assigned roles.
 
 **What can go wrong:**
 
@@ -18,7 +18,7 @@ Polyclaw is an autonomous agent. The agent runtime is architecturally separated 
 - **Cost overruns.** The agent can spin up Azure resources, make API calls, and schedule recurring tasks. Without monitoring, a runaway loop could generate unexpected cloud bills.
 - **Code execution.** The agent can execute arbitrary code in the runtime container or in a [sandbox](/features/sandbox/). [Guardrails](/features/guardrails/) can require human approval before code execution occurs.
 - **Data leakage.** Conversations, files, and tool outputs pass through the Copilot SDK and any configured channels. Sensitive data in your workspace could be included in agent context unintentionally.
-- **Availability of external services.** The agent depends on the GitHub Copilot SDK, Azure services, and third-party APIs. Outages in any of these can cause failures or degraded behavior.
+- **Availability of external services.** The agent depends on Azure AI Services (Foundry BYOK), Azure services, and third-party APIs. Outages in any of these can cause failures or degraded behavior.
 
 This is not a theoretical list. These are real failure modes of autonomous agents. You should be comfortable with these risks before deploying Polyclaw in any environment that matters.
 
@@ -48,18 +48,18 @@ The agent runtime operates under its own Azure identity rather than your persona
 | Service Principal | Docker / Docker Compose | `polyclaw-runtime` SP with client secret |
 | Managed Identity | Azure Container Apps | `polyclaw-runtime-mi` user-assigned MI |
 
-The runtime identity is assigned least-privilege RBAC roles (Bot Service Contributor, Reader, Key Vault access, Session Executor). No elevated roles (Owner, Contributor, User Access Administrator, Role Based Access Control Administrator) are assigned. The security preflight checker verifies this.
+The runtime identity is assigned least-privilege RBAC roles (Bot Service Contributor, Reader, Key Vault access, Session Executor, Cognitive Services OpenAI User). No elevated roles (Owner, Contributor, User Access Administrator, Role Based Access Control Administrator) are assigned. The security preflight checker verifies this.
 
 ### Separated Admin and Agent Runtime
 
 The application is split into two containers to enforce credential isolation:
 
-| Container | Purpose | GitHub Token | Admin Secret | Azure Identity |
-|-----------|---------|-------------|-------------|----------------|
-| **Admin** | UI, configuration, deployment | Yes | Yes | Your personal CLI session |
-| **Runtime** | Agent execution, tool invocation | No | No | Service principal or managed identity |
+| Container | Purpose | Admin Secret | Azure Identity |
+|-----------|---------|-------------|----------------|
+| **Admin** | UI, configuration, deployment | Yes | Your personal CLI session |
+| **Runtime** | Agent execution, tool invocation | No | Service principal or managed identity |
 
-Each container has its own HOME directory. The runtime container never sees the GitHub token, admin secret, or personal Azure credentials.
+Each container has its own HOME directory. The runtime container never sees the admin secret or personal Azure credentials.
 
 ### Guardrails
 

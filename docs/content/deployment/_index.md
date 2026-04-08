@@ -11,6 +11,7 @@ Polyclaw supports two deployment targets, both managed through the TUI or CLI to
 |---|---|
 | [Local Docker](/deployment/docker/) | Builds the image locally and runs a container on your machine. The container lifecycle is tied to the TUI process. |
 | [Azure Container Apps](/deployment/azure/) | **Experimental.** Pushes the image to Azure Container Registry and deploys a persistent Container App with optional Bot Service, ACS, and Key Vault integration. |
+| [Bicep Infrastructure](/deployment/bicep/) | Provisions Azure AI Services, Key Vault, Content Safety, session pools, and monitoring via Bicep templates from the web dashboard. |
 | [Runtime Isolation](/deployment/runtime-isolation/) | Separated admin and agent runtime architecture with least-privilege managed identity. |
 
 Both targets are selected through the TUI deployment picker when you run `./scripts/run-tui.sh`. The TUI handles the build, push, deploy, and health-check steps automatically.
