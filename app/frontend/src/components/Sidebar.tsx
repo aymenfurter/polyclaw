@@ -15,7 +15,7 @@ const NAV_ITEMS = [
   { to: '/mcp', icon: '🔌', label: 'MCP Servers' },
   { to: '/schedules', icon: '📅', label: 'Schedules' },
   { to: '/profile', icon: '👤', label: 'Profile' },
-  { to: '/messaging', icon: '✉️', label: 'Messaging' },
+  { to: '/messaging', icon: '✉️', label: 'AI Model' },
   { to: '/infrastructure', icon: '🏗️', label: 'Infrastructure' },
   { to: '/guardrails', icon: '🛡️', label: 'Hardening' },
   { to: '/tool-activity', icon: '🔍', label: 'Tool Activity' },
@@ -53,7 +53,7 @@ export default function Sidebar({ status, collapsed, onToggle }: Props) {
       {!collapsed && status && (
         <div className="sidebar__status">
           <StatusDot ok={status.azure?.logged_in} label="Azure" />
-          <StatusDot ok={status.copilot?.authenticated} label="GitHub" />
+          <StatusDot ok={status.foundry?.deployed} label="Foundry" />
           <StatusDot ok={status.tunnel?.active} label="Tunnel" />
           <StatusDot ok={status.bot_configured} label="Bot" />
         </div>

@@ -143,12 +143,11 @@ class SecurityPreflightChecker:
 
     @staticmethod
     def _tally(result: PreflightResult) -> None:
+        counts = {"pass": 0, "fail": 0, "warn": 0, "skip": 0}
         for c in result.checks:
-            if c.status == "pass":
-                result.passed += 1
-            elif c.status == "fail":
-                result.failed += 1
-            elif c.status == "warn":
-                result.warnings += 1
-            elif c.status == "skip":
-                result.skipped += 1
+            if c.status in counts:
+                counts[c.status] += 1
+        result.passed = counts["pass"]
+        result.failed = counts["fail"]
+        result.warnings = counts["warn"]
+        result.skipped = counts["skip"]

@@ -42,11 +42,9 @@ async def download_attachment(attachment: Attachment, channel_id: str) -> dict |
 
     try:
         await run_sync(_sync_download, url, str(local_path))
-        content_type = (
-            attachment.content_type
-            or mimetypes.guess_type(name)[0]
-            or "application/octet-stream"
-        )
+        content_type = (attachment.content_type
+                        or mimetypes.guess_type(name)[0]
+                        or "application/octet-stream")
         return {
             "filename": name,
             "local_path": str(local_path),

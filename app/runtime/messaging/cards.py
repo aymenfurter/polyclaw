@@ -1,8 +1,4 @@
-"""Rich card support -- Adaptive Cards, Hero Cards, and carousels.
-
-Cards are queued in-memory and drained by the bot / proactive messaging
-layer when the response is delivered. Thread-safe via internal lock.
-"""
+"""Rich card support -- Adaptive Cards, Hero Cards, and carousels."""
 
 from __future__ import annotations
 
@@ -103,24 +99,12 @@ def _simple_card_attachment(
     return Attachment(content_type=content_type, content=card)
 
 
-def _hero_card_attachment(
-    title: str = "",
-    subtitle: str = "",
-    text: str = "",
-    image_url: str | None = None,
-    buttons: list[dict] | None = None,
-) -> Attachment:
-    return _simple_card_attachment(HeroCard, "application/vnd.microsoft.card.hero", title, subtitle, text, image_url, buttons)
+def _hero_card_attachment(**kwargs: Any) -> Attachment:
+    return _simple_card_attachment(HeroCard, "application/vnd.microsoft.card.hero", **kwargs)
 
 
-def _thumbnail_card_attachment(
-    title: str = "",
-    subtitle: str = "",
-    text: str = "",
-    image_url: str | None = None,
-    buttons: list[dict] | None = None,
-) -> Attachment:
-    return _simple_card_attachment(ThumbnailCard, "application/vnd.microsoft.card.thumbnail", title, subtitle, text, image_url, buttons)
+def _thumbnail_card_attachment(**kwargs: Any) -> Attachment:
+    return _simple_card_attachment(ThumbnailCard, "application/vnd.microsoft.card.thumbnail", **kwargs)
 
 
 # -- serialization ---------------------------------------------------------

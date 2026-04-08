@@ -32,16 +32,17 @@ def _try_resize_image(entry: Path, max_bytes: int) -> bool:
         logger.warning("Pillow not installed -- cannot auto-resize images")
         return False
 
+    _FORMAT_MAP = {
+        ".png": ("PNG", ".png"), ".webp": ("WEBP", ".webp"),
+    }
+
     try:
         img = Image.open(entry)
-        output_format = "JPEG"
-        output_ext = ".jpg"
-        if entry.suffix.lower() == ".png" and img.mode == "RGBA":
-            output_format = "PNG"
-            output_ext = ".png"
-        elif entry.suffix.lower() == ".webp":
-            output_format = "WEBP"
-            output_ext = ".webp"
+        ext_lower = entry.suffix.lower()
+        if ext_lower == ".png" and img.mode != "RGBA":
+            output_format, output_ext = "JPEG", ".jpg"
+        else:
+            output_format, output_ext = _FORMAT_MAP.get(ext_lower, ("JPEG", ".jpg"))
 
         if img.mode not in ("RGB", "RGBA"):
             img = img.convert("RGB")
@@ -114,6 +115,8 @@ def collect_pending_outgoing() -> list[Attachment]:
             continue
 
         if file_size > MAX_OUTGOING_FILE_BYTES:
+            too_large = (f"File too large: {file_size:,} bytes "
+                         f"(limit is {MAX_OUTGOING_FILE_BYTES:,} bytes / ~190 KB).")
             if _try_resize_image(entry, MAX_OUTGOING_FILE_BYTES):
                 resized = next(
                     (c for c in entry.parent.glob(f"{entry.stem}.*")
@@ -124,10 +127,10 @@ def collect_pending_outgoing() -> list[Attachment]:
                     entry = resized
                     file_size = entry.stat().st_size
                 else:
-                    _move_to_error(entry, _too_large_msg(file_size, "Auto-resize produced no output."))
+                    _move_to_error(entry, f"{too_large} Auto-resize produced no output.")
                     continue
             else:
-                _move_to_error(entry, _too_large_msg(file_size))
+                _move_to_error(entry, too_large)
                 continue
 
         content_type = (
@@ -155,16 +158,6 @@ def collect_pending_outgoing() -> list[Attachment]:
             _move_to_error(entry, f"Processing error: {exc}")
 
     return attachments
-
-
-def _too_large_msg(file_size: int, extra: str = "") -> str:
-    msg = (
-        f"File too large: {file_size:,} bytes "
-        f"(limit is {MAX_OUTGOING_FILE_BYTES:,} bytes / ~190 KB)."
-    )
-    if extra:
-        msg += f" {extra}"
-    return msg
 
 
 def move_attachments_to_error(attachments: list[Attachment], reason: str) -> None:

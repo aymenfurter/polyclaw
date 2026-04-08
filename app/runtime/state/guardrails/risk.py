@@ -5,22 +5,17 @@ from __future__ import annotations
 from typing import Any
 
 # ── Model tiers ──────────────────────────────────────────────────────────
-# Tier 1 (cautious): large frontier models -- most access, highest risk posture
+# Tier 1 (safe): large frontier models -- most permissive guardrails
 # Tier 2 (standard): capable mid-range models
-# Tier 3 (safe): smaller / older models -- least access, lowest risk posture
+# Tier 3 (cautious): smaller / older models -- most restrictive guardrails
 
 _MODEL_TIERS: dict[str, int] = {
-    # Tier 1 -- cautious (most permissive, highest risk)
-    "gpt-5.3-codex": 1,
-    "claude-opus-4.6": 1,
-    "claude-opus-4.6-fast": 1,
+    # Tier 1 -- safe (most permissive)
+    "gpt-5": 1,
     # Tier 2 -- standard
-    "claude-sonnet-4.6": 2,
-    "gpt-5.2": 2,
-    "gemini-3-pro-preview": 2,
-    # Tier 3 -- safe (most restrictive, lowest risk)
+    "gpt-4.1": 2,
+    # Tier 3 -- cautious (most restrictive)
     "gpt-5-mini": 3,
-    "gpt-4.1": 3,
 }
 
 _DEFAULT_TIER = 3  # Unknown models get the most restrictive tier
@@ -73,21 +68,16 @@ _CUSTOM_TOOL_RISK: dict[str, str] = {
 
 def _risk_of(tool_id: str) -> str:
     """Return the risk level for any tool/MCP/skill id."""
-    if tool_id in _MCP_RISK:
-        return _MCP_RISK[tool_id]
-    if tool_id in _SKILL_RISK:
-        return _SKILL_RISK[tool_id]
-    if tool_id in _CUSTOM_TOOL_RISK:
-        return _CUSTOM_TOOL_RISK[tool_id]
-    # SDK tools
+    combined = {**_MCP_RISK, **_SKILL_RISK, **_CUSTOM_TOOL_RISK}
+    if tool_id in combined:
+        return combined[tool_id]
     if tool_id in ("view", "grep", "glob"):
         return "low"
     if tool_id in ("create", "edit"):
         return "medium"
     if tool_id in ("run", "bash"):
         return "high"
-    # Unknown MCP or skill -- default to high for safety
-    if tool_id.startswith("mcp:") or tool_id.startswith("skill:"):
+    if tool_id.startswith(("mcp:", "skill:")):
         return "high"
     return "medium"
 

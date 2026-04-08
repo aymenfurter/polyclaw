@@ -43,7 +43,19 @@ def _get_entra_token() -> str:
 
 
 def _search_headers(config: FoundryIQConfigStore) -> dict[str, str]:
-    return {"api-key": config.config.search_api_key, "Content-Type": "application/json"}
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if config.config.search_api_key:
+        headers["api-key"] = config.config.search_api_key
+    else:
+        headers["Authorization"] = f"Bearer {_get_search_token()}"
+    return headers
+
+
+def _get_search_token() -> str:
+    from azure.identity import DefaultAzureCredential  # type: ignore[import-untyped]
+
+    credential = DefaultAzureCredential()
+    return credential.get_token("https://search.azure.com/.default").token
 
 
 def _search_url(config: FoundryIQConfigStore, path: str) -> str:

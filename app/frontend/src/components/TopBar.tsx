@@ -10,7 +10,7 @@ interface Props {
 
 const LINKS = [
   { path: '/customization', label: 'Customization', Icon: IconPalette },
-  { path: '/messaging', label: 'Messaging', Icon: IconSliders },
+  { path: '/messaging', label: 'AI Model', Icon: IconSliders },
   { path: '/infrastructure', label: 'Infrastructure', Icon: IconSliders },
   { path: '/guardrails', label: 'Hardening', Icon: IconShield },
   { path: '/tool-activity', label: 'Tool Activity', Icon: IconActivity },

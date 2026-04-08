@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.runtime.config.settings import cfg
+from app.runtime.services.deployment._models import StepTracker
 from app.runtime.services.deployment.provisioner import Provisioner
 from app.runtime.state.deploy_state import DeployStateStore
 from app.runtime.state.infra_config import InfraConfigStore
@@ -62,7 +63,7 @@ class TestAppRegistration:
         )
         bc = MagicMock(resource_group="rg", location="eastus", display_name="polyclaw", bot_handle="")
 
-        steps: list[dict] = []
+        steps = StepTracker()
         result = provisioner._ensure_app_registration(bc, steps)
 
         assert result is True
@@ -75,7 +76,7 @@ class TestAppRegistration:
         )
         bc = MagicMock(resource_group="rg", location="eastus", display_name="polyclaw", bot_handle="")
 
-        steps: list[dict] = []
+        steps = StepTracker()
         result = provisioner._ensure_app_registration(bc, steps)
 
         assert result is False

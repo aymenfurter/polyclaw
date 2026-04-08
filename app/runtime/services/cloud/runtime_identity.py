@@ -112,8 +112,18 @@ class RuntimeIdentityProvisioner:
             logger.info("Created runtime SP: %s", app_id)
             steps.append({"step": "create_sp", "status": "ok", "detail": app_id})
 
-        # 5. Rotate credentials
-        cred = self._az.json("ad", "app", "credential", "reset", "--id", app_id, "--years", "2")
+        # 5. Rotate credentials -- try shorter lifetimes for tenant policies.
+        cred = self._az.json(
+            "ad", "app", "credential", "reset", "--id", app_id, "--years", "2",
+        )
+        if (not isinstance(cred, dict) or not cred.get("password")) and \
+                "Credential lifetime" in (self._az.last_stderr or ""):
+            from datetime import datetime, timedelta
+            end_date = (datetime.utcnow() + timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            cred = self._az.json(
+                "ad", "app", "credential", "reset", "--id", app_id,
+                "--end-date", end_date,
+            )
         if not isinstance(cred, dict) or not cred.get("password"):
             steps.append({"step": "rotate_creds", "status": "failed",
                           "detail": self._az.last_stderr})
@@ -122,21 +132,8 @@ class RuntimeIdentityProvisioner:
         tenant = cred.get("tenant", tenant)
         steps.append({"step": "rotate_creds", "status": "ok"})
 
-        # 6. Assign RBAC roles on the resource group
-        rg_scope = f"/subscriptions/{sub_id}/resourceGroups/{resource_group}"
-        self._assign_role(app_id, _BOT_CONTRIBUTOR_ROLE, rg_scope, steps)
-        self._assign_role(app_id, _RG_READER_ROLE, rg_scope, steps)
-
-        # Key Vault may live in a different RG (e.g. polyclaw-prereq-rg).
-        # Scope the secrets role to the vault resource itself so the SP
-        # can resolve @kv: references regardless of which RG the vault is in.
-        kv_scope = self._keyvault_scope(sub_id)
-        self._assign_role(app_id, _KV_SECRETS_ROLE, kv_scope or rg_scope, steps)
-
-        # Session pool executor (needed for sandbox / code interpreter)
-        session_scope = self._session_pool_scope(sub_id)
-        if session_scope:
-            self._assign_role(app_id, _SESSION_EXECUTOR_ROLE, session_scope, steps)
+        # 6. Assign RBAC roles
+        self._assign_standard_roles(app_id, sub_id, resource_group, steps)
 
         # 7. Write the SP credentials to the shared .env
         from ...config.settings import cfg
@@ -235,18 +232,7 @@ class RuntimeIdentityProvisioner:
             steps.append({"step": "create_mi", "status": "ok", "detail": _MI_NAME})
 
         # Assign RBAC
-        rg_scope = f"/subscriptions/{sub_id}/resourceGroups/{resource_group}"
-        self._assign_role(principal_id, _BOT_CONTRIBUTOR_ROLE, rg_scope, steps)
-        self._assign_role(principal_id, _RG_READER_ROLE, rg_scope, steps)
-
-        # Key Vault may live in a different RG -- scope to the vault resource.
-        kv_scope = self._keyvault_scope(sub_id)
-        self._assign_role(principal_id, _KV_SECRETS_ROLE, kv_scope or rg_scope, steps)
-
-        # Session pool executor (needed for sandbox / code interpreter)
-        session_scope = self._session_pool_scope(sub_id)
-        if session_scope:
-            self._assign_role(principal_id, _SESSION_EXECUTOR_ROLE, session_scope, steps)
+        self._assign_standard_roles(principal_id, sub_id, resource_group, steps)
 
         # Write MI config to .env so the ACA deployer can reference it
         from ...config.settings import cfg
@@ -323,6 +309,25 @@ class RuntimeIdentityProvisioner:
                 f"/providers/Microsoft.KeyVault/vaults/{kv_name}"
             )
         return None
+
+    def _assign_standard_roles(
+        self,
+        assignee: str,
+        sub_id: str,
+        resource_group: str,
+        steps: list[dict[str, str]],
+    ) -> None:
+        """Assign the standard set of RBAC roles for the runtime identity."""
+        rg_scope = f"/subscriptions/{sub_id}/resourceGroups/{resource_group}"
+        self._assign_role(assignee, _BOT_CONTRIBUTOR_ROLE, rg_scope, steps)
+        self._assign_role(assignee, _RG_READER_ROLE, rg_scope, steps)
+
+        kv_scope = self._keyvault_scope(sub_id)
+        self._assign_role(assignee, _KV_SECRETS_ROLE, kv_scope or rg_scope, steps)
+
+        session_scope = self._session_pool_scope(sub_id)
+        if session_scope:
+            self._assign_role(assignee, _SESSION_EXECUTOR_ROLE, session_scope, steps)
 
     def _assign_role(
         self, app_id: str, role: str, scope: str, steps: list[dict[str, str]],

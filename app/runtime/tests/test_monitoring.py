@@ -424,7 +424,8 @@ class TestMonitoringRoutes:
     ) -> object:
         from app.runtime.server.routes.monitoring_routes import MonitoringRoutes
 
-        return MonitoringRoutes(store, az=mock_az, deploy_store=None)
+        deploy_store = MagicMock()
+        return MonitoringRoutes(store, az=mock_az, deploy_store=deploy_store)
 
     @pytest.fixture(autouse=True)
     def _reset_otel(self) -> None:
@@ -603,24 +604,26 @@ class TestMonitoringRoutes:
             assert "already provisioned" in data["message"].lower()
 
     async def test_provision_success(self, store, routes_with_az, mock_az) -> None:
-        """Full provisioning flow with mocked az CLI calls."""
-        mock_az.ok.return_value = Result(success=True, message="")
-        mock_az.json.side_effect = [
-            # 1. group show -> None (doesn't exist)
-            None,
-            # 2. group create
-            {"id": "/subscriptions/sub/resourceGroups/rg"},
-            # 3. workspace create
-            {"id": "/subscriptions/sub/resourceGroups/rg/providers/...workspace_id"},
-            # 4. app-insights create
-            {"connectionString": _FAKE_CS, "name": "polyclaw-insights-test"},
-        ]
+        """Full provisioning flow via Bicep deployer."""
+        from app.runtime.services.deployment.bicep_deployer import BicepDeployResult
+
+        bicep_result = BicepDeployResult(
+            ok=True,
+            deploy_id="test-deploy",
+            app_insights_connection_string=_FAKE_CS,
+            app_insights_name="polyclaw-insights-test",
+            log_analytics_workspace_name="polyclaw-logs-test",
+            steps=[
+                {"step": "bicep_deploy", "status": "ok", "detail": "Deployed"},
+            ],
+        )
 
         app = _build_app(routes_with_az.register)
         async with TestClient(TestServer(app)) as client:
             with patch(
                 "app.runtime.server.routes.monitoring_routes.run_sync",
-                side_effect=lambda fn, *a, **kw: fn(*a, **kw),
+                new_callable=AsyncMock,
+                return_value=bicep_result,
             ):
                 mock_cam = MagicMock()
                 with patch.dict(
@@ -644,16 +647,25 @@ class TestMonitoringRoutes:
         assert store.is_provisioned is True
         assert store.enabled is True
 
-    async def test_provision_extension_failure(
+    async def test_provision_bicep_failure(
         self, store, routes_with_az, mock_az
     ) -> None:
-        mock_az.ok.return_value = Result(success=False, message="extension install failed")
+        from app.runtime.services.deployment.bicep_deployer import BicepDeployResult
+
+        bicep_result = BicepDeployResult(
+            ok=False,
+            error="deployment failed",
+            steps=[
+                {"step": "bicep_deploy", "status": "failed", "detail": "deployment failed"},
+            ],
+        )
 
         app = _build_app(routes_with_az.register)
         async with TestClient(TestServer(app)) as client:
             with patch(
                 "app.runtime.server.routes.monitoring_routes.run_sync",
-                side_effect=lambda fn, *a, **kw: fn(*a, **kw),
+                new_callable=AsyncMock,
+                return_value=bicep_result,
             ):
                 resp = await client.post(
                     "/api/monitoring/provision",

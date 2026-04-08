@@ -60,19 +60,12 @@ class BotDeployer:
         )
 
         try:
-            logger.info("Step 1/4: Creating resource group '%s' in '%s'...", req.resource_group, req.location)
-            if not self._create_resource_group(req.resource_group, req.location, steps):
-                return DeployResult(ok=False, steps=steps, error=f"Resource group failed: {self._az.last_stderr}")
-
-            logger.info("Step 2/4: Registering app '%s'...", req.display_name)
-            app_id = self._register_app(req.display_name, steps)
-            if not app_id:
-                return DeployResult(ok=False, steps=steps, error=f"App registration failed: {self._az.last_stderr}")
-
-            logger.info("Step 3/4: Creating credentials for app %s...", app_id)
-            password, tenant_id = self._create_credentials(app_id, steps)
-            if not password:
-                return DeployResult(ok=False, steps=steps, error=f"Credential reset failed: {self._az.last_stderr}")
+            result = self._provision_app(req, steps)
+            if not result:
+                return result
+            app_id = result.app_id or ""
+            password = result._password
+            tenant_id = result._tenant_id
 
             logger.info("Step 4/4: Creating bot resource '%s'...", handle)
             actual_handle = self._create_bot_resource(
@@ -127,33 +120,14 @@ class BotDeployer:
         )
 
         try:
-            logger.info("Step 1/3: Creating resource group '%s' in '%s'...",
-                         req.resource_group, req.location)
-            if not self._create_resource_group(req.resource_group, req.location, steps):
-                return DeployResult(
-                    ok=False, steps=steps,
-                    error=f"Resource group failed: {self._az.last_stderr}",
-                )
-
-            logger.info("Step 2/3: Registering app '%s'...", req.display_name)
-            app_id = self._register_app(req.display_name, steps)
-            if not app_id:
-                return DeployResult(
-                    ok=False, steps=steps,
-                    error=f"App registration failed: {self._az.last_stderr}",
-                )
-
-            logger.info("Step 3/3: Creating credentials for app %s...", app_id)
-            password, tenant_id = self._create_credentials(app_id, steps)
-            if not password:
-                return DeployResult(
-                    ok=False, steps=steps,
-                    error=f"Credential reset failed: {self._az.last_stderr}",
-                )
+            result = self._provision_app(req, steps)
+            if not result:
+                return result
+            app_id = result.app_id or ""
 
             cfg.write_env(
-                BOT_APP_ID=app_id, BOT_APP_PASSWORD=password,
-                BOT_APP_TENANT_ID=tenant_id,
+                BOT_APP_ID=app_id, BOT_APP_PASSWORD=result._password,
+                BOT_APP_TENANT_ID=result._tenant_id,
                 BOT_RESOURCE_GROUP=req.resource_group,
             )
 
@@ -178,6 +152,40 @@ class BotDeployer:
                 logger.info("Cleaning up orphaned app registration %s", app_id)
                 self._az.ok("ad", "app", "delete", "--id", app_id)
             raise
+
+    def _provision_app(
+        self, req: DeployRequest, steps: list[dict[str, Any]],
+    ) -> DeployResult:
+        """Create resource group, register Entra app, and generate credentials.
+
+        On success the returned ``DeployResult`` carries ``app_id`` and
+        internal ``_password`` / ``_tenant_id`` fields.  On failure
+        ``result.ok`` is ``False``.
+        """
+        if not self._create_resource_group(req.resource_group, req.location, steps):
+            return DeployResult(
+                ok=False, steps=steps,
+                error=f"Resource group failed: {self._az.last_stderr}",
+            )
+
+        app_id = self._register_app(req.display_name, steps)
+        if not app_id:
+            return DeployResult(
+                ok=False, steps=steps,
+                error=f"App registration failed: {self._az.last_stderr}",
+            )
+
+        password, tenant_id = self._create_credentials(app_id, steps)
+        if not password:
+            return DeployResult(
+                ok=False, steps=steps,
+                error=f"Credential reset failed: {self._az.last_stderr}",
+            )
+
+        result = DeployResult(ok=True, steps=steps, app_id=app_id)
+        result._password = password  # type: ignore[attr-defined]
+        result._tenant_id = tenant_id  # type: ignore[attr-defined]
+        return result
 
     def delete(self) -> DeployResult:
         rg = cfg.env.read("BOT_RESOURCE_GROUP")

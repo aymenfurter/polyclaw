@@ -35,13 +35,14 @@ def _conversation_account(data: dict | None) -> ConversationAccount | None:
 
 
 def _serialize_ref(ref: ConversationReference) -> dict:
+    def _acct(a: Any) -> dict | None:
+        return {"id": a.id, "name": a.name} if a else None
     return {
         "activity_id": ref.activity_id,
-        "user": {"id": ref.user.id, "name": ref.user.name} if ref.user else None,
-        "bot": {"id": ref.bot.id, "name": ref.bot.name} if ref.bot else None,
+        "user": _acct(ref.user),
+        "bot": _acct(ref.bot),
         "conversation": {
-            "id": ref.conversation.id,
-            "name": ref.conversation.name,
+            "id": ref.conversation.id, "name": ref.conversation.name,
             "is_group": getattr(ref.conversation, "is_group", None),
         } if ref.conversation else None,
         "channel_id": ref.channel_id,
@@ -115,8 +116,7 @@ async def send_proactive_message(
         return False
 
     logger.debug(
-        "[proactive-send] attempting to send to %d conversation ref(s), app_id=%s",
-        len(refs), app_id,
+        "[proactive-send] attempting to send to %d ref(s), app_id=%s", len(refs), app_id,
     )
     succeeded = 0
     for ref in refs:
@@ -132,10 +132,8 @@ async def send_proactive_message(
                 _send_ok: list = send_ok,
                 _ref_key: str = ref_key,
             ) -> None:
-                pending = collect_pending_outgoing()
-                cards = drain_pending_cards()
+                all_attachments = (collect_pending_outgoing() or []) + (drain_pending_cards() or [])
                 activity = Activity(type=ActivityTypes.message, text=_msg)
-                all_attachments = (pending or []) + (cards or [])
                 if all_attachments:
                     activity.attachments = all_attachments
                 if _ch == "telegram":

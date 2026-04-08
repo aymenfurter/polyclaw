@@ -142,3 +142,10 @@ class SandboxConfigStore(BaseConfigStore[SandboxConfig]):
         self._save()
 
 
+# -- singleton -------------------------------------------------------------
+
+from ..util.singletons import Singleton  # noqa: E402
+
+get_sandbox_config, _reset_sandbox_config = Singleton.create(SandboxConfigStore)
+
+

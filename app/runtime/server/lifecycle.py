@@ -49,14 +49,23 @@ async def on_startup_runtime(
     # Bootstrap OTel if monitoring is configured
     mon = monitoring_store
     if mon.is_configured:
+        logger.info(
+            "[startup.runtime] configuring OpenTelemetry "
+            "(sampling=%.2f live_metrics=%s)",
+            mon.config.sampling_ratio,
+            mon.config.enable_live_metrics,
+        )
         configure_otel(
             mon.connection_string,
             sampling_ratio=mon.config.sampling_ratio,
             enable_live_metrics=mon.config.enable_live_metrics,
         )
+    else:
+        logger.info("[startup.runtime] OpenTelemetry not configured -- skipping")
 
     rebuild_adapter()
 
+    logger.info("[startup.runtime] starting background tasks ...")
     app["scheduler_task"] = asyncio.create_task(scheduler_loop())
     app["proactive_task"] = asyncio.create_task(
         proactive_delivery_loop(make_notify(), session_store=session_store),
@@ -83,10 +92,9 @@ async def on_startup_runtime(
     bot_endpoint = os.environ.get("BOT_ENDPOINT", "")
 
     if mode != ServerMode.combined:
-        github_token = cfg.github_token
-        if not github_token:
+        if not cfg.foundry_endpoint:
             logger.warning(
-                "[startup.runtime] Setup incomplete -- missing GITHUB_TOKEN. "
+                "[startup.runtime] Setup incomplete -- missing FOUNDRY_ENDPOINT. "
                 "Complete the setup wizard in the admin container, "
                 "then recreate the agent container.",
             )

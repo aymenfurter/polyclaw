@@ -1,13 +1,4 @@
-"""Bridge between GuardrailsConfig and the agent-policy-guard PolicyEngine.
-
-Converts the runtime's guardrails configuration (nested dicts, presets,
-model columns) into an agent-policy YAML document and evaluates tool
-invocations through the guard ``PolicyEngine``.
-
-The guard library is imported through a single top-level import so that
-swapping to an externally-installed package later requires no code changes
-here.
-"""
+"""Bridge between GuardrailsConfig and the agent-policy-guard PolicyEngine."""
 
 from __future__ import annotations
 
@@ -17,10 +8,6 @@ from typing import Any
 
 import yaml
 
-# ── Guard library imports ────────────────────────────────────────────────
-# Published at https://github.com/agent-policy/guard (Python SDK under
-# ``python/`` subdirectory).  Installed via the Git dependency in
-# ``pyproject.toml``.
 from agent_policy_guard import (
     EvalContext,
     PolicyEngine,
@@ -30,17 +17,11 @@ from agent_policy_guard import (
 
 logger = logging.getLogger(__name__)
 
-# Priority bands for generated policies.  Lower number = higher priority.
-# Cascade: model_policies > tool_policies > context_defaults > rules > global.
-# Model policies are most specific (model + context + tool) so they win.
-#
-# Bands are spaced 10 000 apart so that even with thousands of policies per
-# band (e.g. 8 models × 2 contexts × 40 tools = 640), counters never bleed
-# into the next band.
-_PRIORITY_MODEL_TOOL = 10_000   # model + context + tool  (most specific, wins)
-_PRIORITY_CTX_TOOL = 20_000     # context + tool
-_PRIORITY_CTX_DEFAULT = 30_000  # context catch-all (beats rules)
-_PRIORITY_RULE = 80_000         # legacy rules (lowest explicit policy)
+# Priority bands: model_policies > tool_policies > context_defaults > rules.
+_PRIORITY_MODEL_TOOL = 10_000
+_PRIORITY_CTX_TOOL = 20_000
+_PRIORITY_CTX_DEFAULT = 30_000
+_PRIORITY_RULE = 80_000
 
 # Background agent IDs that fall back to "background" context.
 _BG_AGENT_IDS = frozenset({
@@ -64,15 +45,7 @@ def config_to_yaml(
     model_policies: dict[str, dict[str, dict[str, str]]],
     rules: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Convert a guardrails config into an agent-policy YAML string.
-
-    The generated document is a valid ``PolicySet`` that can be loaded by
-    the guard library.  The conversion is deterministic: same input always
-    produces the same YAML.
-
-    When ``hitl_enabled`` is ``False`` no policies are emitted so the
-    engine returns ``"allow"`` for every tool call.
-    """
+    """Convert a guardrails config into an agent-policy YAML string."""
     # ── Short-circuit: guardrails disabled → everything allowed ──
     if not hitl_enabled:
         doc: dict[str, Any] = {
@@ -90,7 +63,7 @@ def config_to_yaml(
     policies: list[dict[str, Any]] = []
     priority_counter = _PRIORITY_MODEL_TOOL
 
-    # ── 1. Model-scoped tool policies (highest priority) ─────────
+    # ── 1. Model-scoped tool policies ─────────────────────────
     for model in sorted(model_columns):
         ctx_map = model_policies.get(model, {})
         for ctx in sorted(ctx_map):
@@ -107,10 +80,9 @@ def config_to_yaml(
                 })
                 priority_counter += 1
 
-    # Reset counter for next band
     priority_counter = _PRIORITY_CTX_TOOL
 
-    # ── 2. Context-scoped tool policies ──────────────────────────
+    # ── 2. Context-scoped tool policies ──────────────────────
     for ctx in sorted(tool_policies):
         tool_map = tool_policies[ctx]
         for tool in sorted(tool_map):
@@ -123,7 +95,7 @@ def config_to_yaml(
             })
             priority_counter += 1
 
-    # ── 3. Legacy rules ──────────────────────────────────────────
+    # ── 3. Legacy rules ──────────────────────────────────────
     if rules:
         priority_counter = max(priority_counter, _PRIORITY_RULE)
         for rule in rules:
@@ -151,7 +123,7 @@ def config_to_yaml(
                 policies[-1]["channel"] = "phone"
             priority_counter += 1
 
-    # ── 4. Context-level defaults ────────────────────────────────
+    # ── 4. Context-level defaults ────────────────────────────
     priority_counter = _PRIORITY_CTX_DEFAULT
     for ctx in sorted(context_defaults):
         effect = context_defaults[ctx]
@@ -163,13 +135,13 @@ def config_to_yaml(
         })
         priority_counter += 1
 
-    # ── Context fallbacks for background agents ──────────────────
+    # ── Context fallbacks for background agents ──
     context_fallbacks: dict[str, str] = {}
     for agent_id in sorted(_BG_AGENT_IDS):
         if agent_id != "background":
             context_fallbacks[agent_id] = "background"
 
-    # ── Determine effective default ──────────────────────────────
+    # ── Effective default ──
     effective_default = default_action if hitl_enabled else "allow"
 
     doc: dict[str, Any] = {
@@ -190,12 +162,7 @@ def config_to_yaml(
 
 
 def yaml_to_config(yaml_text: str) -> dict[str, Any]:
-    """Parse an agent-policy YAML string back into guardrails config fields.
-
-    Returns a dict with ``context_defaults``, ``tool_policies``,
-    ``model_policies``, ``model_columns``, ``default_action``, and
-    ``default_channel`` that can be applied to the GuardrailsConfig.
-    """
+    """Parse an agent-policy YAML string back into guardrails config fields."""
     ps = load_policy_set_from_str(yaml_text)
 
     default_action = ps.defaults.effect.value

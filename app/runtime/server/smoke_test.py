@@ -64,9 +64,13 @@ class SmokeTestRunner:
         return {"status": "error", "steps": self._steps, "message": message}
 
     def _check_auth(self) -> bool:
+        # In BYOK mode, GitHub auth is not required.
+        if cfg.foundry_endpoint:
+            self._step("auth", True, "Foundry BYOK mode (endpoint: %s)" % cfg.foundry_endpoint)
+            return True
         st = self._gh.status()
         self._step("gh_auth", st.get("authenticated", False), st.get("details", ""))
-        return st.get("authenticated", False) or bool(cfg.github_token)
+        return st.get("authenticated", False)
 
     def _check_cli(self) -> bool:
         path = shutil.which("copilot")

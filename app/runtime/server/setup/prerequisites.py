@@ -11,11 +11,13 @@ from aiohttp import web
 
 from ...config.settings import SECRET_ENV_KEYS, cfg
 from ...services.cloud.azure import AzureCLI
+from ...services.deployment.bicep_deployer import BicepDeployer, BicepDeployRequest
 from ...services.keyvault import env_key_to_secret_name, is_kv_ref
 from ...services.keyvault import kv as _kv
 from ...state.deploy_state import DeployStateStore
 from ...state.infra_config import InfraConfigStore
 from ...util.async_helpers import run_sync
+from ._helpers import fail_response
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,7 @@ class PrerequisitesRoutes:
         self._az = az
         self._store = store
         self._deploy_store = deploy_store
+        self._bicep = BicepDeployer(az, deploy_store) if deploy_store else None
 
     def register(self, router: web.UrlDispatcher) -> None:
         router.add_get("/api/setup/prerequisites/status", self.status)
@@ -89,14 +92,8 @@ class PrerequisitesRoutes:
                 "message": "Key Vault already configured",
             })
 
-        if not await self._ensure_rg(prereq_rg, location, steps):
+        if not await self._deploy_keyvault_via_bicep(prereq_rg, location, steps):
             return _fail(steps)
-
-        vault_url = await self._create_keyvault(prereq_rg, location, steps)
-        if not vault_url:
-            return _fail(steps)
-
-        await self._assign_role(prereq_rg, steps)
 
         try:
             migrated = await run_sync(self._migrate_existing_secrets)
@@ -133,14 +130,8 @@ class PrerequisitesRoutes:
 
         prereq_rg = _DEFAULT_PREREQ_RG
 
-        if not await self._ensure_rg(prereq_rg, location, steps):
+        if not await self._deploy_keyvault_via_bicep(prereq_rg, location, steps):
             return steps
-
-        vault_url = await self._create_keyvault(prereq_rg, location, steps)
-        if not vault_url:
-            return steps
-
-        await self._assign_role(prereq_rg, steps)
         await self._wait_for_access(steps)
         return steps
 
@@ -197,118 +188,29 @@ class PrerequisitesRoutes:
         })
         return False
 
-    async def _ensure_rg(
-        self, rg: str, location: str, steps: list[dict]
+    async def _deploy_keyvault_via_bicep(
+        self, rg: str, location: str, steps: list[dict],
     ) -> bool:
-        existing = await run_sync(self._az.json, "group", "show", "--name", rg)
-        if existing:
-            steps.append({
-                "step": "resource_group", "status": "ok",
-                "detail": f"{rg} (existing)",
-            })
-            return True
+        """Deploy Key Vault via the central Bicep template."""
+        if not self._bicep:
+            steps.append({"step": "keyvault", "status": "failed",
+                          "detail": "BicepDeployer not available"})
+            return False
 
-        tag_args: list[str] = []
-        if self._deploy_store:
-            rec = self._deploy_store.current_local()
-            if rec:
-                tag_args = ["--tags", f"polyclaw_deploy={rec.tag}"]
-
-        result = await run_sync(
-            self._az.json,
-            "group", "create", "--name", rg, "--location", location, *tag_args,
+        req = BicepDeployRequest(
+            resource_group=rg,
+            location=location,
+            deploy_foundry=False,
+            deploy_key_vault=True,
         )
-        ok = bool(result)
-        steps.append({
-            "step": "resource_group",
-            "status": "ok" if ok else "failed",
-            "detail": rg if ok else (self._az.last_stderr or "Unknown error"),
-        })
-        if ok and self._deploy_store:
-            rec = self._deploy_store.current_local()
-            if rec and rg not in rec.resource_groups:
-                rec.resource_groups.append(rg)
-                self._deploy_store.update(rec)
-        return ok
+        result = await run_sync(self._bicep.deploy, req)
+        steps.extend(result.steps)
+        if not result.ok:
+            return False
 
-    async def _create_keyvault(
-        self, rg: str, location: str, steps: list[dict]
-    ) -> str:
-        import secrets as _secrets
-
-        vault_name = f"polyclaw-kv-{_secrets.token_hex(4)}"
-        result = await run_sync(
-            self._az.json,
-            "keyvault", "create",
-            "--name", vault_name, "--resource-group", rg,
-            "--location", location, "--enable-rbac-authorization", "true",
-        )
-        if not result:
-            steps.append({
-                "step": "keyvault", "status": "failed",
-                "detail": self._az.last_stderr or "Unknown error",
-            })
-            return ""
-
-        vault_url = ""
-        if isinstance(result, dict):
-            vault_url = result.get("properties", {}).get("vaultUri", "")
-        if not vault_url:
-            vault_url = f"https://{vault_name}.vault.azure.net"
-
-        cfg.write_env(
-            KEY_VAULT_URL=vault_url,
-            KEY_VAULT_NAME=vault_name,
-            KEY_VAULT_RG=rg,
-        )
-        _kv.reinit()
-
-        if self._deploy_store:
-            rec = self._deploy_store.current_local()
-            if rec:
-                rec.add_resource(
-                    resource_type="keyvault", resource_group=rg,
-                    resource_name=vault_name, purpose="Secret storage",
-                )
-                self._deploy_store.update(rec)
-
-        steps.append({"step": "keyvault", "status": "ok", "detail": vault_url})
-        return vault_url
-
-    async def _assign_role(self, rg: str, steps: list[dict]) -> None:
-        account = self._az.account_info()
-        if not account:
-            steps.append({
-                "step": "rbac_role", "status": "failed",
-                "detail": "No Azure account",
-            })
-            return
-
-        user_id = account.get("user", {}).get("name", "")
-        kv_name = cfg.env.read("KEY_VAULT_NAME") or ""
-        sub_id = account.get("id", "")
-        if not (user_id and kv_name and sub_id):
-            steps.append({
-                "step": "rbac_role", "status": "failed",
-                "detail": "Missing user/vault/subscription info",
-            })
-            return
-
-        scope = (
-            f"/subscriptions/{sub_id}/resourceGroups/{rg}"
-            f"/providers/Microsoft.KeyVault/vaults/{kv_name}"
-        )
-        ok, msg = await run_sync(
-            self._az.ok,
-            "role", "assignment", "create",
-            "--role", "Key Vault Secrets Officer",
-            "--assignee", user_id, "--scope", scope,
-        )
-        steps.append({
-            "step": "rbac_role",
-            "status": "ok" if ok else "failed",
-            "detail": f"Assigned to {user_id}" if ok else (msg or "Unknown error"),
-        })
+        if result.key_vault_url:
+            _kv.reinit()
+        return True
 
     def _migrate_existing_secrets(
         self, *, max_retries: int = 4, initial_wait: float = 10.0
@@ -354,9 +256,4 @@ class PrerequisitesRoutes:
 
 
 def _fail(steps: list[dict]) -> web.Response:
-    failed = [s for s in steps if s.get("status") == "failed"]
-    msg = failed[0].get("detail", "Unknown") if failed else "Unknown"
-    return web.json_response(
-        {"status": "error", "steps": steps, "message": f"Prerequisites failed: {msg}"},
-        status=500,
-    )
+    return fail_response(steps, "Prerequisites failed")

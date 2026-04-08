@@ -13,6 +13,16 @@ from .security_preflight import (
     add_check as _add,
 )
 
+_FILTERED = "Filtered from role assignment list"
+
+
+def _rbac(
+    result: PreflightResult, *, id: str, name: str,
+    status: str, detail: str, evidence: str = "", command: str = _FILTERED,
+) -> None:
+    _add(result, id=id, category="rbac", name=name, status=status,
+         detail=detail, evidence=evidence, command=command)
+
 
 def check_rbac_list(
     az: AzureCLI, result: PreflightResult, info: IdentityInfo,
@@ -26,13 +36,11 @@ def check_rbac_list(
         "role", "assignment", "list", "--assignee", assignee, "--all",
     )
     if not isinstance(assignments, list):
-        _add(
-            result, id="rbac_assignments_list", category="rbac",
-            name="RBAC Assignments Retrieved",
-            status="fail",
+        _rbac(
+            result, id="rbac_assignments_list",
+            name="RBAC Assignments Retrieved", status="fail",
             detail="Could not list RBAC assignments",
-            evidence=az.last_stderr or "No response",
-            command=cmd,
+            evidence=az.last_stderr or "No response", command=cmd,
         )
         return None
 
@@ -41,16 +49,14 @@ def check_rbac_list(
         f"{a.get('scope', '?').rsplit('/', 1)[-1]}"
         for a in assignments
     )
-    _add(
-        result, id="rbac_assignments_list", category="rbac",
-        name="RBAC Assignments Retrieved",
-        status="pass",
+    _rbac(
+        result, id="rbac_assignments_list",
+        name="RBAC Assignments Retrieved", status="pass",
         detail=f"{len(assignments)} assignment(s): {summary}",
         evidence="\n".join(
             f"- {a.get('roleDefinitionName', '?')} on {a.get('scope', '?')}"
             for a in assignments
-        ),
-        command=cmd,
+        ), command=cmd,
     )
     return assignments
 
@@ -72,26 +78,20 @@ def check_rbac_has_role(
     ]
     if matching:
         scopes = [a.get("scope", "") for a in matching]
-        _add(
-            result, id=check_id, category="rbac",
-            name=check_name,
-            status="pass",
+        _rbac(
+            result, id=check_id, name=check_name, status="pass",
             detail=f"{role_name} assigned ({len(matching)} assignment(s))",
             evidence="\n".join(f"scope={s}" for s in scopes),
-            command="Filtered from role assignment list",
         )
     else:
         detail = missing_detail or f"{role_name} NOT found in assignments"
-        _add(
-            result, id=check_id, category="rbac",
-            name=check_name,
-            status=missing_severity,
+        _rbac(
+            result, id=check_id, name=check_name, status=missing_severity,
             detail=detail,
             evidence=(
                 f"Expected '{role_name}' but not present "
                 f"in {len(assignments)} assignment(s)"
             ),
-            command="Filtered from role assignment list",
         )
 
 
@@ -106,13 +106,10 @@ def check_rbac_kv_access(
     ]
 
     if not kv_roles:
-        _add(
-            result, id="rbac_kv_access", category="rbac",
-            name="Key Vault Access Role",
-            status="warn",
-            detail="No Key Vault role assignment found",
+        _rbac(
+            result, id="rbac_kv_access", name="Key Vault Access Role",
+            status="warn", detail="No Key Vault role assignment found",
             evidence=f"Checked {len(assignments)} assignments for 'Key Vault' roles",
-            command="Filtered from role assignment list",
         )
         return
 
@@ -137,16 +134,13 @@ def check_rbac_kv_access(
         status = "pass"
         detail = f"Key Vault role: {', '.join(role_names)}"
 
-    _add(
-        result, id="rbac_kv_access", category="rbac",
-        name="Key Vault Access Role",
-        status=status,
-        detail=detail,
+    _rbac(
+        result, id="rbac_kv_access", name="Key Vault Access Role",
+        status=status, detail=detail,
         evidence="\n".join(
             f"- {a.get('roleDefinitionName', '?')} on {a.get('scope', '?')}"
             for a in kv_roles
         ),
-        command="Filtered from role assignment list",
     )
 
 
@@ -169,36 +163,27 @@ def check_rbac_session_pool(
     ]
     if matching:
         names = [a.get("roleDefinitionName", "?") for a in matching]
-        _add(
-            result, id="rbac_session_pool", category="rbac",
-            name="Session Pool Executor",
-            status="pass",
-            detail=f"Session role: {', '.join(names)}",
-            evidence="\n".join(
-                f"scope={a.get('scope', '?')}" for a in matching
-            ),
-            command="Filtered from role assignment list",
+        _rbac(
+            result, id="rbac_session_pool", name="Session Pool Executor",
+            status="pass", detail=f"Session role: {', '.join(names)}",
+            evidence="\n".join(f"scope={a.get('scope', '?')}" for a in matching),
         )
     elif sandbox_enabled or sandbox_configured:
-        _add(
-            result, id="rbac_session_pool", category="rbac",
-            name="Session Pool Executor",
+        _rbac(
+            result, id="rbac_session_pool", name="Session Pool Executor",
             status="fail",
             detail=(
                 "Azure ContainerApps Session Executor NOT found -- "
                 "required for sandbox (HTTP 403 on file upload/execute)"
             ),
             evidence=f"Not present in {len(assignments)} assignment(s)",
-            command="Filtered from role assignment list",
         )
     else:
-        _add(
-            result, id="rbac_session_pool", category="rbac",
-            name="Session Pool Executor",
+        _rbac(
+            result, id="rbac_session_pool", name="Session Pool Executor",
             status="warn",
             detail="ContainerApps Session Executor NOT found (needed if sandbox is enabled)",
             evidence=f"Not present in {len(assignments)} assignment(s)",
-            command="Filtered from role assignment list",
         )
 
 
@@ -210,21 +195,18 @@ def check_rbac_no_elevated(
         if a.get("roleDefinitionName") in _ELEVATED_ROLES
     ]
     if not elevated:
-        _add(
-            result, id="rbac_no_elevated", category="rbac",
-            name="No Elevated Roles",
+        _rbac(
+            result, id="rbac_no_elevated", name="No Elevated Roles",
             status="pass",
             detail="No Owner, Contributor, or User Access Administrator roles",
             evidence=(
                 f"Checked {len(assignments)} assignment(s) against: "
                 f"{', '.join(sorted(_ELEVATED_ROLES))}"
             ),
-            command="Filtered from role assignment list",
         )
     else:
-        _add(
-            result, id="rbac_no_elevated", category="rbac",
-            name="No Elevated Roles",
+        _rbac(
+            result, id="rbac_no_elevated", name="No Elevated Roles",
             status="fail",
             detail=(
                 f"ELEVATED roles found: "
@@ -234,7 +216,6 @@ def check_rbac_no_elevated(
                 f"- {a.get('roleDefinitionName', '?')} on {a.get('scope', '?')}"
                 for a in elevated
             ),
-            command="Filtered from role assignment list",
         )
 
 
@@ -246,10 +227,9 @@ def check_rbac_scope_contained(
         if "/resourcegroups/" not in (a.get("scope") or "").lower()
     ]
     if not out_of_scope:
-        _add(
-            result, id="rbac_scope_contained", category="rbac",
-            name="Scope Limited to Resource Group",
-            status="pass",
+        _rbac(
+            result, id="rbac_scope_contained",
+            name="Scope Limited to Resource Group", status="pass",
             detail=(
                 f"All {len(assignments)} assignment(s) scoped to "
                 f"resource group level or below"
@@ -260,10 +240,9 @@ def check_rbac_scope_contained(
             command="Scope analysis from role assignment list",
         )
     else:
-        _add(
-            result, id="rbac_scope_contained", category="rbac",
-            name="Scope Limited to Resource Group",
-            status="fail",
+        _rbac(
+            result, id="rbac_scope_contained",
+            name="Scope Limited to Resource Group", status="fail",
             detail=(
                 f"{len(out_of_scope)} assignment(s) at subscription or management "
                 f"group level"

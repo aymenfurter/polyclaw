@@ -9,6 +9,8 @@ weight: 2
 
 When you select **Azure Container Apps** in the TUI target picker, the TUI provisions all Azure infrastructure, pushes the image, and deploys a persistent Container App. Unlike Local Docker, the container keeps running after you exit the TUI.
 
+For provisioning Azure AI Services, Key Vault, Content Safety, and other foundational infrastructure, see [Bicep Infrastructure](/deployment/bicep/). The ACA deployer provisions container hosting; the Bicep deployer provisions AI and supporting resources.
+
 ## Prerequisites
 
 - **Azure CLI** (`az`) installed and logged in

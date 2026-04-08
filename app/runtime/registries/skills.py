@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config.settings import cfg
-from ..util.singletons import register_singleton
+from ..util.singletons import Singleton
 
 logger = logging.getLogger(__name__)
 
@@ -221,24 +221,8 @@ class SkillRegistry:
         return None
 
 
-_registry: SkillRegistry | None = None
-
-
-def get_registry() -> SkillRegistry:
-    global _registry
-    if _registry is None:
-        _registry = SkillRegistry()
-    return _registry
+get_registry, _reset_registry = Singleton.create(SkillRegistry)
 
 
 def set_registry(instance: SkillRegistry) -> None:
-    global _registry
-    _registry = instance
-
-
-def _reset_registry() -> None:
-    global _registry
-    _registry = None
-
-
-register_singleton(_reset_registry)
+    _reset_registry(instance)

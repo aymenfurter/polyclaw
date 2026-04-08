@@ -76,7 +76,9 @@ The following services are deployed automatically during this step:
 - **Playwright browser** -- headless browser for web-based skills
 - **Bot Service** -- Bot Framework registration for Telegram and other channels
 
-All other integrations (voice via ACS, Key Vault secrets, additional MCP servers) are optional and can be configured later through the [Setup Wizard](/getting-started/setup-wizard/) or [Configuration](/configuration/).
+All other integrations (Foundry BYOK, voice via ACS, Key Vault secrets, additional MCP servers) are optional and can be configured later through the [Setup Wizard](/getting-started/setup-wizard/) or [Configuration](/configuration/).
+
+To deploy Azure AI Services infrastructure (Foundry, Key Vault, Content Safety, etc.) use the **Deploy Infrastructure** button in the Setup Wizard or Bicep deployment. See [Bicep Infrastructure](/deployment/bicep/) for details.
 
 ![TUI interactive chat](/screenshots/tui-chat.png)
 

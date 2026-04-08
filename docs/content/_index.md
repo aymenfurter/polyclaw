@@ -20,11 +20,13 @@ title: "Polyclaw Documentation"
 
 ![polyclaw web chat interface](/screenshots/web-newchat-try-asking.png)
 
-polyclaw is an autonomous AI copilot built on the **GitHub Copilot SDK**. It messages you on Telegram, uses skills to get things done, and can even call your phone for a real-time voice conversation. Through the Copilot SDK it can write and execute code to solve problems on the spot. It comes with its own web browser that skills can drive to navigate websites and perform tasks. Under the hood the agent is powered by a cron-based scheduler, a plugin ecosystem, a self-extending skill system, and MCP servers.
+polyclaw is an autonomous AI copilot built on the **Copilot SDK** with **Foundry BYOK** (Bring Your Own Key) support. It messages you on Telegram, uses skills to get things done, and can even call your phone for a real-time voice conversation. When `FOUNDRY_ENDPOINT` is configured, the agent uses your Azure AI Services resource directly for LLM inference with Entra ID authentication. It can write and execute code to solve problems on the spot. It comes with its own web browser that skills can drive to navigate websites and perform tasks. Under the hood the agent is powered by a cron-based scheduler, a plugin ecosystem, a self-extending skill system, and MCP servers.
 
 ### Key Capabilities
 
 - **Streaming AI responses** with tool execution and multi-model support
+- **Foundry BYOK** -- bring your own Azure AI Services resource with Entra ID authentication
+- **Bicep infrastructure** -- one-click provisioning of AI Services, Key Vault, Content Safety, and more
 - **Multi-channel bot** with adaptive cards, media handling, and proactive messaging
 - **Realtime voice** using Azure Communication Services and OpenAI Realtime API
 - **Persistent workspace** -- files, databases, and scripts the agent creates survive across sessions, like a personal drive for your agent

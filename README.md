@@ -19,9 +19,23 @@
 
 ---
 
-> **Warning:** Polyclaw is an autonomous agent. It can execute code, deploy infrastructure, send messages to real people, and make phone calls. The agent runtime is architecturally separated from the admin plane and operates under its **own Azure managed identity** with least-privilege RBAC -- it does **not** share your personal Azure credentials. GitHub authentication is still a prerequisite (the Copilot SDK is the agent's reasoning engine). Understand the [risks](https://aymenfurter.github.io/polyclaw/responsible-ai/) before running it.
+## What's New
 
-Polyclaw is an autonomous AI copilot built on the **GitHub Copilot SDK**. It gives you the full power of GitHub Copilot -- untethered from the IDE. It writes code, interacts with your repos via the GitHub CLI, authors its own skills at runtime, reaches out to you proactively when something matters, schedules tasks for the future, and can even call you on the phone for urgent matters.
+**Foundry BYOK (Bring Your Own Key).** Polyclaw now supports using your own Azure AI Services resource for LLM inference. Set `FOUNDRY_ENDPOINT` and the agent authenticates via Entra ID bearer tokens -- no GitHub token required. The runtime service principal gets the `Cognitive Services OpenAI User` role automatically via the fix-roles endpoint.
+
+**Bicep infrastructure deployment.** A single `infra/main.bicep` template replaces scattered Azure CLI provisioning. Deploy AI Services (with model deployments like gpt-4.1), Key Vault, Content Safety, session pools, monitoring, and more from the Setup Wizard or API. All resource creation is parameterised and idempotent.
+
+**Default model changed to gpt-4.1.** Both `COPILOT_MODEL` and `MEMORY_MODEL` now default to `gpt-4.1`.
+
+**Improved container HOME isolation.** The entrypoint now sets HOME to `/admin-home`, `/runtime-home`, or `/data` depending on container mode, with Bicep binary symlinking so `az bicep` works in all modes.
+
+**Headless TUI setup.** New `app/tui/src/headless/` modules for non-interactive setup and ACA provisioning.
+
+---
+
+> **Warning:** Polyclaw is an autonomous agent. It can execute code, deploy infrastructure, send messages to real people, and make phone calls. The agent runtime is architecturally separated from the admin plane and operates under its **own Azure managed identity** with least-privilege RBAC -- it does **not** share your personal Azure credentials. Understand the [risks](https://aymenfurter.github.io/polyclaw/responsible-ai/) before running it.
+
+Polyclaw is an autonomous AI copilot built on the **Copilot SDK** with **Foundry BYOK** support. It gives you the full power of AI inference through your own Azure AI Services resource -- untethered from the IDE. It writes code, authors its own skills at runtime, reaches out to you proactively when something matters, schedules tasks for the future, and can even call you on the phone for urgent matters.
 
 ## Why Polyclaw?
 
@@ -93,9 +107,8 @@ For full setup instructions, configuration reference, and feature guides, see th
 ## Prerequisites
 
 - Docker
-- A GitHub account with a Copilot subscription
-- An Azure subscription (needed for voice, bot channels, and Foundry integration)
-- [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) (if deploying to Azure)
+- [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) (`az login` required)
+- An Azure subscription (for Foundry BYOK inference, voice, bot channels, and infrastructure provisioning)
 
 ## Security, Governance & Responsible AI
 
@@ -103,7 +116,7 @@ Polyclaw is in **early preview**. Treat it as experimental software and read thi
 
 ### Understand the Risks
 
-Polyclaw is an autonomous agent. The agent runtime is architecturally separated from the admin plane and operates under its **own Azure managed identity** with least-privilege RBAC -- it does **not** share your personal Azure credentials. However, it can still execute code, deploy infrastructure, send messages, and make phone calls within the scope of its assigned roles. GitHub authentication remains a prerequisite for using the Copilot SDK.
+Polyclaw is an autonomous agent. The agent runtime is architecturally separated from the admin plane and operates under its **own Azure managed identity** with least-privilege RBAC -- it does **not** share your personal Azure credentials. However, it can still execute code, deploy infrastructure, send messages, and make phone calls within the scope of its assigned roles.
 
 **What can go wrong:** unintended actions from misunderstood instructions, credential exposure via prompt injection or badly written skills, cost overruns from runaway loops provisioning Azure resources, arbitrary code execution without human review, and data leakage through conversations and tool outputs passing through configured channels.
 

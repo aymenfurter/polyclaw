@@ -80,6 +80,26 @@ Channel configuration (Telegram) is applied as part of `provision()` when a toke
 
 Key operations: `deploy(req)`, `destroy(deploy_id)`, `status()`, `restart()`.
 
+## Bicep Deployer
+
+**Module**: `app/runtime/services/deployment/bicep_deployer.py`
+
+`BicepDeployer` replaces ad-hoc Azure CLI provisioning with a single `az deployment group create` driven by `infra/main.bicep`. All resource creation is parameterised from internal config state.
+
+| Feature | Description |
+|---|---|
+| Foundry (AI Services) | Deploys Azure AI Services with configurable model deployments (gpt-4.1, gpt-5, gpt-5-mini) |
+| Key Vault | Provisions Key Vault with firewall rules and access policies |
+| Content Safety | Optional Azure AI Content Safety resource |
+| Session Pool | Optional Azure Container Apps session pool for sandbox execution |
+| ACS | Optional Azure Communication Services for voice |
+| Azure AI Search | Optional search index for Foundry IQ memory |
+| Monitoring | Optional Application Insights and Log Analytics workspace |
+| Idempotent | Tracks deployments in `DeployStateStore` for safe re-runs |
+| Streaming | Provides step-by-step progress via SSE stream endpoint |
+
+Key operations: `deploy(req)`, `deploy_stream(req, callback)`, `decommission(deploy_id)`.
+
 ## Runtime Identity Provisioner
 
 **Module**: `app/runtime/services/runtime_identity.py`
@@ -99,6 +119,8 @@ RBAC roles granted (scoped to the resource group):
 | Reader | Enumerate resources in the resource group |
 | Key Vault Secrets Officer | Read/write bot credentials stored in Key Vault |
 | Azure ContainerApps Session Executor | Invoke ACA Dynamic Sessions for code execution |
+| Cognitive Services User | Call Content Safety APIs (Prompt Shields, content moderation) |
+| Cognitive Services OpenAI User | BYOK inference on the Foundry AI Services resource |
 
 Key operations: `provision(resource_group)`, `revoke()`, `provision_managed_identity()`, `revoke_managed_identity()`, `status()`.
 

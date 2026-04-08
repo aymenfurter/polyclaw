@@ -29,7 +29,8 @@ class AzureCLI:
         self.last_stderr: str = ""
         self._cache: dict[str, tuple[float, Any]] = {}
 
-    def _run(self, cmd: list[str], cmd_summary: str) -> subprocess.CompletedProcess[str]:
+    def _run(self, cmd: list[str], cmd_summary: str, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+        effective_timeout = timeout if timeout is not None else self.TIMEOUT
         env = {**os.environ, "AZURE_EXTENSION_USE_DYNAMIC_INSTALL": "yes_without_prompt"}
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
@@ -46,8 +47,8 @@ class AzureCLI:
                 if now >= next_heartbeat:
                     elapsed = now - t0
                     mins_e, secs_e = divmod(int(elapsed), 60)
-                    if self.TIMEOUT:
-                        remaining = max(0, self.TIMEOUT - elapsed)
+                    if effective_timeout:
+                        remaining = max(0, effective_timeout - elapsed)
                         mins_r, secs_r = divmod(int(remaining), 60)
                         logger.info(
                             "[az] %dm %02ds elapsed | timeout %dm %02ds | az %s",
@@ -58,14 +59,14 @@ class AzureCLI:
                     else:
                         logger.info("[az] still waiting (%.0fs): az %s", elapsed, cmd_summary)
                     next_heartbeat = now + self.HEARTBEAT_INTERVAL
-                if self.TIMEOUT and (now - t0) > self.TIMEOUT:
+                if effective_timeout and (now - t0) > effective_timeout:
                     proc.kill()
                     proc.wait()
-                    logger.error("[az] TIMEOUT after %ds: az %s", self.TIMEOUT, cmd_summary)
+                    logger.error("[az] TIMEOUT after %ds: az %s", effective_timeout, cmd_summary)
                     return subprocess.CompletedProcess(
                         cmd, returncode=-1,
                         stdout=proc.stdout.read() if proc.stdout else "",
-                        stderr=f"Timed out after {self.TIMEOUT}s",
+                        stderr=f"Timed out after {effective_timeout}s",
                     )
 
         return subprocess.CompletedProcess(
@@ -74,12 +75,15 @@ class AzureCLI:
             stderr=proc.stderr.read() if proc.stderr else "",
         )
 
-    def json(self, *args: str, quiet: bool = False) -> dict | list | None:
+    def _exec(
+        self, args: list[str], *, quiet: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run an ``az`` command with unified logging."""
         cmd_summary = " ".join(args[:5])
         _log = logger.debug if quiet else logger.info
         _log("[az] starting: az %s", cmd_summary)
         t0 = _time()
-        result = self._run(["az", *args, "--output", "json"], cmd_summary)
+        result = self._run(["az", *args], cmd_summary)
         elapsed = _time() - t0
         self.last_stderr = result.stderr.strip()
         if result.returncode != 0:
@@ -87,12 +91,18 @@ class AzureCLI:
                 "[az] FAILED (%.1fs, rc=%d): az %s -- %s",
                 elapsed, result.returncode, cmd_summary, self.last_stderr[:800],
             )
+        else:
+            _log("[az] OK (%.1fs): az %s", elapsed, cmd_summary)
+        return result
+
+    def json(self, *args: str, quiet: bool = False) -> dict | list | None:
+        result = self._exec([*args, "--output", "json"], quiet=quiet)
+        if result.returncode != 0:
             return None
-        _log("[az] OK (%.1fs): az %s", elapsed, cmd_summary)
         try:
             return json.loads(result.stdout)
         except (json.JSONDecodeError, ValueError):
-            logger.warning("[az] could not parse JSON output for: az %s", cmd_summary)
+            logger.warning("[az] could not parse JSON output for: az %s", " ".join(args[:5]))
             return None
 
     def json_cached(self, *args: str, ttl: int | None = None) -> dict | list | None:
@@ -115,24 +125,64 @@ class AzureCLI:
             self._cache.clear()
 
     def ok(self, *args: str) -> Result:
-        cmd_summary = " ".join(args[:5])
-        logger.info("[az] starting: az %s", cmd_summary)
-        t0 = _time()
-        result = self._run(["az", *args], cmd_summary)
-        elapsed = _time() - t0
-        success = result.returncode == 0
-        if success:
-            logger.info("[az] OK (%.1fs): az %s", elapsed, cmd_summary)
-        else:
-            logger.warning(
-                "[az] FAILED (%.1fs, rc=%d): az %s -- %s",
-                elapsed, result.returncode, cmd_summary, result.stderr.strip()[:300],
-            )
-        return Result(success=success, message=result.stderr.strip())
+        result = self._exec(list(args))
+        return Result(success=result.returncode == 0, message=self.last_stderr)
 
     def account_info(self) -> dict[str, Any] | None:
+        """Return the active subscription, or ``None`` if not logged in.
+
+        When ``az account show`` fails (e.g. no default subscription set)
+        we check the local ``azureProfile.json`` file to distinguish
+        *not logged in* from *logged in but no default*.  This avoids
+        running ``az account list`` which can be very slow with many
+        subscriptions.
+        """
         account = self.json_cached("account", "show")
-        return account if isinstance(account, dict) else None
+        if isinstance(account, dict):
+            return account
+        # Fast file-based check: does azureProfile.json have subscriptions?
+        if self._has_azure_profile():
+            return {"_no_default_subscription": True}
+        return None
+
+    def _has_azure_profile(self) -> bool:
+        """Check if the Azure CLI profile file has any subscriptions."""
+        return len(self._read_profile_subscriptions()) > 0
+
+    def _read_profile_subscriptions(self) -> list[dict[str, Any]]:
+        """Read subscriptions directly from ``azureProfile.json`` (no subprocess)."""
+        config_dir = os.environ.get("AZURE_CONFIG_DIR") or os.path.join(
+            os.path.expanduser("~"), ".azure",
+        )
+        profile_path = os.path.join(config_dir, "azureProfile.json")
+        try:
+            raw = open(profile_path, "rb").read()  # noqa: SIM115
+            text = raw.decode("utf-8-sig")
+            data = json.loads(text)
+            return data.get("subscriptions", [])
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return []
+
+    def list_subscriptions(self) -> list[dict[str, Any]]:
+        """Return all enabled subscriptions from the local profile file."""
+        subs = self._read_profile_subscriptions()
+        return [
+            {
+                "id": s.get("id", ""),
+                "name": s.get("name", ""),
+                "state": s.get("state", ""),
+                "is_default": s.get("isDefault", False),
+                "tenant_id": s.get("tenantId", ""),
+            }
+            for s in subs
+            if s.get("state") == "Enabled"
+        ]
+
+    def set_subscription(self, subscription_id: str) -> bool:
+        """Set the active subscription and clear caches."""
+        r = self.json("account", "set", "--subscription", subscription_id, quiet=True)
+        self.invalidate_cache()
+        return r is not None or self.last_stderr == ""
 
     def login_device_code(self) -> dict[str, Any]:
         proc = subprocess.Popen(

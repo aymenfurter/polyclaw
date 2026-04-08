@@ -15,25 +15,15 @@ def main() -> None:
     if not kv.enabled:
         return
 
-    refs: dict[str, str] = {}
     for key, value in os.environ.items():
-        if is_kv_ref(value):
-            refs[key] = value
-
-    if not refs:
-        return
-
-    resolved: dict[str, str] = {}
-    failed: list[str] = []
-    for key, value in refs.items():
+        if not is_kv_ref(value):
+            continue
         try:
             result = kv.resolve({key: value})
-            resolved.update(result)
+            for rk, rv in result.items():
+                print(f"export {rk}={shlex.quote(rv)}")
         except Exception:
-            failed.append(key)
-
-    for key, value in resolved.items():
-        print(f"export {key}={shlex.quote(value)}")
+            pass
 
 
 if __name__ == "__main__":

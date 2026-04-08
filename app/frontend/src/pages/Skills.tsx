@@ -424,7 +424,7 @@ export default function Skills() {
               {!(marketplaceData.recommended?.length || marketplaceData.loved?.length ||
                  marketplaceData.popular?.length || marketplaceData.github_awesome?.length ||
                  marketplaceData.anthropic?.length) && (
-                <p className="store-empty">No skills available. Check your network connection or set a GITHUB_TOKEN.</p>
+                <p className="store-empty">No skills available. Check your network connection or Foundry endpoint configuration.</p>
               )}
             </div>
           )}

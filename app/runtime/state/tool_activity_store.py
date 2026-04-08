@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import csv
-import io
 import json
 import logging
 import threading
@@ -13,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config.settings import cfg
-from ..util.singletons import register_singleton
+from ..util.singletons import Singleton
 from .tool_activity_models import ToolActivityEntry, check_suspicious
 
 logger = logging.getLogger(__name__)
@@ -127,48 +125,27 @@ class ToolActivityStore:
     ) -> ToolActivityEntry | None:
         """Record the completion of a tool invocation."""
         pending = self._pending_starts.pop(call_id, None)
-        if pending:
-            pending.result = result[:2000] if result else ""
-            pending.status = status
-            pending.duration_ms = (time.time() - pending.timestamp) * 1000
-            flagged, reason, risk, factors = check_suspicious(pending.arguments, result)
-            if flagged and not pending.flagged:
-                pending.flagged = True
-                pending.flag_reason = reason
-            if risk > pending.risk_score:
-                pending.risk_score = risk
-            pending.risk_factors = list(set(pending.risk_factors + factors))
-            # Update the in-memory entry (already appended)
-            # Append a completion record so the file has the full story
-            completion = ToolActivityEntry(
-                id=pending.id,
-                session_id=pending.session_id,
-                tool=pending.tool,
-                call_id=call_id,
-                category=pending.category,
-                arguments=pending.arguments,
-                result=pending.result,
-                status=status,
-                timestamp=pending.timestamp,
-                duration_ms=pending.duration_ms,
-                flagged=pending.flagged,
-                flag_reason=pending.flag_reason,
-                model=pending.model,
-                interaction_type=pending.interaction_type,
-                shield_result=pending.shield_result,
-                shield_detail=pending.shield_detail,
-                shield_elapsed_ms=pending.shield_elapsed_ms,
-            )
-            # Replace the in-memory start entry with completed version
-            with self._lock:
-                for i, e in enumerate(self._entries):
-                    if e.id == pending.id:
-                        self._entries[i] = completion
-                        break
-                with open(self._path, "a") as f:
-                    f.write(json.dumps(asdict(completion), default=str) + "\n")
-            return completion
-        return None
+        if not pending:
+            return None
+        pending.result = result[:2000] if result else ""
+        pending.status = status
+        pending.duration_ms = (time.time() - pending.timestamp) * 1000
+        flagged, reason, risk, factors = check_suspicious(pending.arguments, result)
+        if flagged and not pending.flagged:
+            pending.flagged = True
+            pending.flag_reason = reason
+        if risk > pending.risk_score:
+            pending.risk_score = risk
+        pending.risk_factors = list(set(pending.risk_factors + factors))
+        # Replace the in-memory start entry with completed version
+        with self._lock:
+            for i, e in enumerate(self._entries):
+                if e.id == pending.id:
+                    self._entries[i] = pending
+                    break
+            with open(self._path, "a") as f:
+                f.write(json.dumps(asdict(pending), default=str) + "\n")
+        return pending
 
     def query(
         self,
@@ -220,63 +197,54 @@ class ToolActivityStore:
 
     def get_summary(self) -> dict[str, Any]:
         """Get aggregate statistics about tool activity."""
+        from collections import Counter
+
         with self._lock:
             entries = self._deduplicated()
 
         total = len(entries)
         flagged = sum(1 for e in entries if e.flagged)
-        by_tool: dict[str, int] = {}
-        by_category: dict[str, int] = {}
-        by_status: dict[str, int] = {}
-        by_session: dict[str, int] = {}
-        by_model: dict[str, int] = {}
-        by_interaction_type: dict[str, int] = {}
+        by_tool: Counter[str] = Counter()
+        by_category: Counter[str] = Counter()
+        by_status: Counter[str] = Counter()
+        by_session: Counter[str] = Counter()
+        by_model: Counter[str] = Counter()
+        by_interaction_type: Counter[str] = Counter()
         durations: list[float] = []
         risk_scores: list[int] = []
         for e in entries:
-            by_tool[e.tool] = by_tool.get(e.tool, 0) + 1
-            by_category[e.category] = by_category.get(e.category, 0) + 1
-            by_status[e.status] = by_status.get(e.status, 0) + 1
-            by_session[e.session_id] = by_session.get(e.session_id, 0) + 1
+            by_tool[e.tool] += 1
+            by_category[e.category] += 1
+            by_status[e.status] += 1
+            by_session[e.session_id] += 1
             if e.model:
-                by_model[e.model] = by_model.get(e.model, 0) + 1
+                by_model[e.model] += 1
             if e.interaction_type:
-                by_interaction_type[e.interaction_type] = (
-                    by_interaction_type.get(e.interaction_type, 0) + 1
-                )
+                by_interaction_type[e.interaction_type] += 1
             if e.duration_ms is not None:
                 durations.append(e.duration_ms)
             if e.risk_score > 0:
                 risk_scores.append(e.risk_score)
 
-        # Top tools sorted by count
-        top_tools = sorted(by_tool.items(), key=lambda x: x[1], reverse=True)[:20]
-
-        # Duration stats
         avg_duration = sum(durations) / len(durations) if durations else 0
         max_duration = max(durations) if durations else 0
         p95_duration = sorted(durations)[int(len(durations) * 0.95)] if durations else 0
 
-        # Risk distribution
-        high_risk = sum(1 for s in risk_scores if s >= 70)
-        medium_risk = sum(1 for s in risk_scores if 40 <= s < 70)
-        low_risk = sum(1 for s in risk_scores if 0 < s < 40)
-
         return {
             "total": total,
             "flagged": flagged,
-            "by_tool": dict(top_tools),
-            "by_category": by_category,
-            "by_status": by_status,
-            "by_model": by_model,
-            "by_interaction_type": by_interaction_type,
+            "by_tool": dict(by_tool.most_common(20)),
+            "by_category": dict(by_category),
+            "by_status": dict(by_status),
+            "by_model": dict(by_model),
+            "by_interaction_type": dict(by_interaction_type),
             "sessions_with_activity": len(by_session),
             "avg_duration_ms": round(avg_duration, 1),
             "max_duration_ms": round(max_duration, 1),
             "p95_duration_ms": round(p95_duration, 1),
-            "risk_high": high_risk,
-            "risk_medium": medium_risk,
-            "risk_low": low_risk,
+            "risk_high": sum(1 for s in risk_scores if s >= 70),
+            "risk_medium": sum(1 for s in risk_scores if 40 <= s < 70),
+            "risk_low": sum(1 for s in risk_scores if 0 < s < 40),
         }
 
     def get_entry(self, entry_id: str) -> dict[str, Any] | None:
@@ -410,36 +378,8 @@ class ToolActivityStore:
 
     def export_csv(self, **filters: Any) -> str:
         """Export filtered entries as CSV string."""
-        data = self.query(**filters, limit=10000)
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow([
-            "id", "timestamp", "session_id", "tool", "category",
-            "model", "status", "interaction_type", "duration_ms", "risk_score", "flagged",
-            "flag_reason", "shield_result", "shield_detail", "shield_elapsed_ms",
-            "arguments", "result",
-        ])
-        for e in data["entries"]:
-            writer.writerow([
-                e["id"],
-                time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(e["timestamp"])),
-                e["session_id"],
-                e["tool"],
-                e["category"],
-                e.get("model", ""),
-                e["status"],
-                e.get("interaction_type", ""),
-                e.get("duration_ms") or "",
-                e.get("risk_score", 0),
-                "Yes" if e.get("flagged") else "No",
-                e.get("flag_reason", ""),
-                e.get("shield_result", ""),
-                e.get("shield_detail", ""),
-                e.get("shield_elapsed_ms") or "",
-                (e.get("arguments") or "")[:500],
-                (e.get("result") or "")[:500],
-            ])
-        return output.getvalue()
+        from .tool_activity_csv import export_csv
+        return export_csv(self, **filters)
 
     @staticmethod
     def _infer_category(tool: str) -> str:
@@ -453,66 +393,10 @@ class ToolActivityStore:
 
     def import_from_sessions(self, session_store: object) -> int:
         """Backfill tool activity from existing session data."""
-        from .session_store import SessionStore
-
-        if not isinstance(session_store, SessionStore):
-            return 0
-
-        existing_ids: set[str] = set()
-        with self._lock:
-            existing_ids = {f"{e.session_id}:{e.call_id}" for e in self._entries}
-
-        count = 0
-        for session_summary in session_store.list_sessions():
-            sid = session_summary["id"]
-            session_data = session_store.get_session(sid)
-            if not session_data:
-                continue
-            for msg in session_data.get("messages", []):
-                for tc in msg.get("tool_calls", []):
-                    key = f"{sid}:{tc.get('name', '')}:{msg.get('timestamp', 0)}"
-                    if key in existing_ids:
-                        continue
-                    entry = ToolActivityEntry(
-                        id=self._next_id(),
-                        session_id=sid,
-                        tool=tc.get("name", "unknown"),
-                        call_id="",
-                        category=self._infer_category(tc.get("name", "")),
-                        arguments=tc.get("arguments", ""),
-                        result=tc.get("result", "")[:2000],
-                        status="completed",
-                        timestamp=msg.get("timestamp", 0),
-                    )
-                    flagged, reason, risk, factors = check_suspicious(entry.arguments, entry.result)
-                    entry.flagged = flagged
-                    entry.flag_reason = reason
-                    entry.risk_score = risk
-                    entry.risk_factors = factors
-                    self._append(entry)
-                    existing_ids.add(key)
-                    count += 1
-
-        logger.info("[tool_activity] imported %d entries from sessions", count)
-        return count
+        from .tool_activity_csv import import_from_sessions
+        return import_from_sessions(self, session_store)
 
 
 # -- Singleton access ------------------------------------------------------
 
-_instance: ToolActivityStore | None = None
-
-
-def get_tool_activity_store() -> ToolActivityStore:
-    """Return the global ToolActivityStore singleton."""
-    global _instance
-    if _instance is None:
-        _instance = ToolActivityStore()
-    return _instance
-
-
-def _reset_tool_activity_store() -> None:
-    global _instance
-    _instance = None
-
-
-register_singleton(_reset_tool_activity_store)
+get_tool_activity_store, _reset_tool_activity_store = Singleton.create(ToolActivityStore)

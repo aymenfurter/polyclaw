@@ -99,17 +99,13 @@ def shutdown_otel() -> None:
         from opentelemetry import trace, metrics
         from opentelemetry._logs import get_logger_provider
 
-        tp = trace.get_tracer_provider()
-        if hasattr(tp, "shutdown"):
-            tp.shutdown()
-
-        mp = metrics.get_meter_provider()
-        if hasattr(mp, "shutdown"):
-            mp.shutdown()
-
-        lp = get_logger_provider()
-        if hasattr(lp, "shutdown"):
-            lp.shutdown()
+        for provider in (
+            trace.get_tracer_provider(),
+            metrics.get_meter_provider(),
+            get_logger_provider(),
+        ):
+            if hasattr(provider, "shutdown"):
+                provider.shutdown()
 
         _otel_active = False
         logger.info("[otel.shutdown] OpenTelemetry providers shut down")
@@ -166,11 +162,13 @@ def agent_span(
         from opentelemetry import trace
 
         tracer = trace.get_tracer(_TRACER_NAME)
-        with tracer.start_as_current_span(name, attributes=attributes) as span:
-            yield span
     except Exception:
         logger.debug("[otel.agent_span] Failed to create span %s", name, exc_info=True)
         yield None
+        return
+
+    with tracer.start_as_current_span(name, attributes=attributes) as span:
+        yield span
 
 
 @contextmanager
@@ -208,21 +206,6 @@ def invoke_agent_span(
         from opentelemetry.trace import SpanKind, StatusCode
 
         tracer = trace.get_tracer(_TRACER_NAME)
-        attrs: dict[str, Any] = {"gen_ai.agent.name": agent_name}
-        if model:
-            attrs["gen_ai.request.model"] = model
-        with tracer.start_as_current_span(
-            "invoke_agent",
-            kind=SpanKind.CLIENT,
-            attributes=attrs,
-        ) as span:
-            try:
-                yield span
-            except Exception as exc:
-                if span.is_recording():
-                    span.set_attribute("error.type", type(exc).__name__)
-                    span.set_status(StatusCode.ERROR, str(exc)[:200])
-                raise
     except Exception:
         logger.debug(
             "[otel.invoke_agent_span] Failed to create span for %s",
@@ -230,6 +213,23 @@ def invoke_agent_span(
             exc_info=True,
         )
         yield None
+        return
+
+    attrs: dict[str, Any] = {"gen_ai.agent.name": agent_name}
+    if model:
+        attrs["gen_ai.request.model"] = model
+    with tracer.start_as_current_span(
+        "invoke_agent",
+        kind=SpanKind.CLIENT,
+        attributes=attrs,
+    ) as span:
+        try:
+            yield span
+        except Exception as exc:
+            if span.is_recording():
+                span.set_attribute("error.type", type(exc).__name__)
+                span.set_status(StatusCode.ERROR, str(exc)[:200])
+            raise
 
 
 def record_event(name: str, attributes: dict[str, Any] | None = None) -> None:

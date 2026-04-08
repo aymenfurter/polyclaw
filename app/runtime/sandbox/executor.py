@@ -303,37 +303,14 @@ class SandboxExecutor:
         self, http: aiohttp.ClientSession, endpoint: str, session_id: str,
         headers: dict[str, str], timeout: int,
     ) -> dict[str, Any]:
-        url = f"{endpoint}/code/execute?api-version={API_VERSION}&identifier={session_id}"
-        payload = {
-            "properties": {
-                "codeInputType": "inline",
-                "executionType": "synchronous",
-                "code": (
-                    "import subprocess, json, sys\n"
-                    "r = subprocess.run(['bash', '/mnt/data/bootstrap.sh'], "
-                    f"capture_output=True, text=True, timeout={timeout})\n"
-                    "print(json.dumps({'stdout': r.stdout, 'stderr': r.stderr, "
-                    "'rc': r.returncode}))\n"
-                ),
-            }
-        }
-        try:
-            async with http.post(
-                url, json=payload, headers={**headers, "Content-Type": "application/json"},
-                timeout=aiohttp.ClientTimeout(total=timeout + 30),
-            ) as resp:
-                if resp.status not in (200, 201, 202):
-                    text = await resp.text()
-                    return {"success": False, "error": f"Execution failed: {resp.status} {text[:300]}"}
-                result = await resp.json()
-                props = result.get("properties", {})
-                return self._parse_exec_result(
-                    props.get("stdout", ""),
-                    fallback_stderr=props.get("stderr", ""),
-                )
-        except Exception as exc:
-            logger.error("Sandbox exec exception: %s", exc, exc_info=True)
-            return {"success": False, "error": str(exc)}
+        code = (
+            "import subprocess, json, sys\n"
+            "r = subprocess.run(['bash', '/mnt/data/bootstrap.sh'], "
+            f"capture_output=True, text=True, timeout={timeout})\n"
+            "print(json.dumps({'stdout': r.stdout, 'stderr': r.stderr, "
+            "'rc': r.returncode}))\n"
+        )
+        return await self._run_code(http, endpoint, session_id, code, headers, timeout)
 
     async def provision_session(self, session_id: str) -> dict[str, Any]:
         start = time.time()
@@ -399,7 +376,6 @@ class SandboxExecutor:
         self, http: aiohttp.ClientSession, endpoint: str, session_id: str,
         command: str, headers: dict[str, str], timeout: int,
     ) -> dict[str, Any]:
-        url = f"{endpoint}/code/execute?api-version={API_VERSION}&identifier={session_id}"
         cmd_b64 = base64.b64encode(command.encode()).decode()
         code = (
             "import subprocess, json, base64\n"
@@ -409,6 +385,13 @@ class SandboxExecutor:
             "env={**__import__('os').environ, 'HOME': '/mnt/data/agent_home'})\n"
             "print(json.dumps({'stdout': r.stdout, 'stderr': r.stderr, 'rc': r.returncode}))\n"
         )
+        return await self._run_code(http, endpoint, session_id, code, headers, timeout)
+
+    async def _run_code(
+        self, http: aiohttp.ClientSession, endpoint: str, session_id: str,
+        code: str, headers: dict[str, str], timeout: int,
+    ) -> dict[str, Any]:
+        url = f"{endpoint}/code/execute?api-version={API_VERSION}&identifier={session_id}"
         payload = {"properties": {"codeInputType": "inline", "executionType": "synchronous", "code": code}}
         try:
             async with http.post(
@@ -425,7 +408,7 @@ class SandboxExecutor:
                     fallback_stderr=props.get("stderr", ""),
                 )
         except Exception as exc:
-            logger.error("Session exec exception: %s", exc, exc_info=True)
+            logger.error("Sandbox exec exception: %s", exc, exc_info=True)
             return {"success": False, "error": str(exc)}
 
     @staticmethod

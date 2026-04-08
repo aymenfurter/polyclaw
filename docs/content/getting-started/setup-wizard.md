@@ -15,11 +15,11 @@ Once polyclaw finishes building and passes its health check, the TUI automatical
 
 <div class="callout callout--warning" style="margin-top:12px">
 <p class="callout__title">Understand what these logins mean</p>
-<p><strong>Both Azure Login and GitHub Login are required during setup.</strong> You cannot skip either one at this stage.</p>
+<p><strong>Azure Login is required during setup.</strong></p>
 
-<p><strong>GitHub Login</strong> authenticates with GitHub Copilot. The Copilot SDK is the agent&rsquo;s reasoning engine&mdash;without it, polyclaw cannot function. This authentication must remain active for the lifetime of the agent. Your GitHub account determines which Copilot models and rate limits are available.</p>
+<p><strong>Azure Login</strong> signs you in with the Azure CLI. During setup, your Azure identity is used to provision infrastructure (Foundry AI Services, Bot Service, Key Vault, etc.) via Bicep templates. After setup, the agent runtime operates under its <strong>own Azure identity</strong>&mdash;a service principal (Docker) or user-assigned managed identity (Azure Container Apps) with least-privilege RBAC. See <a href="/features/agent-identity/">Agent Identity</a> for details.</p>
 
-<p><strong>Azure Login</strong> signs you in with the Azure CLI. During setup, your Azure identity is used to provision infrastructure (Bot Service, Container Registry, Key Vault, etc.). After setup, the agent runtime operates under its <strong>own Azure identity</strong>&mdash;a service principal (Docker) or user-assigned managed identity (Azure Container Apps) with least-privilege RBAC. See <a href="/features/agent-identity/">Agent Identity</a> for details.</p>
+<p><strong>Foundry BYOK (Bring Your Own Key)</strong> is the default authentication mode. When <code>FOUNDRY_ENDPOINT</code> is configured, the agent uses your Azure AI Services resource directly for LLM inference. The runtime authenticates via Entra ID bearer tokens (<code>az account get-access-token</code>) and requires the <code>Cognitive Services OpenAI User</code> role on the Foundry resource.</p>
 
 <p>The runtime identity is scoped to:</p>
 <ul>
@@ -27,22 +27,22 @@ Once polyclaw finishes building and passes its health check, the TUI automatical
 <li><strong>Reader</strong> on the resource group (enumerate resources)</li>
 <li><strong>Key Vault access</strong> (read/write secrets)</li>
 <li><strong>Session Executor</strong> (if sandbox is configured)</li>
+<li><strong>Cognitive Services User</strong> (Content Safety, if configured)</li>
+<li><strong>Cognitive Services OpenAI User</strong> (Foundry AI Services, for BYOK inference)</li>
 </ul>
 <p>No elevated roles (Owner, Contributor, User Access Administrator) are assigned to the runtime. The <a href="/features/guardrails/">security preflight checker</a> verifies this. Your personal Azure CLI session remains on the admin container and is not shared with the runtime.</p>
 <p>To further limit exposure, enable <a href="/features/guardrails/">Guardrails</a> to require human approval before the agent executes high-risk tools. Enable <a href="/features/sandbox/">Sandbox Execution</a> to redirect code execution to isolated Azure Container Apps sessions.</p>
 </div>
 
-Status indicators for Azure, GitHub, and tunnel connectivity. Each can be initiated directly from this page:
+Status indicators for Azure and tunnel connectivity. Each can be initiated directly from this page:
 
 - **Azure Login** -- opens device-code flow for Azure CLI authentication
 - **Azure Logout** -- signs out of the current Azure CLI session
-- **GitHub Login** -- authenticates with GitHub Copilot via device code
-- **Set GitHub Token** -- manually configure a GitHub PAT
 - **Start Tunnel** -- starts a Cloudflare tunnel to expose the bot endpoint publicly
 
 <div class="callout callout--info" style="margin-top:16px">
 <p class="callout__title">You can sign out of Azure after setup</p>
-<p>Your personal Azure CLI session is used during setup for provisioning infrastructure and the runtime identity. Once the runtime identity is provisioned (service principal or managed identity), the agent authenticates independently. If you sign out of Azure on the admin container, core agent functionality (chat, skills, scheduling) continues to work. Operations that require your personal Azure CLI session (e.g., provisioning new infrastructure) will fail until you sign back in.</p>
+<p>Your personal Azure CLI session is used during setup for provisioning infrastructure and the runtime identity. Once the runtime identity is provisioned (service principal or managed identity), the agent authenticates independently using Entra ID bearer tokens for BYOK inference and scoped RBAC for Azure resource management. If you sign out of Azure on the admin container, core agent functionality (chat, skills, scheduling) continues to work. Operations that require your personal Azure CLI session (e.g., provisioning new infrastructure) will fail until you sign back in.</p>
 </div>
 
 ### Bot Configuration
@@ -63,13 +63,13 @@ A form for configuring the Bot Framework deployment:
 ### Infrastructure Actions
 
 - **Save Configuration** -- persists bot and channel settings
-- **Deploy Infrastructure** -- provisions Azure Bot Service, channels, and related resources
+- **Deploy Infrastructure** -- provisions Azure infrastructure via Bicep (AI Services, Key Vault, Content Safety, etc.). See [Bicep Infrastructure](/deployment/bicep/).
 - **Deploy Content Safety** -- provisions Azure AI Content Safety for Prompt Shields integration (recommended)
 - **Provision Agent Identity** -- creates the runtime service principal or managed identity with least-privilege RBAC
 - **Decommission Infrastructure** -- tears down deployed Azure resources
 - **Run Preflight Checks** -- validates bot credentials, JWT, tunnel, endpoint auth, channel security, identity, and RBAC
 - **Run Security Preflight** -- comprehensive evidence-based validation of identity, RBAC roles, secret isolation, and credential separation
-- **Run Smoke Test** -- end-to-end connectivity test for Copilot
+- **Run Smoke Test** -- end-to-end connectivity test
 
 ![Preflight checks](/screenshots/web-infra-preflight.png)
 

@@ -74,7 +74,7 @@ def register_admin_routes(
     FoundryIQRoutes(foundry_iq_store, az, deploy_store).register(router)
     NetworkRoutes(tunnel, az, sandbox_store, foundry_iq_store).register(router)
     MonitoringRoutes(monitoring_store, az, deploy_store).register(router)
-    ContentSafetyRoutes(az, guardrails_store).register(router)
+    ContentSafetyRoutes(az, guardrails_store, deploy_store).register(router)
 
     from .routes.identity_routes import IdentityRoutes
 

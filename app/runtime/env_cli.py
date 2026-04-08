@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import sys
 from dataclasses import asdict
@@ -13,37 +14,44 @@ from .services.resource_tracker import ResourceTracker
 from .state.deploy_state import DeployStateStore
 
 
-def _bold(text: str) -> str:
-    return f"\033[1m{text}\033[0m"
+def _ansi(code: int, text: str) -> str:
+    return f"\033[{code}m{text}\033[0m"
 
 
-def _red(text: str) -> str:
-    return f"\033[31m{text}\033[0m"
+_bold = functools.partial(_ansi, 1)
+_red = functools.partial(_ansi, 31)
+_green = functools.partial(_ansi, 32)
+_yellow = functools.partial(_ansi, 33)
+_cyan = functools.partial(_ansi, 36)
 
-
-def _green(text: str) -> str:
-    return f"\033[32m{text}\033[0m"
-
-
-def _yellow(text: str) -> str:
-    return f"\033[33m{text}\033[0m"
-
-
-def _cyan(text: str) -> str:
-    return f"\033[36m{text}\033[0m"
+_SEVERITY_COLORS = {"critical": _red, "high": _red, "medium": _yellow, "low": _cyan, "info": _green}
 
 
 def _severity_color(severity: str) -> str:
-    colors = {"critical": _red, "high": _red, "medium": _yellow, "low": _cyan, "info": _green}
-    return colors.get(severity, str)(severity.upper())
+    fn = _SEVERITY_COLORS.get(severity)
+    return fn(severity.upper()) if fn else severity.upper()
 
 
 def _status_color(status: str) -> str:
-    if status == "active":
-        return _green(status)
-    if status == "destroyed":
-        return _red(status)
-    return _yellow(status)
+    return {"active": _green, "destroyed": _red}.get(status, _yellow)(status)
+
+
+def _require_deploy(store: DeployStateStore, deploy_id: str) -> object:
+    rec = store.get(deploy_id)
+    if not rec:
+        print(f"Deployment '{deploy_id}' not found.")
+        sys.exit(1)
+    return rec
+
+
+def _confirm(prompt: str) -> bool:
+    return input(f"{prompt} [y/N] ").strip().lower() in ("y", "yes")
+
+
+def _make_tracker() -> tuple:
+    az = AzureCLI()
+    store = DeployStateStore()
+    return az, store, ResourceTracker(az, store)
 
 
 def cmd_list(_args: argparse.Namespace) -> None:
@@ -67,22 +75,18 @@ def cmd_list(_args: argparse.Namespace) -> None:
 
 def cmd_show(args: argparse.Namespace) -> None:
     store = DeployStateStore()
-    rec = store.get(args.deploy_id)
-    if not rec:
-        print(f"Deployment '{args.deploy_id}' not found.")
-        sys.exit(1)
+    rec = _require_deploy(store, args.deploy_id)
 
     if args.json:
         print(json.dumps(asdict(rec), indent=2))
         return
 
-    print(f"{_bold('Deploy ID:')}  {rec.deploy_id}")
-    print(f"{_bold('Tag:')}        {rec.tag}")
-    print(f"{_bold('Kind:')}       {rec.kind}")
-    print(f"{_bold('Status:')}     {_status_color(rec.status)}")
-    print(f"{_bold('Created:')}    {rec.created_at}")
-    print(f"{_bold('Updated:')}    {rec.updated_at}")
-    print(f"{_bold('RGs:')}        {', '.join(rec.resource_groups) or '-'}")
+    for label, val in [
+        ("Deploy ID:", rec.deploy_id), ("Tag:", rec.tag), ("Kind:", rec.kind),
+        ("Status:", _status_color(rec.status)), ("Created:", rec.created_at),
+        ("Updated:", rec.updated_at), ("RGs:", ", ".join(rec.resource_groups) or "-"),
+    ]:
+        print(f"{_bold(f'{label:<12}')} {val}")
     print()
 
     if rec.resources:
@@ -101,9 +105,7 @@ def cmd_show(args: argparse.Namespace) -> None:
 
 
 def cmd_audit(args: argparse.Namespace) -> None:
-    az = AzureCLI()
-    store = DeployStateStore()
-    tracker = ResourceTracker(az, store)
+    _az, _store, tracker = _make_tracker()
 
     print("Scanning Azure subscription for resources...")
     result = tracker.audit()
@@ -149,18 +151,12 @@ def cmd_misconfig(args: argparse.Namespace) -> None:
     store = DeployStateStore()
     checker = MisconfigChecker(az)
 
-    resource_groups: list[str] = []
     if args.deploy_id:
-        rec = store.get(args.deploy_id)
-        if not rec:
-            print(f"Deployment '{args.deploy_id}' not found.")
-            sys.exit(1)
+        rec = _require_deploy(store, args.deploy_id)
         resource_groups = rec.resource_groups
         print(f"Scanning resource groups for deployment {args.deploy_id}...")
     else:
-        for rec in store.all_deployments.values():
-            resource_groups.extend(rec.resource_groups)
-        resource_groups = list(set(resource_groups))
+        resource_groups = list({rg for r in store.all_deployments.values() for rg in r.resource_groups})
         print(f"Scanning all tracked resource groups ({len(resource_groups)})...")
 
     if not resource_groups:
@@ -193,21 +189,14 @@ def cmd_misconfig(args: argparse.Namespace) -> None:
 
 
 def cmd_cleanup(args: argparse.Namespace) -> None:
-    az = AzureCLI()
-    store = DeployStateStore()
-    tracker = ResourceTracker(az, store)
-
-    rec = store.get(args.deploy_id)
-    if not rec:
-        print(f"Deployment '{args.deploy_id}' not found.")
-        sys.exit(1)
+    _az, store, tracker = _make_tracker()
+    rec = _require_deploy(store, args.deploy_id)
 
     if not args.yes:
         print(f"This will delete all Azure resource groups for deployment {args.deploy_id}:")
         for rg in rec.resource_groups:
             print(f"  - {rg}")
-        answer = input("Proceed? [y/N] ").strip().lower()
-        if answer not in ("y", "yes"):
+        if not _confirm("Proceed?"):
             print("Aborted.")
             return
 
@@ -227,9 +216,7 @@ def cmd_remove(args: argparse.Namespace) -> None:
 
 
 def cmd_cleanup_orphans(args: argparse.Namespace) -> None:
-    az = AzureCLI()
-    store = DeployStateStore()
-    tracker = ResourceTracker(az, store)
+    _az, _store, tracker = _make_tracker()
 
     print("Running audit to find orphaned resource groups...")
     result = tracker.audit()
@@ -243,8 +230,7 @@ def cmd_cleanup_orphans(args: argparse.Namespace) -> None:
         print(f"  - {g.name}")
 
     if not args.yes:
-        answer = input("Delete all orphaned resource groups? [y/N] ").strip().lower()
-        if answer not in ("y", "yes"):
+        if not _confirm("Delete all orphaned resource groups?"):
             print("Aborted.")
             return
 

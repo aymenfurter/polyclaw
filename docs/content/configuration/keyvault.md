@@ -5,6 +5,8 @@ weight: 1
 
 # Key Vault Integration
 
+> **Warning:** Key Vault integration does not yet cover all secret variables reliably. This is actively being worked on. 
+
 Polyclaw integrates with Azure Key Vault to separate sensitive credentials from the agent's working data. The `.env` file still holds non-secret configuration, but secrets are stored in Key Vault instead. The agent can still read resolved secrets at runtime, so Key Vault does not hide them from the LLM. The value is in keeping secrets out of the workspace filesystem, which reduces the risk of accidentally copying, committing, or leaking them alongside regular configuration and data.
 
 ## Configuration
@@ -24,8 +26,8 @@ KEY_VAULT_RG=my-rg
 ```bash
 az keyvault secret set \
   --vault-name polyclaw-kv \
-  --name github-token \
-  --value "ghp_xxxxxxxxxxxx"
+  --name admin-secret \
+  --value "your-admin-secret"
 ```
 
 ### Reference Secrets
@@ -33,7 +35,6 @@ az keyvault secret set \
 In your `.env` file, use `@kv:` prefixed values:
 
 ```bash
-GITHUB_TOKEN=@kv:github-token
 BOT_APP_PASSWORD=@kv:bot-app-password
 ADMIN_SECRET=@kv:admin-secret
 ACS_CONNECTION_STRING=@kv:acs-connection
@@ -70,7 +71,6 @@ When saving settings through the admin API:
 
 The following variables support in-process `@kv:` resolution:
 
-- `GITHUB_TOKEN`
 - `BOT_APP_PASSWORD`
 - `ADMIN_SECRET`
 - `ACS_CONNECTION_STRING`

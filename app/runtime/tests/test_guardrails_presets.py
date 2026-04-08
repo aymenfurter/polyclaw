@@ -19,26 +19,26 @@ from app.runtime.state.guardrails import (
 
 class TestModelTiers:
     def test_strong_models_are_tier_1(self) -> None:
-        assert get_model_tier("gpt-5.3-codex") == 1
-        assert get_model_tier("claude-opus-4.6") == 1
-        assert get_model_tier("claude-opus-4.6-fast") == 1
+        assert get_model_tier("gpt-5") == 1
+        assert get_model_tier("gpt-5") == 1
+        assert get_model_tier("gpt-5") == 1
 
     def test_standard_models_are_tier_2(self) -> None:
-        assert get_model_tier("claude-sonnet-4.6") == 2
-        assert get_model_tier("gpt-5.2") == 2
-        assert get_model_tier("gemini-3-pro-preview") == 2
+        assert get_model_tier("gpt-4.1") == 2
+        assert get_model_tier("gpt-4.1") == 2
+        assert get_model_tier("gpt-4.1") == 2
 
     def test_cautious_models_are_tier_3(self) -> None:
-        assert get_model_tier("gpt-4.1") == 3
+        assert get_model_tier("gpt-5-mini") == 3
         assert get_model_tier("gpt-5-mini") == 3
 
     def test_unknown_model_defaults_to_tier_3(self) -> None:
         assert get_model_tier("some-future-model") == 3
 
     def test_tier_to_preset(self) -> None:
-        assert get_preset_for_model("gpt-5.3-codex") == PRESET_PERMISSIVE
-        assert get_preset_for_model("claude-sonnet-4.6") == PRESET_BALANCED
-        assert get_preset_for_model("gpt-4.1") == PRESET_RESTRICTIVE
+        assert get_preset_for_model("gpt-5") == PRESET_PERMISSIVE
+        assert get_preset_for_model("gpt-4.1") == PRESET_BALANCED
+        assert get_preset_for_model("gpt-5-mini") == PRESET_RESTRICTIVE
         assert get_preset_for_model("unknown") == PRESET_RESTRICTIVE
 
 
@@ -213,17 +213,17 @@ class TestApplyPreset:
 
     def test_apply_model_defaults_adds_columns(self, tmp_path) -> None:
         store = GuardrailsConfigStore(tmp_path / "g.json")
-        store.apply_model_defaults(["gpt-5.3-codex", "gpt-4.1"])
-        assert "gpt-5.3-codex" in store.config.model_columns
-        assert "gpt-4.1" in store.config.model_columns
+        store.apply_model_defaults(["gpt-5", "gpt-5-mini"])
+        assert "gpt-5" in store.config.model_columns
+        assert "gpt-5-mini" in store.config.model_columns
 
     def test_apply_model_defaults_differentiates_tiers(self, tmp_path) -> None:
         store = GuardrailsConfigStore(tmp_path / "g.json")
-        store.apply_model_defaults(["gpt-5.3-codex", "gpt-5.2", "gpt-4.1"])
+        store.apply_model_defaults(["gpt-5", "gpt-4.1", "gpt-5-mini"])
 
-        strong = store.config.model_policies["gpt-5.3-codex"]
-        standard = store.config.model_policies["gpt-5.2"]
-        cautious = store.config.model_policies["gpt-4.1"]
+        strong = store.config.model_policies["gpt-5"]
+        standard = store.config.model_policies["gpt-4.1"]
+        cautious = store.config.model_policies["gpt-5-mini"]
 
         # Strong (permissive): view filtered everywhere, run filtered interactive / hitl bg
         assert strong["interactive"]["view"] == "filter"
@@ -247,8 +247,8 @@ class TestApplyPreset:
 
     def test_mcp_risk_differentiation_in_model_policies(self, tmp_path) -> None:
         store = GuardrailsConfigStore(tmp_path / "g.json")
-        store.apply_model_defaults(["gpt-5.3-codex"])
-        strong = store.config.model_policies["gpt-5.3-codex"]
+        store.apply_model_defaults(["gpt-5"])
+        strong = store.config.model_policies["gpt-5"]
         # MS Learn (low risk) -> filter everywhere
         assert strong["interactive"]["mcp:microsoft-learn"] == "filter"
         assert strong["background"]["mcp:microsoft-learn"] == "filter"
@@ -263,8 +263,8 @@ class TestApplyPreset:
 
     def test_cautious_model_mcp_risk_differentiation(self, tmp_path) -> None:
         store = GuardrailsConfigStore(tmp_path / "g.json")
-        store.apply_model_defaults(["gpt-4.1"])
-        cautious = store.config.model_policies["gpt-4.1"]
+        store.apply_model_defaults(["gpt-5-mini"])
+        cautious = store.config.model_policies["gpt-5-mini"]
         # MS Learn (low risk) -> filter everywhere
         assert cautious["interactive"]["mcp:microsoft-learn"] == "filter"
         assert cautious["background"]["mcp:microsoft-learn"] == "filter"
@@ -280,24 +280,24 @@ class TestApplyPreset:
     def test_resolve_action_uses_model_policy(self, tmp_path) -> None:
         store = GuardrailsConfigStore(tmp_path / "g.json")
         store.set_hitl_enabled(True)
-        store.apply_model_defaults(["gpt-4.1"])
-        # gpt-4.1 is tier 3 (restrictive) -- run in interactive should be hitl
+        store.apply_model_defaults(["gpt-5-mini"])
+        # gpt-5-mini is tier 3 (restrictive) -- run in interactive should be hitl
         result = store.resolve_action(
-            "run", execution_context="interactive", model="gpt-4.1",
+            "run", execution_context="interactive", model="gpt-5-mini",
         )
         assert result == "hitl"
         # run in background should be deny
         result = store.resolve_action(
-            "run", execution_context="background", model="gpt-4.1",
+            "run", execution_context="background", model="gpt-5-mini",
         )
         assert result == "deny"
 
     def test_resolve_action_mslearn_allowed_for_cautious(self, tmp_path) -> None:
         store = GuardrailsConfigStore(tmp_path / "g.json")
         store.set_hitl_enabled(True)
-        store.apply_model_defaults(["gpt-4.1"])
+        store.apply_model_defaults(["gpt-5-mini"])
         result = store.resolve_action(
-            "mcp:microsoft-learn", mcp_server="microsoft-learn", model="gpt-4.1",
+            "mcp:microsoft-learn", mcp_server="microsoft-learn", model="gpt-5-mini",
         )
         # MS Learn is low risk, filtered even for cautious models
         assert result == "filter"

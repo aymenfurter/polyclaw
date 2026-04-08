@@ -32,26 +32,16 @@ _DENY: dict[str, str] = {"permissionDecision": "deny"}
 
 
 class HitlInterceptor:
-    """Human-in-the-loop tool approval interceptor.
-
-    Per-turn state (emit, model, session context) is bound via
-    :meth:`bind_turn` and released via :meth:`unbind_turn`.  Persistent
-    wiring (phone verifier, AITL reviewer, prompt shield) is set once
-    during application startup.
-    """
+    """Human-in-the-loop tool approval interceptor."""
 
     def __init__(self, guardrails: GuardrailsConfigStore) -> None:
         self._guardrails = guardrails
-
-        # -- per-turn state (bound/unbound each agent turn) ----------------
         self._emit: Callable[[str, dict[str, Any]], None] | None = None
         self._bot_reply_fn: Callable[[str], Awaitable[None]] | None = None
         self._execution_context: str = ""
         self._model: str = ""
         self._session_id: str = ""
         self._tool_activity: ToolActivityStore | None = None
-
-        # -- persistent state ----------------------------------------------
         self._pending: dict[str, asyncio.Future[bool]] = {}
         self._phone_verifier: PhoneVerifier | None = None
         self._aitl_reviewer: AitlReviewer | None = None
@@ -87,8 +77,6 @@ class HitlInterceptor:
         self._model = ""
         self._session_id = ""
         self._tool_activity = None
-
-    # -- persistent wiring -------------------------------------------------
 
     def set_phone_verifier(self, verifier: PhoneVerifier) -> None:
         self._phone_verifier = verifier
@@ -224,10 +212,14 @@ class HitlInterceptor:
             call_id, tool_name, args_str, mcp_server,
         )
 
+    def _track(self, tool_name: str, strategy: str) -> None:
+        """Record a resolved strategy for later retrieval."""
+        self._resolved_strategies.setdefault(tool_name, []).append(strategy)
+
     def _make_deny(self, call_id: str, tool_name: str) -> dict:
         """Build a deny response and emit an event."""
         logger.info("[hitl.hook] DENY tool=%s call_id=%s", tool_name, call_id)
-        self._resolved_strategies.setdefault(tool_name, []).append("deny")
+        self._track(tool_name, "deny")
         if self._emit:
             self._emit("tool_denied", {
                 "call_id": call_id,
@@ -237,17 +229,9 @@ class HitlInterceptor:
         return dict(_DENY)
 
     async def _dispatch_strategy(
-        self,
-        strategy: str,
-        call_id: str,
-        tool_name: str,
-        args_str: str,
+        self, strategy: str, call_id: str, tool_name: str, args_str: str,
     ) -> dict | None:
-        """Delegate to a strategy-specific handler.
-
-        Returns a decision dict, or ``None`` to fall through to
-        interactive approval.
-        """
+        """Delegate to a strategy-specific handler."""
         if strategy == "aitl":
             return await self._handle_aitl(call_id, tool_name, args_str)
         if strategy == "filter":
@@ -260,7 +244,7 @@ class HitlInterceptor:
         self, call_id: str, tool_name: str, args_str: str,
     ) -> dict | None:
         """AI-in-the-loop review."""
-        self._resolved_strategies.setdefault(tool_name, []).append("aitl")
+        self._track(tool_name, "aitl")
         if self._aitl_reviewer:
             return await self._apply_aitl(call_id, tool_name, args_str)
         logger.warning(
@@ -274,7 +258,7 @@ class HitlInterceptor:
         self, call_id: str, tool_name: str, args_str: str,
     ) -> dict | None:
         """Content-safety filter."""
-        self._resolved_strategies.setdefault(tool_name, []).append("filter")
+        self._track(tool_name, "filter")
         if self._prompt_shield:
             result = await self._apply_filter(call_id, tool_name, args_str)
             if result is not None:
@@ -300,7 +284,7 @@ class HitlInterceptor:
         self, call_id: str, tool_name: str, args_str: str,
     ) -> dict | None:
         """Phone-in-the-loop verification."""
-        self._resolved_strategies.setdefault(tool_name, []).append("pitl")
+        self._track(tool_name, "pitl")
         if self._phone_verifier:
             logger.info("[hitl.hook] PITL routing to phone: tool=%s", tool_name)
             return await self._ask_phone(call_id, tool_name, args_str)
@@ -338,21 +322,21 @@ class HitlInterceptor:
             logger.info(
                 "[hitl.hook] routing to phone channel: tool=%s", tool_name,
             )
-            self._resolved_strategies.setdefault(tool_name, []).append("pitl")
+            self._track(tool_name, "pitl")
             return await self._ask_phone(call_id, tool_name, args_str)
 
         if self._bot_reply_fn:
             logger.info(
                 "[hitl.hook] routing to bot channel: tool=%s", tool_name,
             )
-            self._resolved_strategies.setdefault(tool_name, []).append("hitl")
+            self._track(tool_name, "hitl")
             return await self._ask_bot_channel(call_id, tool_name, args_str)
 
         if self._emit:
             logger.info(
                 "[hitl.hook] routing to web chat: tool=%s", tool_name,
             )
-            self._resolved_strategies.setdefault(tool_name, []).append("hitl")
+            self._track(tool_name, "hitl")
             return await self._ask_chat(call_id, tool_name, args_str)
 
         logger.error(

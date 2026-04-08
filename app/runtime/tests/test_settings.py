@@ -10,7 +10,7 @@ from app.runtime.config.settings import Settings
 class TestSettings:
     def test_defaults(self, data_dir: Path) -> None:
         s = Settings()
-        assert s.copilot_model == "claude-sonnet-4.6"
+        assert s.copilot_model == "gpt-4.1"
         assert s.admin_port == 9090
         assert s.bot_port == 3978
 

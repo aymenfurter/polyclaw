@@ -115,12 +115,8 @@ class MessageProcessor:
 
         text = response or "(no response)"
         outgoing = extract_outgoing_attachments(text) if response else []
-        pending = collect_pending_outgoing()
-        if pending:
-            outgoing.extend(pending)
-        card_attachments = drain_pending_cards()
-        if card_attachments:
-            outgoing.extend(card_attachments)
+        outgoing.extend(collect_pending_outgoing())
+        outgoing.extend(drain_pending_cards())
 
         async def _callback(
             turn_context: TurnContext,

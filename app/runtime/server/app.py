@@ -111,9 +111,13 @@ class AppFactory:
         self._mode = cfg.server_mode
         cfg.ensure_dirs()
         self._ensure_admin_secret()
+        logger.info("[build] mode=%s -- initializing core ...", self._mode.value)
         await self._init_core()
+        logger.info("[build] initializing services ...")
         self._init_services()
+        logger.info("[build] cross-wiring components ...")
         self._cross_wire()
+        logger.info("[build] initializing voice ...")
         self._init_voice()
 
         middlewares = [lockdown_middleware, tunnel_restriction_middleware, auth_middleware]
@@ -131,6 +135,12 @@ class AppFactory:
         if proxy_mw is not None:
             app.on_cleanup.append(proxy_mw.cleanup)
 
+        logger.info(
+            "[build] application ready (mode=%s voice=%s proxy=%s)",
+            self._mode.value,
+            self._voice_routes is not None,
+            proxy_mw is not None,
+        )
         return app
 
     # -- Properties --------------------------------------------------------
@@ -190,13 +200,16 @@ class AppFactory:
         if self._is_runtime and self._agent:
             if self._sandbox_executor:
                 self._agent.set_sandbox(self._sandbox_executor)
+                logger.info("[build] sandbox executor wired into agent")
             self._agent.set_guardrails(self._guardrails_store)
+            logger.info("[build] guardrails store wired into agent")
 
     def _cross_wire(self) -> None:
         """Wire cross-cutting references that span core and services."""
         if self._bot and self._agent and self._agent.hitl_interceptor:
             self._bot._hitl = self._agent.hitl_interceptor
             self._bot._processor._hitl = self._agent.hitl_interceptor
+            logger.info("[cross_wire] HITL interceptor wired into bot")
 
         if self._scheduler and self._agent and self._agent.hitl_interceptor:
             self._scheduler.set_hitl_interceptor(self._agent.hitl_interceptor)

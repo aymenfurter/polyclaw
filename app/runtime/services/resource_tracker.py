@@ -247,17 +247,16 @@ class ResourceTracker:
         return self.delete_resource_group(rg)
 
     def to_dict(self, audit_result: AuditResult) -> dict[str, Any]:
+        from dataclasses import asdict
+
+        def _resource_fields(r: AzureResource) -> dict[str, Any]:
+            d = asdict(r)
+            d.pop("tags", None)
+            return d
+
         return {
-            "tracked_resources": [
-                {"id": r.id, "name": r.name, "resource_group": r.resource_group,
-                 "resource_type": r.resource_type, "location": r.location, "deploy_tag": r.deploy_tag}
-                for r in audit_result.tracked_resources
-            ],
-            "orphaned_resources": [
-                {"id": r.id, "name": r.name, "resource_group": r.resource_group,
-                 "resource_type": r.resource_type, "location": r.location, "deploy_tag": r.deploy_tag}
-                for r in audit_result.orphaned_resources
-            ],
+            "tracked_resources": [_resource_fields(r) for r in audit_result.tracked_resources],
+            "orphaned_resources": [_resource_fields(r) for r in audit_result.orphaned_resources],
             "orphaned_groups": [
                 {"name": g.name, "location": g.location, "deploy_tag": g.deploy_tag}
                 for g in audit_result.orphaned_groups

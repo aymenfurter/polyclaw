@@ -20,6 +20,25 @@ logger = logging.getLogger(__name__)
 _APPROVAL_TIMEOUT = 300.0
 
 
+async def _wait_for_approval(
+    pending: dict[str, asyncio.Future[bool]],
+    call_id: str,
+    tool_name: str,
+    timeout: float = _APPROVAL_TIMEOUT,
+) -> bool:
+    """Register a future and wait for approval/denial or timeout."""
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[bool] = loop.create_future()
+    pending[call_id] = future
+    try:
+        return await asyncio.wait_for(future, timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("[hitl] approval timed out: call_id=%s tool=%s", call_id, tool_name)
+        return False
+    finally:
+        pending.pop(call_id, None)
+
+
 async def ask_chat_approval(
     *,
     emit: Callable[[str, dict[str, Any]], None],
@@ -30,39 +49,16 @@ async def ask_chat_approval(
     timeout: float = _APPROVAL_TIMEOUT,
 ) -> dict[str, str]:
     """Request approval via the WebSocket chat channel."""
-    logger.info(
-        "[hitl.chat] sending approval_request via WebSocket: "
-        "tool=%s call_id=%s",
-        tool_name, call_id,
-    )
+    logger.info("[hitl.chat] approval_request: tool=%s call_id=%s", tool_name, call_id)
     emit("approval_request", {
-        "call_id": call_id,
-        "tool": tool_name,
-        "arguments": args_str,
+        "call_id": call_id, "tool": tool_name, "arguments": args_str,
     })
-    logger.info("[hitl.chat] approval_request emitted, waiting for response...")
 
-    loop = asyncio.get_running_loop()
-    future: asyncio.Future[bool] = loop.create_future()
-    pending[call_id] = future
-
-    try:
-        approved = await asyncio.wait_for(future, timeout=timeout)
-    except asyncio.TimeoutError:
-        logger.warning("[hitl] approval timed out: call_id=%s tool=%s", call_id, tool_name)
-        approved = False
-    finally:
-        pending.pop(call_id, None)
-
+    approved = await _wait_for_approval(pending, call_id, tool_name, timeout)
     decision = "allow" if approved else "deny"
-    logger.info(
-        "[hitl.chat] decision: tool=%s call_id=%s approved=%s decision=%s",
-        tool_name, call_id, approved, decision,
-    )
+    logger.info("[hitl.chat] decision: tool=%s call_id=%s decision=%s", tool_name, call_id, decision)
     emit("approval_resolved", {
-        "call_id": call_id,
-        "tool": tool_name,
-        "approved": approved,
+        "call_id": call_id, "tool": tool_name, "approved": approved,
     })
     return {"permissionDecision": decision}
 
@@ -83,39 +79,19 @@ async def ask_bot_approval(
         f"Arguments: `{truncated}`\n\n"
         f"Reply **y** to approve or anything else to deny."
     )
-    logger.info(
-        "[hitl] bot-channel approval request: tool=%s call_id=%s",
-        tool_name, call_id,
-    )
+    logger.info("[hitl] bot-channel approval request: tool=%s call_id=%s", tool_name, call_id)
     try:
         await bot_reply_fn(confirmation_msg)
     except Exception:
         logger.exception("[hitl] failed to send bot approval message: call_id=%s", call_id)
         return {"permissionDecision": "deny"}
 
-    loop = asyncio.get_running_loop()
-    future: asyncio.Future[bool] = loop.create_future()
-    pending[call_id] = future
-
-    try:
-        approved = await asyncio.wait_for(future, timeout=timeout)
-    except asyncio.TimeoutError:
-        logger.warning("[hitl] bot approval timed out: call_id=%s tool=%s", call_id, tool_name)
-        approved = False
-    finally:
-        pending.pop(call_id, None)
-
+    approved = await _wait_for_approval(pending, call_id, tool_name, timeout)
     decision = "allow" if approved else "deny"
-    logger.info(
-        "[hitl] bot-channel decision: tool=%s call_id=%s decision=%s",
-        tool_name, call_id, decision,
-    )
+    logger.info("[hitl] bot-channel decision: tool=%s call_id=%s decision=%s", tool_name, call_id, decision)
 
-    outcome_msg = (
-        f"Tool **{tool_name}** {'approved' if approved else 'denied'}."
-    )
     try:
-        await bot_reply_fn(outcome_msg)
+        await bot_reply_fn(f"Tool **{tool_name}** {'approved' if approved else 'denied'}.")
     except Exception:
         logger.exception("[hitl] failed to send bot outcome message: call_id=%s", call_id)
 
@@ -211,12 +187,7 @@ async def apply_filter_check(
     tool_name: str,
     args_str: str,
 ) -> tuple[dict[str, str] | None, dict[str, Any]]:
-    """Run a Prompt Shield content-safety check.
-
-    Returns ``(decision | None, shield_result_info)``.  When ``decision``
-    is ``None`` the content passed the filter and the caller should
-    continue with the next step.
-    """
+    """Run a Prompt Shield content-safety check."""
     import time as _time
 
     t0 = _time.monotonic()

@@ -123,19 +123,11 @@ class TestSmokeTestRunnerHelpers:
         assert result is True
         assert r._steps[-1]["ok"] is True
 
-    def test_check_auth_with_token(self) -> None:
-        r = self._make_runner()
-        r._gh.status.return_value = {"authenticated": False, "details": "no gh"}
-        with patch("app.runtime.server.smoke_test.cfg") as mock_cfg:
-            mock_cfg.github_token = "ghp_test"
-            result = r._check_auth()
-        assert result is True
-
     def test_check_auth_no_auth(self) -> None:
         r = self._make_runner()
         r._gh.status.return_value = {"authenticated": False, "details": "not logged in"}
         with patch("app.runtime.server.smoke_test.cfg") as mock_cfg:
-            mock_cfg.github_token = ""
+            mock_cfg.foundry_endpoint = ""
             result = r._check_auth()
         assert result is False
 

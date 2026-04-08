@@ -20,7 +20,7 @@ export function useStatus(intervalMs = 30_000) {
   }, [refresh, intervalMs])
 
   const needsSetup = status
-    ? !(status.azure?.logged_in && status.copilot?.authenticated)
+    ? !(status.azure?.logged_in && status.foundry?.deployed)
     : null
 
   return { status, refresh, needsSetup }

@@ -9,6 +9,7 @@ from __future__ import annotations
 import functools
 import logging
 import secrets
+from typing import Any
 
 from ...config.settings import cfg
 from ...services.cloud.azure import AzureCLI
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 async def ensure_rbac(
-    az: AzureCLI, aoai_name: str, rg: str, steps: list[dict],
+    az: AzureCLI, aoai_name: str, rg: str, steps: list[dict[str, Any]],
 ) -> None:
     """Assign *Cognitive Services OpenAI User* role to the current principal."""
     account = az.account_info()
@@ -30,24 +31,7 @@ async def ensure_rbac(
         })
         return
 
-    principal_id = ""
-    principal_type = "User"
-
-    user_info = await run_sync(
-        functools.partial(az.json, "ad", "signed-in-user", "show", quiet=True),
-    )
-    if isinstance(user_info, dict) and user_info.get("id"):
-        principal_id = user_info["id"]
-    else:
-        sp_id = account.get("user", {}).get("name", "")
-        if sp_id:
-            sp_info = await run_sync(
-                functools.partial(az.json, "ad", "sp", "show", "--id", sp_id, quiet=True),
-            )
-            if isinstance(sp_info, dict) and sp_info.get("id"):
-                principal_id = sp_info["id"]
-                principal_type = "ServicePrincipal"
-
+    principal_id, principal_type = _resolve_principal(az, account)
     if not principal_id:
         steps.append({
             "step": "rbac_assign", "status": "skip",
@@ -88,8 +72,21 @@ async def ensure_rbac(
         logger.warning("RBAC role assignment failed (non-fatal): %s", msg)
 
 
+def _resolve_principal(az: AzureCLI, account: dict) -> tuple[str, str]:
+    """Return (principal_id, principal_type) from az account info."""
+    user_info = az.json("ad", "signed-in-user", "show", quiet=True)
+    if isinstance(user_info, dict) and user_info.get("id"):
+        return user_info["id"], "User"
+    sp_id = account.get("user", {}).get("name", "")
+    if sp_id:
+        sp_info = az.json("ad", "sp", "show", "--id", sp_id, quiet=True)
+        if isinstance(sp_info, dict) and sp_info.get("id"):
+            return sp_info["id"], "ServicePrincipal"
+    return "", "User"
+
+
 async def ensure_rg(
-    az: AzureCLI, rg: str, location: str, steps: list[dict],
+    az: AzureCLI, rg: str, location: str, steps: list[dict[str, Any]],
 ) -> bool:
     """Ensure a resource group exists, creating it if necessary."""
     existing = await run_sync(az.json, "group", "show", "--name", rg)
@@ -109,7 +106,7 @@ async def ensure_rg(
 
 
 async def create_acs(
-    az: AzureCLI, rg: str, steps: list[dict],
+    az: AzureCLI, rg: str, steps: list[dict[str, Any]],
 ) -> tuple[str, str]:
     """Create an ACS resource and retrieve its connection string."""
     acs_name = "polyclaw-acs-%s" % secrets.token_hex(4)
@@ -137,7 +134,7 @@ async def create_acs(
 
 
 async def create_aoai(
-    az: AzureCLI, rg: str, location: str, steps: list[dict],
+    az: AzureCLI, rg: str, location: str, steps: list[dict[str, Any]],
 ) -> tuple[str, str, str, str]:
     """Create an Azure OpenAI resource with a realtime model deployment.
 
@@ -192,12 +189,8 @@ async def create_aoai(
         logger.error("Voice deploy FAILED retrieving AOAI endpoint")
         return aoai_name, "", "", ""
 
-    if aoai_key:
-        steps.append({"step": "aoai_keys", "status": "ok"})
-    else:
-        steps.append({"step": "aoai_keys", "status": "ok",
-                      "detail": "Using Entra ID auth"})
-
+    steps.append({"step": "aoai_keys", "status": "ok",
+                  **({} if aoai_key else {"detail": "Using Entra ID auth"})})
     return aoai_name, aoai_endpoint, aoai_key, deployment_name
 
 
@@ -211,7 +204,7 @@ def persist_config(
     aoai_endpoint: str,
     aoai_key: str,
     deployment_name: str,
-    steps: list[dict],
+    steps: list[dict[str, Any]],
 ) -> None:
     """Write voice configuration to the infra config store and ``.env``."""
     store.save_voice_call(

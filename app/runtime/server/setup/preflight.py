@@ -15,6 +15,15 @@ from ...state.infra_config import InfraConfigStore
 logger = logging.getLogger(__name__)
 
 
+def _summarize(
+    sub: list[dict[str, Any]], ok_msg: str,
+) -> tuple[bool, str, list[dict[str, Any]]]:
+    """Return (all_ok, detail, sub) with a summary of failed check names."""
+    all_ok = all(s["ok"] for s in sub)
+    detail = ok_msg if all_ok else "Issues: %s" % ", ".join(s["name"] for s in sub if not s["ok"])
+    return all_ok, detail, sub
+
+
 class PreflightRoutes:
     """/api/setup/preflight endpoint and sub-checks."""
 
@@ -129,19 +138,14 @@ class PreflightRoutes:
                 "detail": "ACS_CONNECTION_STRING not set",
             })
 
-        src = cfg.acs_source_number
-        sub.append({
-            "name": "acs_source_number",
-            "ok": bool(src),
-            "detail": f"Source: {src}" if src else "ACS_SOURCE_NUMBER not set",
-        })
-
-        tgt = cfg.voice_target_number
-        sub.append({
-            "name": "voice_target_number",
-            "ok": bool(tgt),
-            "detail": f"Target: {tgt}" if tgt else "VOICE_TARGET_NUMBER not set",
-        })
+        for name, val, label in (
+            ("acs_source_number", cfg.acs_source_number, "Source"),
+            ("voice_target_number", cfg.voice_target_number, "Target"),
+        ):
+            sub.append({
+                "name": name, "ok": bool(val),
+                "detail": f"{label}: {val}" if val else f"{name.upper()} not set",
+            })
 
         aoai = cfg.azure_openai_endpoint
         if aoai:
@@ -180,10 +184,7 @@ class PreflightRoutes:
             "detail": f"Deployment: {dep}" if dep else "Not set",
         })
 
-        all_ok = all(s["ok"] for s in sub)
-        issues = [s["name"] for s in sub if not s["ok"]]
-        detail = "ACS voice OK" if all_ok else f"Issues: {', '.join(issues)}"
-        return all_ok, detail, sub
+        return _summarize(sub, "ACS voice OK")
 
     async def _check_acs_callback_security(
         self, *, voice_routes_active: bool = False,
@@ -275,11 +276,7 @@ class PreflightRoutes:
                 "detail": f"Resource ID: {res_id}" if res_id else "Cannot derive",
             })
 
-        all_ok = all(s["ok"] for s in sub)
-        detail = "ACS callback security OK" if all_ok else (
-            f"Issues: {', '.join(s['name'] for s in sub if not s['ok'])}"
-        )
-        return all_ok, detail, sub
+        return _summarize(sub, "ACS callback security OK")
 
     async def _check_jwt_validation(self) -> tuple[bool, str]:
         url = f"http://127.0.0.1:{cfg.admin_port}/api/messages"
@@ -408,29 +405,19 @@ class PreflightRoutes:
                             "detail": f"Valid -- @{username}",
                         })
 
-                        can_join = info.get("can_join_groups", False)
-                        sub.append({
-                            "name": "groups",
-                            "ok": not can_join,
-                            "detail": "Cannot join groups" if not can_join
-                            else "Can join groups (risk)",
-                        })
-
-                        can_read = info.get("can_read_all_group_messages", False)
-                        sub.append({
-                            "name": "group_privacy",
-                            "ok": not can_read,
-                            "detail": "Privacy mode on" if not can_read
-                            else "Reads ALL group messages",
-                        })
-
-                        inline = info.get("supports_inline_queries", False)
-                        sub.append({
-                            "name": "inline",
-                            "ok": not inline,
-                            "detail": "Inline disabled" if not inline
-                            else "Inline enabled (risk)",
-                        })
+                        for key, name, off_msg, on_msg in (
+                            ("can_join_groups", "groups",
+                             "Cannot join groups", "Can join groups (risk)"),
+                            ("can_read_all_group_messages", "group_privacy",
+                             "Privacy mode on", "Reads ALL group messages"),
+                            ("supports_inline_queries", "inline",
+                             "Inline disabled", "Inline enabled (risk)"),
+                        ):
+                            val = info.get(key, False)
+                            sub.append({
+                                "name": name, "ok": not val,
+                                "detail": off_msg if not val else on_msg,
+                            })
                     else:
                         sub.append({
                             "name": "token_valid", "ok": False,
@@ -442,7 +429,4 @@ class PreflightRoutes:
                 "detail": f"Cannot reach API: {exc}",
             })
 
-        all_ok = all(s["ok"] for s in sub)
-        issues = [s["name"] for s in sub if not s["ok"]]
-        detail = "Telegram security OK" if all_ok else f"Issues: {', '.join(issues)}"
-        return all_ok, detail, sub
+        return _summarize(sub, "Telegram security OK")

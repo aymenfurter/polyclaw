@@ -1,154 +1,200 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api } from '../api'
+import { api, getToken } from '../api'
 import { showToast } from '../components/Toast'
 import { EnvironmentsContent } from './Environments'
 import { WorkspaceContent } from './Workspace'
 import { FoundryIQContent } from './FoundryIQ'
-import type { SetupStatus, FoundryIQConfig, MonitoringConfig } from '../types'
+import type { SetupStatus } from '../types'
 
 type Tab = 'overview' | 'environments' | 'voice' | 'memory' | 'workspace' | 'monitoring'
 
-interface PreflightCheck {
-  check: string
-  ok: boolean
-  detail: string
-  sub_checks?: { name: string; ok: boolean; detail: string }[]
-  endpoints?: { method: string; path: string; status: number | string; ok: boolean }[]
+interface FoundryStatus {
+  deployed: boolean
+  foundry_endpoint: string
+  foundry_name: string
+  foundry_resource_group: string
+  deployed_models: string[]
+  key_vault_url: string
+  key_vault_name: string
+  content_safety_endpoint: string
+  content_safety_name: string
+  search_endpoint: string
+  search_name: string
+  embedding_aoai_endpoint: string
+  embedding_aoai_name: string
+  app_insights_name: string
+  session_pool_name: string
+  acs_name: string
+  bot_name: string
+  model: string
 }
 
-interface PreflightResult {
-  status: string
-  checks: PreflightCheck[]
+interface DeployConfig {
+  deploy_key_vault: boolean
+  deploy_acs: boolean
+  deploy_content_safety: boolean
+  deploy_search: boolean
+  deploy_embedding_aoai: boolean
+  deploy_monitoring: boolean
+  deploy_session_pool: boolean
 }
 
-const CHECK_LABELS: Record<string, string> = {
-  bot_credentials: 'Bot Credentials',
-  jwt_validation: 'JWT Validation',
-  tunnel: 'Tunnel',
-  tenant_id: 'Tenant ID',
-  endpoint_auth: 'Endpoint Auth',
-  telegram_security: 'Telegram Security',
-  acs_voice: 'ACS / Voice',
-  acs_callback_security: 'ACS Callback Security',
+const RESOURCE_DEFS: { key: keyof DeployConfig; label: string; desc: string; tag?: string }[] = [
+  { key: 'deploy_key_vault', label: 'Key Vault', desc: 'Secrets management (recommended)', tag: 'Core' },
+  { key: 'deploy_content_safety', label: 'Content Safety', desc: 'Prompt Shields injection detection', tag: 'Recommended' },
+  { key: 'deploy_acs', label: 'Communication Services', desc: 'Voice calling via ACS + OpenAI Realtime' },
+  { key: 'deploy_search', label: 'AI Search', desc: 'Foundry IQ knowledge retrieval' },
+  { key: 'deploy_embedding_aoai', label: 'Embedding Model', desc: 'Text embeddings for Foundry IQ' },
+  { key: 'deploy_monitoring', label: 'Monitoring', desc: 'Application Insights + Log Analytics' },
+  { key: 'deploy_session_pool', label: 'Session Pool', desc: 'Sandboxed code execution (experimental)' },
+]
+
+const DEFAULT_CONFIG: DeployConfig = {
+  deploy_key_vault: true,
+  deploy_acs: false,
+  deploy_content_safety: false,
+  deploy_search: false,
+  deploy_embedding_aoai: false,
+  deploy_monitoring: false,
+  deploy_session_pool: false,
+}
+
+const _STEP_LABELS: Record<string, string> = {
+  resource_group: 'Create resource group',
+  resolve_principal: 'Resolve identity',
+  ensure_runtime_sp: 'Provision service principal',
+  bicep_deploy: 'Deploy Azure resources (Bicep)',
+  extract_outputs: 'Extract deployment outputs',
+  persist_env: 'Persist environment variables',
+  configure_content_safety: 'Configure Content Safety',
+  configure_foundry_iq: 'Configure Foundry IQ',
+  create_search_index: 'Create search index',
+  configure_monitoring: 'Configure Monitoring',
+  configure_session_pool: 'Configure Session Pool',
+  configure_acs: 'Configure Communication Services',
+  persist_state: 'Save deployment record',
+  restart_runtime: 'Restart agent container',
+}
+
+function prettyStepName(raw: string): string {
+  return _STEP_LABELS[raw] || raw.replace(/_/g, ' ')
 }
 
 export default function InfrastructureSettings() {
   const navigate = useNavigate()
   const [tab, setTab] = useState<Tab>('overview')
   const [status, setStatus] = useState<SetupStatus | null>(null)
-  const [preflight, setPreflight] = useState<PreflightResult | null>(null)
+  const [fStatus, setFStatus] = useState<FoundryStatus | null>(null)
+  const [config, setConfig] = useState<DeployConfig>(DEFAULT_CONFIG)
   const [loading, setLoading] = useState<Record<string, boolean>>({})
+  const [deploySteps, setDeploySteps] = useState<{ step: string; status: string; detail?: string }[]>([])
 
   const loadAll = useCallback(async () => {
-    try {
-      const s = await api<SetupStatus>('setup/status')
-      setStatus(s)
-    } catch { /* ignore */ }
+    try { setStatus(await api<SetupStatus>('setup/status')) } catch { /* ignore */ }
+    try { setFStatus(await api<FoundryStatus>('setup/foundry/status')) } catch { /* ignore */ }
   }, [])
 
   useEffect(() => { loadAll() }, [loadAll])
 
-  const runPreflight = async () => {
-    setLoading(p => ({ ...p, preflight: true }))
-    try {
-      const r = await api<PreflightResult>('setup/preflight')
-      setPreflight(r)
-    } catch (e: any) { showToast(e.message, 'error') }
-    setLoading(p => ({ ...p, preflight: false }))
-  }
+  // Sync toggle state from deployed resources
+  useEffect(() => {
+    if (!fStatus) return
+    setConfig({
+      deploy_key_vault: !!fStatus.key_vault_url,
+      deploy_acs: !!fStatus.acs_name,
+      deploy_content_safety: !!fStatus.content_safety_endpoint,
+      deploy_search: !!fStatus.search_endpoint,
+      deploy_embedding_aoai: !!fStatus.embedding_aoai_endpoint,
+      deploy_monitoring: !!fStatus.app_insights_name,
+      deploy_session_pool: !!fStatus.session_pool_name,
+    })
+  }, [fStatus])
 
-  const startTunnel = async () => {
-    setLoading(p => ({ ...p, tunnel: true }))
-    try {
-      await api('setup/tunnel/start', { method: 'POST' })
-      showToast('Tunnel started', 'success')
-      loadAll()
-    } catch (e: any) { showToast(e.message, 'error') }
-    setLoading(p => ({ ...p, tunnel: false }))
-  }
-
-  const stopTunnel = async () => {
-    setLoading(p => ({ ...p, tunnel: true }))
-    try {
-      await api('setup/tunnel/stop', { method: 'POST' })
-      showToast('Tunnel stopped', 'success')
-      loadAll()
-    } catch (e: any) { showToast(e.message, 'error') }
-    setLoading(p => ({ ...p, tunnel: false }))
-  }
-
-  const deployInfra = async () => {
+  const handleDeploy = async () => {
     setLoading(p => ({ ...p, deploy: true }))
+    setDeploySteps([])
     try {
-      await api('setup/infra/deploy', { method: 'POST' })
-      showToast('Infrastructure deployment started', 'success')
-      loadAll()
+      const rg = fStatus?.foundry_resource_group || 'polyclaw-rg'
+      const configPayload = JSON.stringify({ resource_group: rg, ...config })
+      const token = getToken()
+      const params = new URLSearchParams()
+      if (token) params.set('secret', token)
+      params.set('config', configPayload)
+      const url = `/api/setup/foundry/deploy/stream?${params.toString()}`
+
+      await new Promise<void>((resolve, reject) => {
+        const es = new EventSource(url)
+        es.onmessage = (e) => {
+          try {
+            const step = JSON.parse(e.data)
+            setDeploySteps(prev => [...prev, step])
+          } catch { /* ignore parse errors */ }
+        }
+        es.addEventListener('done', (e) => {
+          es.close()
+          try {
+            const data = JSON.parse((e as MessageEvent).data)
+            if (data.status === 'ok') {
+              showToast('Infrastructure deployed successfully', 'success')
+            } else {
+              showToast(data.error || 'Deployment failed', 'error')
+            }
+          } catch { /* ignore */ }
+          resolve()
+        })
+        es.onerror = () => {
+          es.close()
+          reject(new Error('Deployment stream disconnected'))
+        }
+      })
+      await loadAll()
     } catch (e: any) { showToast(e.message, 'error') }
     setLoading(p => ({ ...p, deploy: false }))
   }
 
-  const decommission = async () => {
-    if (!confirm('Decommission infrastructure? This will delete cloud resources.')) return
+  const handleDecommission = async () => {
+    if (!confirm('Decommission all infrastructure? This will delete the resource group and all Azure resources.')) return
     setLoading(p => ({ ...p, decommission: true }))
     try {
-      await api('setup/infra/decommission', { method: 'POST' })
+      await api('setup/foundry/decommission', { method: 'POST' })
       showToast('Decommissioning started', 'success')
-      loadAll()
+      await loadAll()
     } catch (e: any) { showToast(e.message, 'error') }
     setLoading(p => ({ ...p, decommission: false }))
   }
 
   const restartContainer = async () => {
-    if (!confirm('Restart the agent container? This will briefly interrupt active sessions.')) return
-    setLoading(p => ({ ...p, containerRestart: true }))
+    if (!confirm('Restart the agent container?')) return
+    setLoading(p => ({ ...p, restart: true }))
     try {
       const res = await api<{ message: string }>('setup/container/restart', { method: 'POST' })
       showToast(res.message || 'Agent container restarted', 'success')
     } catch (e: any) { showToast(e.message, 'error') }
-    setLoading(p => ({ ...p, containerRestart: false }))
+    setLoading(p => ({ ...p, restart: false }))
   }
 
+  const toggleConfig = (key: keyof DeployConfig) => {
+    setConfig(prev => ({ ...prev, [key]: !prev[key] }))
+  }
 
   return (
     <div className="page">
       <div className="page__header">
         <h1>Infrastructure</h1>
         <div className="page__actions">
-          {status && (
-            <div className="page__status-dots">
-              <StatusBadge ok={status.azure?.logged_in} label="Azure" />
-              <StatusBadge ok={status.copilot?.authenticated} label="GitHub" />
-              <StatusBadge ok={status.tunnel?.active} label="Tunnel" />
-              <StatusBadge ok={status.bot_configured} label="Bot" />
-            </div>
-          )}
-          <button
-            className="btn btn--outline btn--sm"
-            onClick={restartContainer}
-            disabled={loading.containerRestart}
-            title="Restart the agent container to apply configuration changes"
-          >
-            {loading.containerRestart ? 'Restarting...' : 'Restart Agent Container'}
+          <button className="btn btn--outline btn--sm" onClick={restartContainer} disabled={loading.restart}>
+            {loading.restart ? 'Restarting...' : 'Restart Agent'}
           </button>
         </div>
-      </div>
-      <p className="text-muted" style={{ marginTop: -16, marginBottom: 16, fontSize: 13 }}>
-        Configuration changes require a container restart to take effect.
-      </p>
-
-      <div className="settings__actions">
-        <button className="btn btn--outline" onClick={() => navigate('/setup')}>
-          Reopen Setup Wizard
-        </button>
       </div>
 
       <div className="tabs">
         {([
           ['overview', 'Overview'],
-          ['memory', 'Memory / Foundry IQ'],
           ['environments', 'Environments'],
           ['voice', 'Voice'],
+          ['memory', 'Memory / Foundry IQ'],
           ['workspace', 'Workspace'],
           ['monitoring', 'Monitoring'],
         ] as [Tab, string][]).map(([t, label]) => (
@@ -158,187 +204,280 @@ export default function InfrastructureSettings() {
         ))}
       </div>
 
-      {/* Overview: Platform Status + Preflight + Provisioning */}
       {tab === 'overview' && (
         <>
-        {status && (
-        <div className="card">
-          <h3>Platform Status</h3>
-          <div className="detail-grid">
-            <div><strong>Azure:</strong> {status.azure?.logged_in ? status.azure.subscription || 'Logged in' : 'Not logged in'}</div>
-            <div><strong>GitHub Copilot:</strong> {status.copilot?.authenticated ? 'Authenticated' : 'Not authenticated'}</div>
-            <div><strong>Tunnel:</strong> {status.tunnel?.active ? status.tunnel.url : 'Inactive'}</div>
-            <div><strong>Bot:</strong> {status.bot_configured ? 'Configured' : 'Not configured'}</div>
-            <div><strong>Voice:</strong> {status.voice_call_configured ? 'Configured' : 'Not configured'}</div>
+          {/* Deployed Resources */}
+          {fStatus?.deployed && (
+            <div className="card">
+              <h3>Deployed Resources</h3>
+              <p className="text-muted">Resource group: <strong>{fStatus.foundry_resource_group}</strong></p>
+              <div className="infra__resource-grid">
+                <ResourceCard
+                  name="Foundry AI Services"
+                  resource={fStatus.foundry_name}
+                  detail={fStatus.foundry_endpoint}
+                  extra={fStatus.deployed_models.length > 0 ? `Models: ${fStatus.deployed_models.join(', ')}` : undefined}
+                />
+                {fStatus.key_vault_name && (
+                  <ResourceCard name="Key Vault" resource={fStatus.key_vault_name} detail={fStatus.key_vault_url} />
+                )}
+                {fStatus.content_safety_name && (
+                  <ResourceCard name="Content Safety" resource={fStatus.content_safety_name} detail={fStatus.content_safety_endpoint} />
+                )}
+                {fStatus.search_name && (
+                  <ResourceCard name="AI Search" resource={fStatus.search_name} detail={fStatus.search_endpoint} />
+                )}
+                {fStatus.embedding_aoai_name && (
+                  <ResourceCard name="Embedding Model" resource={fStatus.embedding_aoai_name} detail={fStatus.embedding_aoai_endpoint} />
+                )}
+                {fStatus.app_insights_name && (
+                  <ResourceCard name="Application Insights" resource={fStatus.app_insights_name} />
+                )}
+                {fStatus.session_pool_name && (
+                  <ResourceCard name="Session Pool" resource={fStatus.session_pool_name} />
+                )}
+                {fStatus.acs_name && (
+                  <ResourceCard name="Communication Services" resource={fStatus.acs_name} />
+                )}
+                {fStatus.bot_name && (
+                  <ResourceCard name="Bot Service" resource={fStatus.bot_name} />
+                )}
+              </div>
+              {fStatus.model && (
+                <p className="text-muted mt-1">Active model: <strong>{fStatus.model}</strong></p>
+              )}
+            </div>
+          )}
+
+          {/* Runtime Status */}
+          <div className="card">
+            <h3>Runtime Status</h3>
+            <div className="detail-grid">
+              <div><strong>Azure:</strong> {status?.azure?.logged_in ? (status.azure.subscription || 'Logged in') : 'Not logged in'}</div>
+              <div><strong>Foundry:</strong> {fStatus?.deployed ? 'Deployed' : 'Not deployed'}</div>
+              <div><strong>Tunnel:</strong> {status?.tunnel?.active ? <><span className="badge badge--ok badge--sm">Active</span> <code>{status.tunnel.url}</code></> : <span className="badge badge--muted badge--sm">Inactive</span>}</div>
+              <div><strong>Bot:</strong> {status?.bot_configured ? <span className="badge badge--ok badge--sm">Configured</span> : <span className="badge badge--muted badge--sm">Not configured</span>}</div>
+            </div>
           </div>
-        </div>
-        )}
 
-        <div className="card">
-          <h3>Preflight Checks</h3>
-          <p className="text-muted">Security and readiness checks for your deployment.</p>
-          <button className="btn btn--primary mt-1" onClick={runPreflight} disabled={loading.preflight}>
-            {loading.preflight ? 'Running...' : 'Run Preflight Checks'}
-          </button>
-
-          {preflight && (
-            <div className="mt-2">
-              <span className={`badge ${preflight.status === 'ok' ? 'badge--ok' : 'badge--warn'}`}>
-                {preflight.status === 'ok' ? 'All Checks Passed' : 'Warnings'}
-              </span>
-
-              <div className="preflight-grid mt-2">
-                {preflight.checks.map(c => (
-                  <div key={c.check} className="preflight-row">
-                    <div className="preflight-row__header">
-                      <span className={`status-dot__indicator ${c.ok ? 'status-dot__indicator--ok' : 'status-dot__indicator--err'}`} />
-                      <strong>{CHECK_LABELS[c.check] || c.check}</strong>
-                      <span className="text-muted ml-2">{c.detail}</span>
+          {/* Resource Configuration */}
+          {status?.azure?.logged_in && (
+            <div className="card">
+              <h3>{fStatus?.deployed ? 'Update Resources' : 'Deploy Resources'}</h3>
+              <p className="text-muted">Select which Azure resources to {fStatus?.deployed ? 'add to your deployment' : 'deploy'}. Foundry AI Services is always included.</p>
+              <div className="infra__toggle-grid">
+                {RESOURCE_DEFS.map(r => (
+                  <label key={r.key} className="infra__toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={config[r.key]}
+                      onChange={() => toggleConfig(r.key)}
+                    />
+                    <div className="infra__toggle-info">
+                      <span className="infra__toggle-name">
+                        {r.label}
+                        {r.tag && <span className="badge badge--accent badge--sm ml-1">{r.tag}</span>}
+                      </span>
+                      <span className="infra__toggle-desc">{r.desc}</span>
                     </div>
-
-                    {c.sub_checks && c.sub_checks.length > 0 && (
-                      <details className="preflight-details" open={!c.ok}>
-                        <summary>{c.sub_checks.filter(s => s.ok).length}/{c.sub_checks.length} sub-checks passed</summary>
-                        {c.sub_checks.map(sc => (
-                          <div key={sc.name} className="preflight-row preflight-row--sub">
-                            <span className={`status-dot__indicator ${sc.ok ? 'status-dot__indicator--ok' : 'status-dot__indicator--err'}`} />
-                            <span>{sc.name}</span>
-                            <span className="text-muted ml-2">{sc.detail}</span>
-                          </div>
-                        ))}
-                      </details>
-                    )}
-
-                    {c.endpoints && c.endpoints.length > 0 && (
-                      <details className="preflight-details" open={!c.ok}>
-                        <summary>{c.endpoints.filter(e => e.ok).length}/{c.endpoints.length} endpoints secured</summary>
-                        <table className="preflight-table">
-                          <thead><tr><th>Method</th><th>Path</th><th>Status</th><th></th></tr></thead>
-                          <tbody>
-                            {c.endpoints.map(ep => (
-                              <tr key={`${ep.method}-${ep.path}`} className={ep.ok ? '' : 'text-err'}>
-                                <td>{ep.method}</td>
-                                <td>{ep.path}</td>
-                                <td>{ep.status}</td>
-                                <td>{ep.ok ? 'OK' : 'EXPOSED'}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </details>
-                    )}
-                  </div>
+                  </label>
                 ))}
               </div>
-            </div>
-          )}
-        </div>
-
-        <div className="infra">
-          {/* Tunnel Card */}
-          <div className="infra__card">
-            <div className="infra__card-header">
-              <div className="infra__icon infra__icon--tunnel">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-              </div>
-              <div className="infra__card-title">
-                <h4>Tunnel</h4>
-                <p className="text-muted">Cloudflare tunnel for exposing the bot endpoint publicly.</p>
-              </div>
-              <span className={`badge ${status?.tunnel?.active ? 'badge--ok' : 'badge--muted'}`}>
-                {status?.tunnel?.active ? 'Active' : 'Inactive'}
-              </span>
-            </div>
-
-            {status?.tunnel?.active ? (
-              <div className="infra__card-body">
-                {status.tunnel?.url && (
-                  <div className="infra__url-box">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-                    <code>{status.tunnel.url}</code>
-                  </div>
+              <div className="form__actions mt-2">
+                <button className="btn btn--primary" onClick={handleDeploy} disabled={loading.deploy}>
+                  {loading.deploy ? 'Deploying...' : fStatus?.deployed ? 'Update Deployment' : 'Deploy Infrastructure'}
+                </button>
+                {fStatus?.deployed && (
+                  <button className="btn btn--danger" onClick={handleDecommission} disabled={loading.decommission}>
+                    {loading.decommission ? 'Decommissioning...' : 'Decommission All'}
+                  </button>
                 )}
-                <button className="btn btn--danger btn--sm" onClick={stopTunnel} disabled={loading.tunnel}>
-                  {loading.tunnel ? 'Stopping...' : 'Stop Tunnel'}
-                </button>
               </div>
-            ) : (
-              <div className="infra__card-body">
-                <button className="btn btn--primary btn--sm" onClick={startTunnel} disabled={loading.tunnel}>
-                  {loading.tunnel ? 'Starting...' : 'Start Tunnel'}
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Deploy / Decommission Cards */}
-          {status?.azure?.logged_in ? (
-            <div className="infra__actions-grid">
-              <div className="infra__action-card">
-                <div className="infra__icon infra__icon--deploy">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M12 12v9"/><path d="m8 17 4 4 4-4"/></svg>
+              {deploySteps.length > 0 && (
+                <div className="infra__steps mt-2">
+                  {deploySteps.map((s, i) => (
+                    <div key={i} className={`infra__step infra__step--${s.status}`}>
+                      <span className="infra__step-icon">{s.status === 'ok' ? '\u2713' : s.status === 'failed' ? '\u2717' : '\u2022'}</span>
+                      <span>{prettyStepName(s.step)}</span>
+                      {s.detail && <span className="text-muted ml-1">{s.detail}</span>}
+                    </div>
+                  ))}
+                  {loading.deploy && (
+                    <div className="infra__step infra__step--pending">
+                      <span className="infra__step-icon spinner--inline" />
+                      <span className="text-muted">Working...</span>
+                    </div>
+                  )}
                 </div>
-                <h4>Deploy Infrastructure</h4>
-                <p className="text-muted">Provision Azure Bot Framework resources, register the bot channel, and wire up the messaging endpoint.</p>
-                <button className="btn btn--primary mt-1" onClick={deployInfra} disabled={loading.deploy}>
-                  {loading.deploy ? 'Deploying...' : 'Deploy'}
-                </button>
-              </div>
-
-              <div className="infra__action-card infra__action-card--danger">
-                <div className="infra__icon infra__icon--decom">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
-                </div>
-                <h4>Decommission</h4>
-                <p className="text-muted">Tear down all provisioned Azure resources. This is irreversible and will delete cloud infrastructure.</p>
-                <button className="btn btn--danger mt-1" onClick={decommission} disabled={loading.decommission}>
-                  {loading.decommission ? 'Decommissioning...' : 'Decommission'}
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="infra__card infra__card--muted">
-              <div className="infra__card-header">
-                <div className="infra__icon infra__icon--lock">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                </div>
-                <div className="infra__card-title">
-                  <h4>Azure Login Required</h4>
-                  <p className="text-muted">Sign in to Azure to deploy or decommission infrastructure.</p>
-                </div>
-              </div>
-              <div className="infra__card-body">
-                <button className="btn btn--primary btn--sm" onClick={() => navigate('/setup')}>
-                  Open Setup Wizard
-                </button>
-              </div>
+              )}
             </div>
           )}
-        </div>
+
+          {!status?.azure?.logged_in && (
+            <div className="card">
+              <h3>Azure Login Required</h3>
+              <p className="text-muted">Sign in to Azure to deploy or manage infrastructure.</p>
+              <button className="btn btn--primary btn--sm" onClick={() => navigate('/setup')}>Open Setup Wizard</button>
+            </div>
+          )}
+
+          {/* Channels + Bot Configuration */}
+          {fStatus?.deployed && (
+            <ChannelsCard status={status} onReload={loadAll} />
+          )}
         </>
       )}
 
-      {/* Environments */}
       {tab === 'environments' && <EnvironmentsContent />}
-
-      {/* Voice */}
-      {tab === 'voice' && (
-        <VoiceTab status={status} onReload={loadAll} />
-      )}
-
-      {/* Memory / Foundry IQ */}
-      {tab === 'memory' && (
-        <MemoryTab azureLoggedIn={!!status?.azure?.logged_in} />
-      )}
-
-      {/* Workspace */}
+      {tab === 'voice' && <VoiceTab status={status} onReload={loadAll} />}
+      {tab === 'memory' && <MemoryTab azureLoggedIn={!!status?.azure?.logged_in} />}
       {tab === 'workspace' && <WorkspaceContent />}
-
-      {/* Monitoring */}
       {tab === 'monitoring' && <MonitoringTab />}
     </div>
   )
 }
+
+function ResourceCard({ name, resource, detail, extra }: { name: string; resource: string; detail?: string; extra?: string }) {
+  return (
+    <div className="infra__resource-card">
+      <div className="infra__resource-name">{name}</div>
+      <div className="infra__resource-id">{resource}</div>
+      {detail && <div className="infra__resource-detail"><code>{detail}</code></div>}
+      {extra && <div className="infra__resource-extra text-muted">{extra}</div>}
+    </div>
+  )
+}
+
+function ChannelsCard({ status, onReload }: { status: SetupStatus | null; onReload: () => void }) {
+  const [loading, setLoading] = useState<Record<string, boolean>>({})
+  const [showTgForm, setShowTgForm] = useState(false)
+
+  const handleSaveTelegram = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    setLoading(p => ({ ...p, telegram: true }))
+    const fd = new FormData(e.currentTarget)
+    const token = (fd.get('telegram_token') as string || '').trim()
+    const whitelist = (fd.get('telegram_whitelist') as string || '').trim()
+    try {
+      await api('setup/channels/telegram/config', {
+        method: 'POST',
+        body: JSON.stringify({ token, whitelist }),
+      })
+      showToast('Telegram configuration saved', 'success')
+      setShowTgForm(false)
+      onReload()
+    } catch (e: any) { showToast(e.message, 'error') }
+    setLoading(p => ({ ...p, telegram: false }))
+  }
+
+  const handleDeployBot = async () => {
+    setLoading(p => ({ ...p, bot: true }))
+    try {
+      await api('setup/infra/deploy', { method: 'POST' })
+      showToast('Bot deployed successfully', 'success')
+      onReload()
+    } catch (e: any) { showToast(e.message, 'error') }
+    setLoading(p => ({ ...p, bot: false }))
+  }
+
+  const channels = [
+    {
+      id: 'web',
+      name: 'Web Chat',
+      icon: '\uD83C\uDF10',
+      desc: 'Built-in browser chat interface',
+      status: 'always' as const,
+    },
+    {
+      id: 'telegram',
+      name: 'Telegram',
+      icon: '\u2708\uFE0F',
+      desc: 'Chat via Telegram bot',
+      status: status?.telegram_configured ? 'connected' as const : 'available' as const,
+    },
+    {
+      id: 'voice',
+      name: 'Voice Call',
+      icon: '\uD83D\uDCDE',
+      desc: 'Phone calls via ACS + OpenAI Realtime',
+      status: status?.voice_call_configured ? 'connected' as const : 'available' as const,
+    },
+  ]
+
+  return (
+    <div className="card">
+      <h3>Channels</h3>
+      <p className="text-muted">Available communication channels. Web chat always works; others require additional setup.</p>
+
+      <div className="channels__grid">
+        {channels.map(ch => (
+          <div key={ch.id} className={`channels__item channels__item--${ch.status}`}>
+            <div className="channels__icon">{ch.icon}</div>
+            <div className="channels__info">
+              <div className="channels__name">
+                {ch.name}
+                {ch.status === 'always' && <span className="badge badge--ok badge--sm ml-1">Active</span>}
+                {ch.status === 'connected' && <span className="badge badge--ok badge--sm ml-1">Connected</span>}
+              </div>
+              <div className="channels__desc text-muted">{ch.desc}</div>
+            </div>
+            {ch.id === 'telegram' && ch.status !== 'connected' && (
+              <button className="btn btn--secondary btn--sm" onClick={() => setShowTgForm(!showTgForm)}>Configure</button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {showTgForm && (
+        <div className="channels__config-panel mt-2">
+          <h4>Telegram Configuration</h4>
+          <form onSubmit={handleSaveTelegram}>
+            <div className="form__row">
+              <div className="form__group">
+                <label className="form__label">Bot Token</label>
+                <input name="telegram_token" type="password" className="input" placeholder="From @BotFather" />
+              </div>
+              <div className="form__group">
+                <label className="form__label">Allowed User IDs</label>
+                <input name="telegram_whitelist" className="input" placeholder="Comma-separated (empty = all)" />
+              </div>
+            </div>
+            <div className="form__actions">
+              <button type="submit" className="btn btn--primary btn--sm" disabled={loading.telegram}>
+                {loading.telegram ? 'Saving...' : 'Save'}
+              </button>
+              <button type="button" className="btn btn--outline btn--sm" onClick={() => setShowTgForm(false)}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Bot Service */}
+      <div className="channels__bot-bar mt-2">
+        <div className="channels__bot-info">
+          <strong>Bot Service</strong>
+          <span className="text-muted ml-1">-- Cloudflare tunnel for Telegram &amp; Teams</span>
+        </div>
+        <div className="channels__bot-actions">
+          {status?.bot_deployed ? (
+            <span className="badge badge--ok">Deployed</span>
+          ) : (
+            <button className="btn btn--primary btn--sm" onClick={handleDeployBot} disabled={loading.bot}>
+              {loading.bot ? 'Deploying...' : 'Deploy Bot Service'}
+            </button>
+          )}
+          {status?.tunnel?.active && status.tunnel.url && (
+            <>
+              <span className="badge badge--ok badge--sm">Tunnel Active</span>
+              <code style={{ fontSize: 12 }}>{status.tunnel.url}</code>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 
 function StatusBadge({ ok, label }: { ok?: boolean; label: string }) {
   return (
@@ -346,6 +485,35 @@ function StatusBadge({ ok, label }: { ok?: boolean; label: string }) {
       {label}
     </span>
   )
+}
+
+interface MonitoringConfig {
+  enabled: boolean
+  sampling_ratio: number
+  enable_live_metrics: boolean
+  connection_string_set: boolean
+  connection_string_masked: string
+  provisioned: boolean
+  otel_active?: boolean
+  otel_status?: { active?: boolean; tracer_provider?: string }
+  app_insights_name?: string
+  portal_url?: string
+  workspace_name?: string
+  resource_group?: string
+  location?: string
+  grafana_dashboard_url?: string
+}
+
+interface FoundryIQConfig {
+  configured: boolean
+  provisioned?: boolean
+  search_endpoint?: string
+  search_resource_name?: string
+  embedding_name?: string
+  embedding_endpoint?: string
+  openai_resource_name?: string
+  resource_group?: string
+  location?: string
 }
 
 // ---------------------------------------------------------------------------

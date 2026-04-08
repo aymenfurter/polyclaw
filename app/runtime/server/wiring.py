@@ -147,6 +147,7 @@ async def init_core(mode: ServerMode) -> dict[str, Any]:
         await agent.start()
         logger.info("[init_core] Agent started successfully")
 
+        logger.info("[init_core] creating adapter, stores, and bot ...")
         adapter = create_adapter()
         conv_store = ConversationReferenceStore()
         session_store = SessionStore()
@@ -156,7 +157,14 @@ async def init_core(mode: ServerMode) -> dict[str, Any]:
         bot.session_store = session_store
         bot.adapter = adapter
         bot_ep = BotEndpoint(adapter, bot)
-        logger.info("[init_core] core initialization complete")
+        logger.info(
+            "[init_core] core initialization complete "
+            "(adapter=%s conv_store=%s session_store=%s hitl=%s)",
+            type(adapter).__name__,
+            type(conv_store).__name__,
+            type(session_store).__name__,
+            hitl is not None,
+        )
 
         result.update(
             agent=agent, adapter=adapter, conv_store=conv_store,
@@ -178,25 +186,35 @@ def init_services(mode: ServerMode) -> dict[str, Any]:
     Returns a dict of service/store references keyed by name.
     """
     from ..state.deploy_state import DeployStateStore
-    from ..state.foundry_iq_config import FoundryIQConfigStore
-    from ..state.guardrails import GuardrailsConfigStore
-    from ..state.infra_config import InfraConfigStore
+    from ..state.foundry_iq_config import get_foundry_iq_config
+    from ..state.guardrails import get_guardrails_config
+    from ..state.infra_config import get_infra_config
     from ..state.mcp_config import McpConfigStore
-    from ..state.monitoring_config import MonitoringConfigStore
-    from ..state.sandbox_config import SandboxConfigStore
+    from ..state.monitoring_config import get_monitoring_config
+    from ..state.sandbox_config import get_sandbox_config
 
     is_admin = mode in (ServerMode.admin, ServerMode.combined)
     is_runtime = mode in (ServerMode.runtime, ServerMode.combined)
 
+    logger.info("[init_services] mode=%s (admin=%s runtime=%s)", mode.value, is_admin, is_runtime)
+
+    logger.info("[init_services] initializing state stores ...")
+    infra_store = get_infra_config()
+    monitoring_store = get_monitoring_config()
+    sandbox_store = get_sandbox_config()
+    foundry_iq_store = get_foundry_iq_config()
+    guardrails_store = get_guardrails_config()
+    mcp_store = McpConfigStore()
+
     result: dict[str, Any] = {
         "tunnel": None,
         "deploy_store": DeployStateStore(),
-        "infra_store": InfraConfigStore(),
-        "mcp_store": McpConfigStore(),
-        "sandbox_store": SandboxConfigStore(),
-        "foundry_iq_store": FoundryIQConfigStore(),
-        "guardrails_store": GuardrailsConfigStore(),
-        "monitoring_store": MonitoringConfigStore(),
+        "infra_store": infra_store,
+        "mcp_store": mcp_store,
+        "sandbox_store": sandbox_store,
+        "foundry_iq_store": foundry_iq_store,
+        "guardrails_store": guardrails_store,
+        "monitoring_store": monitoring_store,
         "az": None,
         "gh": None,
         "deployer": None,
@@ -207,10 +225,23 @@ def init_services(mode: ServerMode) -> dict[str, Any]:
         "sandbox_executor": None,
     }
 
+    logger.info(
+        "[init_services] stores ready: "
+        "infra(bot=%s tg=%s) monitoring=%s sandbox=%s foundry_iq=%s guardrails=%s mcp=%s",
+        infra_store.bot_configured if infra_store else "?",
+        infra_store.telegram_configured if infra_store else "?",
+        monitoring_store.is_configured if monitoring_store else False,
+        sandbox_store is not None,
+        getattr(foundry_iq_store, "enabled", False),
+        guardrails_store is not None,
+        mcp_store is not None,
+    )
+
     if is_runtime:
         from ..services.tunnel import CloudflareTunnel
 
         result["tunnel"] = CloudflareTunnel()
+        logger.info("[init_services] tunnel client created")
 
     # Admin-side services
     if is_admin:
@@ -220,6 +251,7 @@ def init_services(mode: ServerMode) -> dict[str, Any]:
         from ..services.deployment.deployer import BotDeployer
         from ..services.deployment.provisioner import Provisioner
 
+        logger.info("[init_services] creating cloud services (admin) ...")
         az = AzureCLI()
         deployer = BotDeployer(az, result["deploy_store"])
         result.update(
@@ -233,6 +265,7 @@ def init_services(mode: ServerMode) -> dict[str, Any]:
             ),
             aca_deployer=AcaDeployer(az, result["deploy_store"]),
         )
+        logger.info("[init_services] cloud services ready (az, gh, deployer, provisioner, aca)")
     elif is_runtime:
         from ..services.cloud.azure import AzureCLI
         from ..services.deployment.deployer import BotDeployer
@@ -256,10 +289,12 @@ def init_services(mode: ServerMode) -> dict[str, Any]:
         from ..scheduler import get_scheduler
         from ..state.proactive import get_proactive_store
 
+        logger.info("[init_services] creating runtime services (scheduler, proactive, sandbox) ...")
         result.update(
             scheduler=get_scheduler(),
             proactive_store=get_proactive_store(),
             sandbox_executor=SandboxExecutor(result["sandbox_store"]),
         )
 
+    logger.info("[init_services] initialization complete")
     return result

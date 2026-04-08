@@ -72,12 +72,15 @@ class BaseConfigStore(Generic[C]):
     def _apply_raw(self, raw: dict[str, Any]) -> None:
         """Populate config fields from a raw JSON dict.
 
-        Default implementation sets every dataclass field found in *raw*.
-        Override for custom deserialisation (e.g. secret resolution).
+        Default implementation sets every dataclass field found in *raw*,
+        resolving secret references for fields listed in ``_SECRET_FIELDS``.
         """
         for field_name in self._config_type.__dataclass_fields__:
             if field_name in raw:
-                setattr(self._config, field_name, raw[field_name])
+                value = raw[field_name]
+                if field_name in self._SECRET_FIELDS and isinstance(value, str):
+                    value = self._resolve_secret(value)
+                setattr(self._config, field_name, value)
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,10 +89,13 @@ class BaseConfigStore(Generic[C]):
     def _save_data(self) -> dict[str, Any]:
         """Return the data dict to serialise.
 
-        Default implementation returns ``dataclasses.asdict(self._config)``.
-        Override for custom serialisation (e.g. secret storage).
+        Default implementation returns ``dataclasses.asdict(self._config)``,
+        storing secrets via Key Vault when ``_SECRET_FIELDS`` is non-empty.
         """
-        return asdict(self._config)
+        data = asdict(self._config)
+        if self._SECRET_FIELDS:
+            data = self._store_secrets(data)
+        return data
 
     # -- secret helpers ----------------------------------------------------
 

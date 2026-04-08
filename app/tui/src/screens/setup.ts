@@ -1,5 +1,5 @@
 /**
- * Setup screen -- Azure auth, GitHub auth, tunnel, configuration, infrastructure.
+ * Setup screen -- Azure auth, tunnel, configuration, infrastructure.
  */
 
 import {
@@ -50,8 +50,7 @@ export class SetupScreen extends Screen {
       options: [
         { name: "Azure Login", description: "Log in to Azure" },
         { name: "Azure Logout", description: "Log out from Azure" },
-        { name: "GitHub Login", description: "Authenticate with GitHub Copilot" },
-        { name: "Set GitHub Token", description: "Set a personal access token" },
+        { name: "Deploy Foundry", description: "Deploy AI models via Bicep" },
         { name: "Start Tunnel", description: "Start dev tunnel" },
         { name: "Run Smoke Test", description: "Test Copilot connectivity" },
         { name: "Save Configuration", description: "Save bot and channel config" },
@@ -151,12 +150,10 @@ export class SetupScreen extends Screen {
     try {
       const s = await this.api.getSetupStatus();
       const azOk = s.azure?.logged_in ?? false;
-      const ghOk = s.copilot?.authenticated ?? false;
       const tunnelOk = s.tunnel?.active ?? false;
       const dot = (ok: boolean) => ok ? "\x1b[32m●\x1b[0m" : "\x1b[31m●\x1b[0m";
       this.authText.content = [
         `  ${dot(azOk)} Azure    ${azOk ? `${s.azure?.user ?? ""} (${s.azure?.subscription ?? ""})` : "Not logged in  --  run 'Azure Login' below"}`,
-        `  ${dot(ghOk)} GitHub   ${ghOk ? (s.copilot?.details ?? "Authenticated") : "Not authenticated  --  run 'GitHub Login' below"}`,
         `  ${dot(tunnelOk)} Tunnel   ${tunnelOk ? (s.tunnel?.url ?? "Active") : "Not active  --  run 'Start Tunnel' below"}`,
       ].join("\n");
     } catch (err: unknown) {
@@ -209,8 +206,7 @@ export class SetupScreen extends Screen {
     const actions: (() => Promise<void>)[] = [
       () => this.doAzureLogin(),
       () => this.doAzureLogout(),
-      () => this.doGitHubLogin(),
-      () => this.doSetGitHubToken(),
+      () => this.doDeployFoundry(),
       () => this.doStartTunnel(),
       () => this.doSmokeTest(),
       () => this.doSaveConfiguration(),
@@ -270,46 +266,25 @@ export class SetupScreen extends Screen {
     }
   }
 
-  private async doGitHubLogin(): Promise<void> {
-    this.setResult("  Starting GitHub login...");
+  private async doDeployFoundry(): Promise<void> {
+    this.setResult("  Deploying Foundry infrastructure via Bicep...");
     try {
-      const r = await this.api.copilotLogin();
-      if (r.status === "already_authenticated") {
-        this.setResult("  \x1b[32mAlready authenticated\x1b[0m");
-        return;
-      }
-      const code = r.user_code || r.code;
-      const url = r.verification_uri || r.url || "https://github.com/login/device";
-      if (code) {
-        this.setResult(`  Open ${url} and enter code: \x1b[1m${code}\x1b[0m\n  Waiting for completion...`);
-        await this.pollGitHub();
+      const r = await this.api.fetchRaw("/api/setup/foundry/deploy", {
+        method: "POST",
+        body: JSON.stringify({ resource_group: "polyclaw-rg", location: "eastus" }),
+        signal: AbortSignal.timeout(600_000),
+      });
+      const body = await r.json();
+      if (body.status === "ok") {
+        this.setResult(`  \x1b[32mFoundry deployed!\x1b[0m\n  Endpoint: ${body.foundry_endpoint}\n  Models: ${(body.deployed_models || []).join(", ")}`);
       } else {
-        this.setResult(`  ${r.message || "Login started"}`);
+        this.setResult(`  \x1b[31mDeployment failed: ${body.error || "unknown error"}\x1b[0m`);
       }
       this.loadAuthStatus();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.setResult(`  \x1b[31m${msg}\x1b[0m`);
+      this.setResult(`  \x1b[31mError: ${msg}\x1b[0m`);
     }
-  }
-
-  private async pollGitHub(): Promise<void> {
-    for (let i = 0; i < 60; i++) {
-      await new Promise((r) => setTimeout(r, 3000));
-      try {
-        const c = await this.api.copilotStatus();
-        if (c.authenticated) {
-          this.setResult("  \x1b[32mGitHub authenticated!\x1b[0m");
-          this.loadAuthStatus();
-          return;
-        }
-      } catch { /* keep trying */ }
-    }
-    this.setResult("  \x1b[33mLogin timed out.\x1b[0m");
-  }
-
-  private async doSetGitHubToken(): Promise<void> {
-    this.setResult("  Enter a GitHub token in the input and run this action again.\n  (Token input not yet wired -- use GitHub Login instead)");
   }
 
   private async doStartTunnel(): Promise<void> {

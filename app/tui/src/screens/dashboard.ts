@@ -111,14 +111,12 @@ export class DashboardScreen extends Screen {
 
       const dot = (ok: boolean) => ok ? "\x1b[32m●\x1b[0m" : "\x1b[31m●\x1b[0m";
       const azOk = s.azure?.logged_in ?? false;
-      const ghOk = s.copilot?.authenticated ?? false;
       const tunnelOk = s.tunnel?.active ?? false;
       const botOk = s.bot_configured ?? false;
       const voiceOk = s.voice_call_configured ?? false;
 
       this.statusText.content = [
         `  ${dot(azOk)} Azure     ${azOk ? (s.azure?.user ?? "Logged in") : "Not logged in"}`,
-        `  ${dot(ghOk)} GitHub    ${ghOk ? (s.copilot?.details ?? "Authenticated") : "Not authenticated"}`,
         `  ${dot(tunnelOk)} Tunnel    ${tunnelOk ? (s.tunnel?.url ?? "Active") : "Inactive"}`,
         `  ${dot(botOk)} Bot       ${botOk ? "Configured" : "Not configured"}`,
         `  ${dot(voiceOk)} Voice     ${voiceOk ? "Configured" : "Not configured"}`,

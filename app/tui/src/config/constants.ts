@@ -82,14 +82,12 @@ export const STARTUP_PHASES = [
   { key: "start",  label: "Container" },
   { key: "server", label: "Server" },
   { key: "azure",  label: "Azure" },
-  { key: "github", label: "GitHub" },
   { key: "tunnel", label: "Tunnel" },
   { key: "bot",    label: "Bot" },
 ] as const;
 
 export const STATUS_ITEMS = [
   { key: "azure",  label: "Azure" },
-  { key: "github", label: "GitHub" },
   { key: "tunnel", label: "Tunnel" },
   { key: "bot",    label: "Bot" },
 ] as const;

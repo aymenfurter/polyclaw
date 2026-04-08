@@ -1,8 +1,4 @@
-"""Card tool definitions for the Copilot agent.
-
-Wraps the card queue and attachment builders from the messaging layer
-into ``@define_tool`` functions that the LLM can invoke.
-"""
+"""Card tool definitions for the Copilot agent."""
 
 from __future__ import annotations
 
@@ -35,12 +31,7 @@ class HeroCardParams(BaseModel):
     buttons: str = Field(default="[]", description="JSON array of button objects.")
 
 
-class ThumbnailCardParams(BaseModel):
-    title: str = Field(default="", description="Card title")
-    subtitle: str = Field(default="", description="Card subtitle")
-    text: str = Field(default="", description="Card body text")
-    image_url: str | None = Field(default=None, description="URL of the thumbnail image")
-    buttons: str = Field(default="[]", description="JSON array of button objects.")
+ThumbnailCardParams = HeroCardParams
 
 
 class CardCarouselParams(BaseModel):
@@ -62,22 +53,25 @@ def send_adaptive_card(params: AdaptiveCardParams) -> dict:
     return {"status": "queued", "fallback_text": params.fallback_text, "elements": len(card_data.get("body", []))}
 
 
+def _parse_buttons(raw: str | list) -> list:
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw) if raw else []
+        except json.JSONDecodeError:
+            return []
+    return raw
+
+
 @define_tool(description="Send a Hero Card with large image, title, and action buttons.")
 def send_hero_card(params: HeroCardParams) -> dict:
-    try:
-        buttons = json.loads(params.buttons) if params.buttons else []
-    except json.JSONDecodeError:
-        buttons = []
+    buttons = _parse_buttons(params.buttons)
     _default_queue.enqueue(_hero_card_attachment(title=params.title, subtitle=params.subtitle, text=params.text, image_url=params.image_url, buttons=buttons))
     return {"status": "queued", "title": params.title}
 
 
 @define_tool(description="Send a Thumbnail Card with smaller image and compact layout.")
 def send_thumbnail_card(params: ThumbnailCardParams) -> dict:
-    try:
-        buttons = json.loads(params.buttons) if params.buttons else []
-    except json.JSONDecodeError:
-        buttons = []
+    buttons = _parse_buttons(params.buttons)
     _default_queue.enqueue(_thumbnail_card_attachment(title=params.title, subtitle=params.subtitle, text=params.text, image_url=params.image_url, buttons=buttons))
     return {"status": "queued", "title": params.title}
 
@@ -91,21 +85,17 @@ def send_card_carousel(params: CardCarouselParams) -> dict:
     if not isinstance(cards, list):
         return {"error": "cards_json must be a JSON array."}
 
+    _CARD_BUILDERS = {
+        "adaptive": lambda c: _adaptive_card_attachment(c),
+        "hero": lambda c: _hero_card_attachment(title=c.get("title", ""), subtitle=c.get("subtitle", ""), text=c.get("text", ""), image_url=c.get("image_url"), buttons=_parse_buttons(c.get("buttons", []))),
+        "thumbnail": lambda c: _thumbnail_card_attachment(title=c.get("title", ""), subtitle=c.get("subtitle", ""), text=c.get("text", ""), image_url=c.get("image_url"), buttons=_parse_buttons(c.get("buttons", []))),
+    }
+
     count = 0
     for card in cards:
         card_type = card.pop("type", "hero")
-        if card_type == "adaptive":
-            _default_queue.enqueue(_adaptive_card_attachment(card))
-        elif card_type == "thumbnail":
-            buttons = card.get("buttons", [])
-            if isinstance(buttons, str):
-                buttons = json.loads(buttons)
-            _default_queue.enqueue(_thumbnail_card_attachment(title=card.get("title", ""), subtitle=card.get("subtitle", ""), text=card.get("text", ""), image_url=card.get("image_url"), buttons=buttons))
-        else:
-            buttons = card.get("buttons", [])
-            if isinstance(buttons, str):
-                buttons = json.loads(buttons)
-            _default_queue.enqueue(_hero_card_attachment(title=card.get("title", ""), subtitle=card.get("subtitle", ""), text=card.get("text", ""), image_url=card.get("image_url"), buttons=buttons))
+        builder = _CARD_BUILDERS.get(card_type, _CARD_BUILDERS["hero"])
+        _default_queue.enqueue(builder(card))
         count += 1
 
     return {"status": "queued", "card_count": count}

@@ -88,11 +88,7 @@ class PromptShieldService:
             logger.warning(
                 "[prompt_shield.check] no endpoint configured -- skipping check"
             )
-            return ShieldResult(
-                attack_detected=False,
-                mode="prompt_shields",
-                detail="Content Safety endpoint not configured -- check skipped",
-            )
+            return self._result(False, "Content Safety endpoint not configured -- check skipped")
         logger.info(
             "[prompt_shield.check] scanning %d chars via Content Safety API",
             len(text),
@@ -107,8 +103,8 @@ class PromptShieldService:
         logger.debug("[prompt_shield] using Entra ID bearer token")
         return {"Authorization": f"Bearer {token}"}
 
-    def _api_check(self, text: str) -> ShieldResult:
-        """Call the Prompt Shields REST API."""
+    def _build_request(self, text: str) -> urllib.request.Request:
+        """Build a Prompt Shields API request."""
         url = (
             f"{self._endpoint}/contentsafety/text:shieldPrompt"
             f"?api-version={_API_VERSION}"
@@ -116,12 +112,14 @@ class PromptShieldService:
         body = json.dumps({"userPrompt": text, "documents": []}).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         headers.update(self._get_auth_header())
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers=headers,
-            method="POST",
-        )
+        return urllib.request.Request(url, data=body, headers=headers, method="POST")
+
+    def _result(self, attack: bool, detail: str) -> ShieldResult:
+        return ShieldResult(attack_detected=attack, mode="prompt_shields", detail=detail)
+
+    def _api_check(self, text: str) -> ShieldResult:
+        """Call the Prompt Shields REST API."""
+        req = self._build_request(text)
         t0 = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
@@ -135,11 +133,7 @@ class PromptShieldService:
                 "[prompt_shield.api] result=%s elapsed=%.0fms detail=%s",
                 "ATTACK" if detected else "CLEAN", elapsed_ms, detail,
             )
-            return ShieldResult(
-                attack_detected=detected,
-                mode="prompt_shields",
-                detail=detail,
-            )
+            return self._result(detected, detail)
         except urllib.error.HTTPError as exc:
             elapsed_ms = (time.monotonic() - t0) * 1000
             body_text = exc.read().decode("utf-8", errors="replace")[:500]
@@ -147,81 +141,35 @@ class PromptShieldService:
                 "[prompt_shield.api] HTTP %s elapsed=%.0fms body=%s",
                 exc.code, elapsed_ms, body_text,
             )
-            # Any API error blocks the call -- no silent fallback.
-            return ShieldResult(
-                attack_detected=True,
-                mode="prompt_shields",
-                detail=f"Content Safety API error (HTTP {exc.code}) -- blocking for safety",
-            )
+            return self._result(True, f"Content Safety API error (HTTP {exc.code}) -- blocking for safety")
         except Exception as exc:
             elapsed_ms = (time.monotonic() - t0) * 1000
             logger.error(
                 "[prompt_shield.api] request failed elapsed=%.0fms error=%s",
                 elapsed_ms, exc, exc_info=True,
             )
-            return ShieldResult(
-                attack_detected=True,
-                mode="prompt_shields",
-                detail=f"Content Safety API unreachable -- blocking for safety: {exc}",
-            )
+            return self._result(True, f"Content Safety API unreachable -- blocking for safety: {exc}")
 
     def dry_run(self) -> ShieldResult:
-        """Send a harmless probe to verify API connectivity and RBAC.
-
-        Returns a ``ShieldResult`` whose ``attack_detected`` is ``False``
-        when the API accepted the call (permissions OK) and ``True`` when
-        auth or connectivity failed.  The ``detail`` field contains a
-        human-readable explanation.
-        """
+        """Send a harmless probe to verify API connectivity and RBAC."""
         if not self.configured:
-            return ShieldResult(
-                attack_detected=True,
-                mode="prompt_shields",
-                detail="No endpoint configured",
-            )
-
-        url = (
-            f"{self._endpoint}/contentsafety/text:shieldPrompt"
-            f"?api-version={_API_VERSION}"
-        )
-        body = json.dumps(
-            {"userPrompt": "Hello, this is a connectivity test.", "documents": []},
-        ).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
+            return self._result(True, "No endpoint configured")
         try:
-            headers.update(self._get_auth_header())
+            req = self._build_request("Hello, this is a connectivity test.")
         except Exception as exc:
-            return ShieldResult(
-                attack_detected=True,
-                mode="prompt_shields",
-                detail=f"Token acquisition failed: {exc}",
-            )
-
-        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            return self._result(True, f"Token acquisition failed: {exc}")
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 resp.read()
             logger.info("[prompt_shield.dry_run] API reachable, auth OK")
-            return ShieldResult(
-                attack_detected=False,
-                mode="prompt_shields",
-                detail="API reachable, auth OK",
-            )
+            return self._result(False, "API reachable, auth OK")
         except urllib.error.HTTPError as exc:
             body_text = exc.read().decode("utf-8", errors="replace")[:500]
             logger.error("[prompt_shield.dry_run] HTTP %s: %s", exc.code, body_text)
-            return ShieldResult(
-                attack_detected=True,
-                mode="prompt_shields",
-                detail=f"HTTP {exc.code}: {body_text}",
-            )
+            return self._result(True, f"HTTP {exc.code}: {body_text}")
         except Exception as exc:
             logger.error("[prompt_shield.dry_run] connection failed: %s", exc, exc_info=True)
-            return ShieldResult(
-                attack_detected=True,
-                mode="prompt_shields",
-                detail=f"Connection failed: {exc}",
-            )
+            return self._result(True, f"Connection failed: {exc}")
 
 
 class _BearerTokenProvider:

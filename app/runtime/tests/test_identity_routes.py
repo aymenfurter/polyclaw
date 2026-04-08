@@ -108,6 +108,7 @@ class TestIdentityRoles:
         mock_cfg.runtime_sp_app_id = "app-id"
         mock_cfg.aca_mi_client_id = ""
         mock_cfg.runtime_sp_tenant = ""
+        mock_cfg.env.read.return_value = "polyclaw-rg"
 
         az = MagicMock()
         az.json.side_effect = [
@@ -124,6 +125,8 @@ class TestIdentityRoles:
                     "condition": "",
                 },
             ],
+            [],  # _discover_session_pool (RG-scoped)
+            [],  # _discover_session_pool (subscription-wide)
         ]
 
         routes = IdentityRoutes(az=az)
@@ -133,14 +136,15 @@ class TestIdentityRoles:
             assert resp.status == 200
             data = await resp.json()
             assert len(data["assignments"]) == 2
-            assert len(data["checks"]) == 5
+            assert len(data["checks"]) == 8
 
-            checks = {c["role"]: c["present"] for c in data["checks"]}
-            assert checks["Cognitive Services User"] is True
-            assert checks["Reader"] is True
-            assert checks["Azure Bot Service Contributor Role"] is False
-            assert checks["Key Vault Secrets Officer"] is False
-            assert checks["Azure ContainerApps Session Executor"] is False
+            checks = {c["feature"]: c["present"] for c in data["checks"]}
+            assert checks["Prompt Shields (Content Safety)"] is True
+            assert checks["Resource Group Visibility"] is True
+            assert checks["Bot Service Management"] is False
+            assert checks["Key Vault Secrets"] is False
+            assert checks["Sandbox / Code Interpreter"] is False
+            assert checks["Foundry BYOK (OpenAI Chat)"] is False
 
             # Session executor check should include detail about missing role
             se_check = next(
@@ -251,11 +255,14 @@ class TestIdentityRoles:
         mock_cfg.runtime_sp_app_id = "app-id"
         mock_cfg.aca_mi_client_id = ""
         mock_cfg.runtime_sp_tenant = ""
+        mock_cfg.env.read.return_value = "polyclaw-rg"
 
         az = MagicMock()
         az.json.side_effect = [
             None,  # _sp_show fails
             [{"roleDefinitionName": "Reader", "scope": "/sub/rg", "condition": ""}],
+            [],  # _discover_session_pool (RG-scoped)
+            [],  # _discover_session_pool (subscription-wide)
         ]
 
         routes = IdentityRoutes(az=az)
@@ -309,11 +316,18 @@ class TestIdentityFixRoles:
         mock_cfg.runtime_sp_app_id = "app-id"
         mock_cfg.aca_mi_client_id = ""
         mock_cfg.runtime_sp_tenant = ""
+        mock_cfg.foundry_endpoint = ""
 
         az = MagicMock()
         az.json.side_effect = [
             {"id": "sp-oid", "objectId": "sp-oid"},  # resolve principal
+            [],  # _discover_cs_resource (RG-scoped)
+            [],  # _discover_cs_resource (subscription-wide)
+            [],  # _discover_session_pool (RG-scoped)
+            [],  # _discover_session_pool (subscription-wide)
         ]
+        az.ok.return_value = (True, "")
+        mock_cfg.env.read.return_value = "polyclaw-rg"
 
         store = GuardrailsConfigStore(tmp_path / "g.json")
         routes = IdentityRoutes(az=az, guardrails_store=store)
@@ -322,7 +336,9 @@ class TestIdentityFixRoles:
             resp = await client.post("/api/identity/fix-roles")
             assert resp.status == 200
             data = await resp.json()
-            assert data["steps"][0]["status"] == "skipped"
+            # First step is content_safety_rbac (skipped: no endpoint)
+            cs_step = next(s for s in data["steps"] if "content_safety" in s["step"])
+            assert cs_step["status"] == "skipped"
 
     @pytest.mark.asyncio
     @patch("app.runtime.server.routes.identity_routes.cfg")
@@ -330,14 +346,16 @@ class TestIdentityFixRoles:
         mock_cfg.runtime_sp_app_id = "app-id"
         mock_cfg.aca_mi_client_id = ""
         mock_cfg.runtime_sp_tenant = ""
+        mock_cfg.foundry_endpoint = ""
+        mock_cfg.env.read.return_value = "polyclaw-rg"
 
         az = MagicMock()
         az.last_stderr = ""
         az.json.side_effect = [
             {"id": "sp-oid"},  # resolve principal
-            [{"id": "/sub/rg/cs", "properties": {
-                "endpoint": "https://my-cs.cognitiveservices.azure.com/",
-            }}],  # account list (scoped to RG)
+            ["/sub/rg/cs"],  # _resolve_cs_resource (name lookup)
+            [],  # _discover_session_pool (RG-scoped)
+            [],  # _discover_session_pool (subscription-wide)
         ]
         az.ok.return_value = (True, "")
 
@@ -363,14 +381,16 @@ class TestIdentityFixRoles:
         mock_cfg.runtime_sp_app_id = "app-id"
         mock_cfg.aca_mi_client_id = ""
         mock_cfg.runtime_sp_tenant = ""
+        mock_cfg.foundry_endpoint = ""
+        mock_cfg.env.read.return_value = "polyclaw-rg"
 
         az = MagicMock()
         az.last_stderr = ""
         az.json.side_effect = [
             None,  # resolve principal fails (CAE error)
-            [{"id": "/sub/rg/cs", "properties": {
-                "endpoint": "https://my-cs.cognitiveservices.azure.com/",
-            }}],  # account list
+            ["/sub/rg/cs"],  # _resolve_cs_resource (name lookup)
+            [],  # _discover_session_pool (RG-scoped)
+            [],  # _discover_session_pool (subscription-wide)
         ]
         az.ok.return_value = (True, "")
 

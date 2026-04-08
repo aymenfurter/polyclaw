@@ -9,8 +9,9 @@ from ...config.settings import cfg
 from ...state.deploy_state import DeploymentRecord, DeployStateStore
 from ...state.infra_config import InfraConfigStore
 from ..cloud.azure import AzureCLI
-from .deployer import BotDeployer, DeployRequest
 from ..cloud.runtime_identity import RuntimeIdentityProvisioner
+from ._models import StepTracker
+from .deployer import BotDeployer, DeployRequest
 
 logger = logging.getLogger(__name__)
 
@@ -41,14 +42,14 @@ class Provisioner:
         container creates it at startup when a messaging channel (e.g.
         Telegram) is configured.  See :meth:`recreate_endpoint`.
         """
-        steps: list[dict[str, Any]] = []
+        steps = StepTracker()
         bc = self._store.bot
         logger.info("Provisioning started")
 
         if not self._store.bot_configured:
             logger.info("No bot configured -- skipping provisioning")
-            steps.append({"step": "bot_config", "status": "skip", "detail": "No bot configured"})
-            return steps
+            steps.skip("bot_config", detail="No bot configured")
+            return steps.to_list()
 
         if self._deploy_store:
             rec = self._deploy_store.current_local()
@@ -62,17 +63,17 @@ class Provisioner:
         logger.info("Provision step 1/2: Registering Entra ID app...")
         if not self._ensure_app_registration(bc, steps):
             logger.error("Provisioning aborted: app registration failed")
-            return steps
+            return steps.to_list()
 
         # Step 2: Provision scoped identity for the agent container.
         logger.info("Provision step 2/2: Provisioning runtime identity...")
         self._ensure_runtime_identity(bc.resource_group, steps)
 
         logger.info("Provisioning completed: %d steps", len(steps))
-        return steps
+        return steps.to_list()
 
     def _ensure_app_registration(
-        self, bc: Any, steps: list[dict],
+        self, bc: Any, steps: StepTracker,
     ) -> bool:
         """Create or re-use the Entra ID app registration (no bot service)."""
         req = DeployRequest(
@@ -83,37 +84,27 @@ class Provisioner:
         )
         result = self._deployer.register_app(req)
         steps.extend(result.steps)
-        if result.ok:
-            steps.append({
-                "step": "app_registration",
-                "status": "ok",
-                "detail": result.app_id,
-            })
-        else:
-            steps.append({
-                "step": "app_registration",
-                "status": "failed",
-                "detail": result.error,
-            })
+        steps.record("app_registration", ok=result.ok,
+                     detail=result.app_id if result.ok else result.error)
         return result.ok
 
-    def _ensure_channels(self, steps: list[dict]) -> None:
+    def _ensure_channels(self, steps: StepTracker) -> None:
         tg = self._store.channels.telegram
         if tg.token:
             tok_ok, tok_detail = self._az.validate_telegram_token(tg.token)
             if not tok_ok:
-                steps.append({"step": "telegram_validate", "status": "failed", "detail": tok_detail})
+                steps.fail("telegram_validate", detail=tok_detail)
                 return
-            steps.append({"step": "telegram_validate", "status": "ok", "detail": tok_detail})
+            steps.ok("telegram_validate", detail=tok_detail)
             # Pass validated_name so configure_telegram skips a redundant API call.
             ok, msg = self._az.configure_telegram(tg.token, validated_name=tok_detail)
-            steps.append({"step": "telegram_channel", "status": "ok" if ok else "failed", "detail": msg})
+            steps.record("telegram_channel", ok=ok, detail=msg)
             if ok and tg.whitelist:
                 cfg.write_env(TELEGRAM_WHITELIST=tg.whitelist)
         else:
-            steps.append({"step": "telegram", "status": "skip", "detail": "Not configured"})
+            steps.skip("telegram", detail="Not configured")
 
-    def _ensure_runtime_identity(self, resource_group: str, steps: list[dict]) -> None:
+    def _ensure_runtime_identity(self, resource_group: str, steps: StepTracker) -> None:
         """Provision a scoped identity for the agent runtime container.
 
         Uses a service principal for Docker Compose deployments.  ACA
@@ -122,36 +113,20 @@ class Provisioner:
         """
         # Skip if a managed identity is already set (ACA deployment)
         if cfg.env.read("ACA_MI_CLIENT_ID"):
-            steps.append({
-                "step": "runtime_identity",
-                "status": "skip",
-                "detail": "Managed identity already configured (ACA)",
-            })
+            steps.skip("runtime_identity",
+                       detail="Managed identity already configured (ACA)")
             return
 
         try:
             result = self._runtime_identity.provision(resource_group)
             sub_steps = result.get("steps", [])
             steps.extend(sub_steps)
-            if result.get("ok"):
-                steps.append({
-                    "step": "runtime_identity",
-                    "status": "ok",
-                    "detail": f"SP {result.get('app_id')} scoped to {resource_group}",
-                })
-            else:
-                steps.append({
-                    "step": "runtime_identity",
-                    "status": "failed",
-                    "detail": result.get("error", "Unknown error"),
-                })
+            steps.record("runtime_identity", ok=bool(result.get("ok")),
+                         detail=f"SP {result.get('app_id')} scoped to {resource_group}"
+                         if result.get("ok") else result.get("error", "Unknown error"))
         except Exception as exc:
             logger.warning("Runtime identity provisioning failed (non-fatal): %s", exc, exc_info=True)
-            steps.append({
-                "step": "runtime_identity",
-                "status": "failed",
-                "detail": str(exc),
-            })
+            steps.fail("runtime_identity", detail=str(exc))
 
     def recreate_endpoint(self, endpoint_url: str) -> list[dict[str, Any]]:
         """Recreate the bot resource with a new messaging endpoint.
@@ -160,28 +135,27 @@ class Provisioner:
         touches the Bot Service ARM resource and reconfigures channels.
         The Entra ID app registration and credentials are preserved.
         """
-        steps: list[dict[str, Any]] = []
+        steps = StepTracker()
         logger.info("recreate_endpoint: endpoint=%s", endpoint_url)
 
         if not self._store.bot_configured:
-            steps.append({"step": "bot_config", "status": "skip",
-                          "detail": "No bot configured"})
-            return steps
+            steps.skip("bot_config", detail="No bot configured")
+            return steps.to_list()
 
         result = self._deployer.recreate(endpoint_url)
         steps.extend(result.steps)
         if not result.ok:
             logger.error("recreate_endpoint: bot recreate failed: %s", result.error)
-            return steps
+            return steps.to_list()
 
         # Reconfigure channels (Telegram, etc.) on the fresh bot resource
         self._ensure_channels(steps)
 
         logger.info("recreate_endpoint: completed -- %d steps", len(steps))
-        return steps
+        return steps.to_list()
 
     def decommission(self) -> list[dict[str, Any]]:
-        steps: list[dict[str, Any]] = []
+        steps = StepTracker()
         logger.info("Decommissioning started")
 
         rg = cfg.env.read("BOT_RESOURCE_GROUP")
@@ -196,28 +170,22 @@ class Provisioner:
             bot_exists = self._az.json("bot", "show", "--resource-group", rg, "--name", name) is not None
             if bot_exists and self._store.telegram_configured:
                 ok, msg = self._az.remove_channel("telegram")
-                steps.append({"step": "telegram_remove", "status": "ok" if ok else "failed", "detail": msg})
+                steps.record("telegram_remove", ok=ok, detail=msg)
             elif not bot_exists:
-                steps.append({"step": "telegram_remove", "status": "skip", "detail": "Bot resource not found"})
+                steps.skip("telegram_remove", detail="Bot resource not found")
 
         if name:
             result = self._deployer.delete()
             steps.extend(result.steps)
-            steps.append({
-                "step": "bot_delete",
-                "status": "ok" if result.ok else "failed",
-                "detail": "Bot deleted" if result.ok else (result.error or "Failed"),
-            })
+            steps.record("bot_delete", ok=result.ok,
+                         detail="Bot deleted" if result.ok else (result.error or "Failed"))
         elif app_id:
             # Entra app exists but agent hasn't created the bot service yet.
             ok, _ = self._az.ok("ad", "app", "delete", "--id", app_id)
-            steps.append({
-                "step": "app_delete",
-                "status": "ok" if ok else "failed",
-                "detail": f"Deleted Entra app {app_id[:12]}..." if ok else "Delete failed",
-            })
+            steps.record("app_delete", ok=ok,
+                         detail=f"Deleted Entra app {app_id[:12]}..." if ok else "Delete failed")
         else:
-            steps.append({"step": "bot_delete", "status": "skip", "detail": "No bot deployed"})
+            steps.skip("bot_delete", detail="No bot deployed")
 
         voice_rg = self._store.channels.voice_call.voice_resource_group or ""
         prereq_rg = cfg.env.read("KEY_VAULT_RG") or ""
@@ -232,14 +200,16 @@ class Provisioner:
                     reason.append("prerequisites")
                 label = " & ".join(reason)
                 logger.info("Skipping RG deletion: %s is the %s resource group", rg, label)
-                steps.append({"step": "resource_group_delete", "status": "skip", "detail": f"{rg} is the {label} RG -- not deleting"})
+                steps.skip("resource_group_delete",
+                           detail=f"{rg} is the {label} RG -- not deleting")
             else:
                 rg_exists = self._az.json("group", "show", "--name", rg) is not None
                 if rg_exists:
                     ok, msg = self._az.ok("group", "delete", "--name", rg, "--yes", "--no-wait")
-                    steps.append({"step": "resource_group_delete", "status": "ok" if ok else "failed", "detail": f"Deleting {rg}" if ok else msg})
+                    steps.record("resource_group_delete", ok=ok,
+                                 detail=f"Deleting {rg}" if ok else msg)
                 else:
-                    steps.append({"step": "resource_group_delete", "status": "skip", "detail": "RG not found"})
+                    steps.skip("resource_group_delete", detail="RG not found")
 
         cfg.write_env(
             BOT_APP_ID="", BOT_APP_PASSWORD="", BOT_APP_TENANT_ID="",
@@ -252,7 +222,7 @@ class Provisioner:
                 rec.mark_stopped()
                 self._deploy_store.update(rec)
 
-        return steps
+        return steps.to_list()
 
     def status(self) -> dict[str, Any]:
         result: dict[str, Any] = {

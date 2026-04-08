@@ -9,17 +9,25 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _isolate_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def _isolate_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request) -> Path:
+    # E2E tests drive Docker containers externally -- skip isolation.
+    if any(m.name == "e2e_setup" for m in request.node.iter_markers()):
+        yield tmp_path
+        return
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     monkeypatch.setenv("POLYCLAW_DATA_DIR", str(data_dir))
     monkeypatch.setenv("POLYCLAW_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("DOTENV_PATH", str(tmp_path / ".env"))
-    return data_dir
+    yield data_dir
 
 
 @pytest.fixture(autouse=True)
-def _reset_singletons(_isolate_data_dir: Path):
+def _reset_singletons(_isolate_data_dir: Path, request):
+    # E2E tests drive Docker containers externally -- skip singleton reset.
+    if any(m.name == "e2e_setup" for m in request.node.iter_markers()):
+        yield
+        return
     from app.runtime.util.singletons import reset_all_singletons
 
     reset_all_singletons()

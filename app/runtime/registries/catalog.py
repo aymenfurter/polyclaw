@@ -12,8 +12,6 @@ from typing import Any
 
 import aiohttp
 
-from ..config.settings import cfg
-
 logger = logging.getLogger(__name__)
 
 _CATALOG_SOURCES: list[dict[str, str]] = [
@@ -46,9 +44,6 @@ def _github_headers() -> dict[str, str]:
         "Accept": "application/vnd.github.v3+json",
         "User-Agent": "polyclaw-skill-registry",
     }
-    token = cfg.github_token
-    if token:
-        headers["Authorization"] = f"token {token}"
     return headers
 
 

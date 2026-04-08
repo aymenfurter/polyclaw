@@ -62,7 +62,6 @@ export class ApiClient {
   async getSetupStatus() {
     return this.fetch<{
       azure?: { logged_in?: boolean; user?: string; subscription?: string };
-      copilot?: { authenticated?: boolean; details?: string };
       prerequisites_configured?: boolean;
       telegram_configured?: boolean;
       tunnel?: { active?: boolean; url?: string };
@@ -75,8 +74,6 @@ export class ApiClient {
   async azureLogin() { return this.fetch<Record<string, string>>("/api/setup/azure/login", { method: "POST" }); }
   async azureLogout() { return this.fetch<Record<string, string>>("/api/setup/azure/logout", { method: "POST" }); }
   async azureCheck() { return this.fetch<Record<string, string>>("/api/setup/azure/check"); }
-  async copilotLogin() { return this.fetch<Record<string, string>>("/api/setup/copilot/login", { method: "POST" }); }
-  async copilotStatus() { return this.fetch<Record<string, unknown>>("/api/setup/copilot/status"); }
   async startTunnel() { return this.fetch<Record<string, string>>("/api/setup/tunnel/start", { method: "POST" }); }
   async smokeTest() { return this.fetch<Record<string, unknown>>("/api/setup/smoke-test", { method: "POST" }); }
 

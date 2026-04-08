@@ -9,14 +9,23 @@ Polyclaw is configured through environment variables loaded from a `.env` file o
 
 | Variable | Default | Description |
 |---|---|---|
-| `GITHUB_TOKEN` | -- | GitHub PAT with Copilot access. Supports `@kv:` prefix. |
-| `COPILOT_MODEL` | `claude-sonnet-4.6` | Default LLM model for conversations |
+| `COPILOT_MODEL` | `gpt-4.1` | Default LLM model for conversations |
 | `COPILOT_AGENT` | -- | Optional Copilot agent name |
 | `ADMIN_PORT` | `9090` | Admin server listen port |
 | `ADMIN_SECRET` | -- | Bearer token for API authentication. Supports `@kv:` prefix. |
 | `POLYCLAW_DATA_DIR` | `~/.polyclaw` | Root directory for all persistent data |
 | `DOTENV_PATH` | -- | Custom path to `.env` file |
 | `POLYCLAW_SERVER_MODE` | `combined` | Server mode: `combined`, `admin`, or `runtime` |
+
+## Foundry (BYOK)
+
+When `FOUNDRY_ENDPOINT` is set, Polyclaw operates in Bring Your Own Key (BYOK) mode. The agent uses your Azure AI Services resource directly instead of the GitHub Copilot SDK backend. Authentication is handled via `az account get-access-token` with Entra ID bearer tokens.
+
+| Variable | Default | Description |
+|---|---|---|
+| `FOUNDRY_ENDPOINT` | -- | Azure AI Services endpoint (e.g. `https://<name>.cognitiveservices.azure.com/`). Enables BYOK mode when set. |
+| `FOUNDRY_NAME` | -- | Display name of the Foundry resource |
+| `FOUNDRY_RESOURCE_GROUP` | -- | Resource group containing the Foundry resource |
 
 ## Bot Framework
 
@@ -43,7 +52,7 @@ Polyclaw is configured through environment variables loaded from a `.env` file o
 
 | Variable | Default | Description |
 |---|---|---|
-| `MEMORY_MODEL` | `claude-sonnet-4.6` | Model used for memory consolidation |
+| `MEMORY_MODEL` | `gpt-4.1` | Model used for memory consolidation |
 | `MEMORY_IDLE_MINUTES` | `5` | Minutes of inactivity before memory formation triggers |
 
 ## Proactive Messaging
@@ -84,13 +93,13 @@ All paths are computed relative to `POLYCLAW_DATA_DIR`:
 
 ## Secret Resolution
 
-The following environment variables support `@kv:` prefix resolution from Azure Key Vault: `GITHUB_TOKEN`, `ADMIN_SECRET`, `BOT_APP_PASSWORD`, `ACS_CONNECTION_STRING`, `AZURE_OPENAI_API_KEY`. The Docker entrypoint additionally resolves all `@kv:` prefixed variables via a shell-level pass.
+The following environment variables support `@kv:` prefix resolution from Azure Key Vault: `ADMIN_SECRET`, `BOT_APP_PASSWORD`, `ACS_CONNECTION_STRING`, `AZURE_OPENAI_API_KEY`. The Docker entrypoint additionally resolves all `@kv:` prefixed variables via a shell-level pass.
 
 For example:
 
 ```bash
-GITHUB_TOKEN=@kv:polyclaw-github-token
 ADMIN_SECRET=@kv:polyclaw-admin-secret
+BOT_APP_PASSWORD=@kv:polyclaw-bot-password
 ```
 
 This requires `KEY_VAULT_URL` to be set and valid Azure credentials (via `az login` or managed identity).

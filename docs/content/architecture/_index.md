@@ -13,7 +13,8 @@ Polyclaw is a monorepo containing a Python backend, a React frontend, and a Node
 
 | Layer | Technology | Role |
 |---|---|---|
-| **Agent Core** | Python, GitHub Copilot SDK | LLM sessions, tool execution, streaming |
+| **Agent Core** | Python, Copilot SDK, Foundry BYOK | LLM sessions, tool execution, streaming |
+| **Infrastructure** | Bicep, Azure CLI | AI Services, Key Vault, Content Safety provisioning |
 | **Web Admin** | React 19, Vite, TypeScript | SPA dashboard with WebSocket chat |
 | **Bot Endpoint** | aiohttp, Bot Framework SDK | Teams, Telegram, and other channels |
 | **Voice** | Azure Communication Services, OpenAI Realtime | Phone call routing and real-time speech |
@@ -82,14 +83,14 @@ All persistent state is stored as JSON files under `~/.polyclaw/` (configurable 
 
 The system is organized into these runtime modules:
 
-- **`agent/`** -- Copilot SDK wrapper, tools, prompt builder
+- **`agent/`** -- Copilot SDK wrapper, BYOK provider, tools, prompt builder
 - **`config/`** -- Settings singleton, environment loading
 - **`media/`** -- MIME classification, attachment handling
 - **`messaging/`** -- Bot, cards, commands, proactive delivery
 - **`realtime/`** -- Voice routes, ACS middleware, auth
 - **`registries/`** -- Plugin and skill registries
 - **`server/`** -- aiohttp app, routes, middleware, chat handler
-- **`services/`** -- Tunnel, deployer, Key Vault, Azure CLI wrapper
+- **`services/`** -- Tunnel, deployer, Bicep deployer, Key Vault, Azure CLI wrapper
 - **`state/`** -- Session, memory, profile, MCP config, proactive state
 
 Dive deeper:

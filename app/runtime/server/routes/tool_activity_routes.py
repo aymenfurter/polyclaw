@@ -8,6 +8,7 @@ from aiohttp import web
 
 from ...state.session_store import SessionStore
 from ...state.tool_activity_store import ToolActivityStore
+from ._helpers import api_handler, error_response, ok_response, parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -49,42 +50,37 @@ class ToolActivityRoutes:
             limit=min(int(params.get("limit", "200")), 1000),
             offset=int(params.get("offset", "0")),
         )
-        return web.json_response({"status": "ok", **result})
+        return ok_response(**result)
 
     async def _summary(self, _req: web.Request) -> web.Response:
         """Return aggregate statistics."""
         summary = self._store.get_summary()
-        return web.json_response({"status": "ok", **summary})
+        return ok_response(**summary)
 
     async def _get(self, req: web.Request) -> web.Response:
         """Get a single tool activity entry."""
         entry_id = req.match_info["entry_id"]
         entry = self._store.get_entry(entry_id)
         if not entry:
-            return web.json_response(
-                {"status": "error", "message": "Entry not found"}, status=404,
-            )
-        return web.json_response({"status": "ok", "entry": entry})
+            return error_response("Entry not found", status=404)
+        return ok_response(entry=entry)
 
+    @api_handler
     async def _flag(self, req: web.Request) -> web.Response:
         """Manually flag an entry as suspicious."""
         entry_id = req.match_info["entry_id"]
-        body = await req.json()
+        body = await parse_json(req)
         reason = body.get("reason", "")
         if self._store.flag_entry(entry_id, reason):
-            return web.json_response({"status": "ok"})
-        return web.json_response(
-            {"status": "error", "message": "Entry not found"}, status=404,
-        )
+            return ok_response()
+        return error_response("Entry not found", status=404)
 
     async def _unflag(self, req: web.Request) -> web.Response:
         """Remove flag from an entry."""
         entry_id = req.match_info["entry_id"]
         if self._store.unflag_entry(entry_id):
-            return web.json_response({"status": "ok"})
-        return web.json_response(
-            {"status": "error", "message": "Entry not found"}, status=404,
-        )
+            return ok_response()
+        return error_response("Entry not found", status=404)
 
     async def _timeline(self, req: web.Request) -> web.Response:
         """Return time-bucketed tool activity data."""
@@ -94,12 +90,12 @@ class ToolActivityRoutes:
             since=float(params.get("since", "0")),
             until=float(params.get("until", "0")),
         )
-        return web.json_response({"status": "ok", "buckets": data})
+        return ok_response(buckets=data)
 
     async def _sessions_breakdown(self, _req: web.Request) -> web.Response:
         """Return per-session aggregation."""
         data = self._store.get_session_breakdown()
-        return web.json_response({"status": "ok", "sessions": data})
+        return ok_response(sessions=data)
 
     async def _export(self, req: web.Request) -> web.Response:
         """Export tool activity as CSV."""
@@ -122,4 +118,4 @@ class ToolActivityRoutes:
     async def _import(self, _req: web.Request) -> web.Response:
         """Backfill tool activity from existing session history."""
         count = self._store.import_from_sessions(self._sessions)
-        return web.json_response({"status": "ok", "imported": count})
+        return ok_response(imported=count)

@@ -11,8 +11,8 @@ export interface AuthCheckResponse {
 // -- Setup Status --------------------------------------------------------
 
 export interface SetupStatus {
-  azure?: { logged_in?: boolean; subscription?: string; tenant?: string }
-  copilot?: { authenticated?: boolean; username?: string }
+  azure?: { logged_in?: boolean; needs_subscription?: boolean; subscription?: string; subscription_id?: string; tenant?: string }
+  foundry?: { deployed?: boolean; endpoint?: string; name?: string; resource_group?: string }
   prerequisites_configured?: boolean
   telegram_configured?: boolean
   tunnel?: { active?: boolean; url?: string; restricted?: boolean }

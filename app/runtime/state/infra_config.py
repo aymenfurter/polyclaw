@@ -84,27 +84,18 @@ class InfraConfigStore(BaseConfigStore[InfraConfig]):
         return bool(self.channels.voice_call.acs_connection_string)
 
     def _apply_raw(self, raw: dict[str, Any]) -> None:
-        bot_data = raw.get("bot", {})
-        for k, v in bot_data.items():
-            if hasattr(self._config.bot, k):
-                try:
-                    setattr(self._config.bot, k, self._resolve_secret(v))
-                except Exception:
-                    logger.warning("Failed to resolve bot.%s -- skipping", k, exc_info=True)
-        tg_data = raw.get("channels", {}).get("telegram", {})
-        for k, v in tg_data.items():
-            if hasattr(self._config.channels.telegram, k):
-                try:
-                    setattr(self._config.channels.telegram, k, self._resolve_secret(v))
-                except Exception:
-                    logger.warning("Failed to resolve telegram.%s -- skipping", k, exc_info=True)
-        vc_data = raw.get("channels", {}).get("voice_call", {})
-        for k, v in vc_data.items():
-            if hasattr(self._config.channels.voice_call, k):
-                try:
-                    setattr(self._config.channels.voice_call, k, self._resolve_secret(v))
-                except Exception:
-                    logger.warning("Failed to resolve voice_call.%s -- skipping", k, exc_info=True)
+        sections = [
+            (raw.get("bot", {}), self._config.bot, "bot"),
+            (raw.get("channels", {}).get("telegram", {}), self._config.channels.telegram, "telegram"),
+            (raw.get("channels", {}).get("voice_call", {}), self._config.channels.voice_call, "voice_call"),
+        ]
+        for data, target, label in sections:
+            for k, v in data.items():
+                if hasattr(target, k):
+                    try:
+                        setattr(target, k, self._resolve_secret(v))
+                    except Exception:
+                        logger.warning("Failed to resolve %s.%s -- skipping", label, k, exc_info=True)
 
     def _save_data(self) -> dict[str, Any]:
         return {
@@ -155,3 +146,10 @@ class InfraConfigStore(BaseConfigStore[InfraConfig]):
             k: ("****" if k in self._SECRET_FIELDS and v else v)
             for k, v in d.items()
         }
+
+
+# -- singleton -------------------------------------------------------------
+
+from ..util.singletons import Singleton  # noqa: E402
+
+get_infra_config, _reset_infra_config = Singleton.create(InfraConfigStore)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -92,33 +91,28 @@ class GuardrailsRoutes:
             self._store.set_hitl_enabled(bool(data["hitl_enabled"]))
 
         # Validated fields -- accept both frontend and backend key names
-        for key in ("default_strategy", "default_action"):
-            err = self._apply_validated_field(
-                data, key, self._store.set_default_action,
-            )
-            if err:
-                return err
-        for key in ("hitl_channel", "default_channel"):
-            err = self._apply_validated_field(
-                data, key, self._store.set_default_channel,
-            )
-            if err:
-                return err
-        err = self._apply_validated_field(
-            data, "filter_mode", self._store.set_filter_mode,
-        )
-        if err:
-            return err
+        _VALIDATED_FIELDS: list[tuple[tuple[str, ...], Callable]] = [
+            (("default_strategy", "default_action"), self._store.set_default_action),
+            (("hitl_channel", "default_channel"), self._store.set_default_channel),
+            (("filter_mode",), self._store.set_filter_mode),
+        ]
+        for keys, setter in _VALIDATED_FIELDS:
+            for key in keys:
+                err = self._apply_validated_field(data, key, setter)
+                if err:
+                    return err
 
         # Simple fields (no validation)
-        if "phone_number" in data:
-            self._store.set_phone_number(data["phone_number"])
-        if "aitl_model" in data:
-            self._store.set_aitl_model(data["aitl_model"])
+        _SIMPLE_FIELDS: list[tuple[str, Callable]] = [
+            ("phone_number", self._store.set_phone_number),
+            ("aitl_model", self._store.set_aitl_model),
+            ("content_safety_endpoint", self._store.set_content_safety_endpoint),
+        ]
+        for key, setter in _SIMPLE_FIELDS:
+            if key in data:
+                setter(data[key])
         if "aitl_spotlighting" in data:
             self._store.set_aitl_spotlighting(bool(data["aitl_spotlighting"]))
-        if "content_safety_endpoint" in data:
-            self._store.set_content_safety_endpoint(data["content_safety_endpoint"])
 
         # Context defaults (batch update)
         if "context_defaults" in data:
@@ -205,20 +199,17 @@ class GuardrailsRoutes:
 
         if hitl_enabled is not None:
             self._store.set_hitl_enabled(bool(hitl_enabled))
-        if default_action:
-            try:
-                self._store.set_default_action(default_action)
-            except ValueError as exc:
-                return web.json_response(
-                    {"status": "error", "message": str(exc)}, status=400
-                )
-        if default_channel:
-            try:
-                self._store.set_default_channel(default_channel)
-            except ValueError as exc:
-                return web.json_response(
-                    {"status": "error", "message": str(exc)}, status=400
-                )
+        for value, setter in [
+            (default_action, self._store.set_default_action),
+            (default_channel, self._store.set_default_channel),
+        ]:
+            if value:
+                try:
+                    setter(value)
+                except ValueError as exc:
+                    return web.json_response(
+                        {"status": "error", "message": str(exc)}, status=400
+                    )
         if phone_number is not None:
             self._store.set_phone_number(phone_number)
 

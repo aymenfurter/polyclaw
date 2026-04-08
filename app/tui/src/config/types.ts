@@ -8,7 +8,6 @@
 
 export interface StatusResponse {
   azure?: { logged_in?: boolean; user?: string; subscription?: string };
-  copilot?: { authenticated?: boolean; details?: string };
   prerequisites_configured?: boolean;
   telegram_configured?: boolean;
   tunnel?: { active?: boolean; url?: string };

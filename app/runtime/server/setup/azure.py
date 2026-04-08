@@ -26,25 +26,37 @@ class AzureSetupRoutes:
         router.add_post("/api/setup/azure/subscription", self.set_subscription)
         router.add_get("/api/setup/azure/resource-groups", self.list_resource_groups)
 
-    async def azure_login(self, _req: web.Request) -> web.Response:
+    def _account_status(self) -> tuple[dict | None, bool]:
+        """Return (account, needs_subscription)."""
         account = self._az.account_info()
-        if account:
+        return account, bool(account and account.get("_no_default_subscription"))
+
+    async def azure_login(self, _req: web.Request) -> web.Response:
+        account, needs_sub = self._account_status()
+        if account and not needs_sub:
             return web.json_response({
                 "status": "already_logged_in",
                 "user": account.get("user", {}).get("name"),
                 "subscription": account.get("name"),
             })
+        if needs_sub:
+            return web.json_response({
+                "status": "needs_subscription",
+                "message": "Logged in but no default subscription. Please select one.",
+            })
         info = self._az.login_device_code()
         return web.json_response({"status": "device_code_pending", **info})
 
     async def azure_check(self, _req: web.Request) -> web.Response:
-        account = self._az.account_info()
-        if account:
+        account, needs_sub = self._account_status()
+        if account and not needs_sub:
             return web.json_response({
                 "status": "logged_in",
                 "user": account.get("user", {}).get("name"),
                 "subscription": account.get("name"),
             })
+        if needs_sub:
+            return web.json_response({"status": "needs_subscription"})
         return web.json_response({"status": "pending"})
 
     async def azure_logout(self, _req: web.Request) -> web.Response:
@@ -53,16 +65,8 @@ class AzureSetupRoutes:
         return _ok(msg) if ok else _error(msg)
 
     async def list_subscriptions(self, _req: web.Request) -> web.Response:
-        subs = self._az.json("account", "list") or []
-        return web.json_response([
-            {
-                "id": s.get("id", ""),
-                "name": s.get("name", ""),
-                "is_default": s.get("isDefault", False),
-                "state": s.get("state", ""),
-            }
-            for s in (subs if isinstance(subs, list) else [])
-        ])
+        subs = self._az.list_subscriptions()
+        return web.json_response(subs)
 
     async def set_subscription(self, req: web.Request) -> web.Response:
         body = await req.json()
@@ -70,7 +74,7 @@ class AzureSetupRoutes:
         if not sub_id:
             return _error("subscription_id is required", 400)
         ok, msg = self._az.ok("account", "set", "--subscription", sub_id)
-        self._az.invalidate_cache("account", "show")
+        self._az.invalidate_cache()
         return _ok(f"Subscription set to {sub_id}") if ok else _error(f"Failed: {msg}")
 
     async def list_resource_groups(self, _req: web.Request) -> web.Response:

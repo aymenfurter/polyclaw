@@ -8,6 +8,7 @@ import aiohttp as _aiohttp
 from aiohttp import web
 
 from ...state.mcp_config import McpConfigStore
+from ._helpers import api_handler, error_response, ok_response, parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -31,73 +32,56 @@ class McpRoutes:
         router.add_get("/api/mcp/registry", self._registry)
 
     async def _list(self, _req: web.Request) -> web.Response:
-        return web.json_response({"status": "ok", "servers": self._store.list_servers()})
+        return ok_response(servers=self._store.list_servers())
 
     async def _get(self, req: web.Request) -> web.Response:
         server_id = req.match_info["server_id"]
         server = self._store.get_server(server_id)
         if not server:
-            return web.json_response(
-                {"status": "error", "message": "Server not found"}, status=404
-            )
+            return error_response("Server not found", status=404)
         return web.json_response(server)
 
+    @api_handler
     async def _add(self, req: web.Request) -> web.Response:
-        data = await req.json()
-        try:
-            server = self._store.add_server(
-                name=data.get("name", ""),
-                server_type=data.get("type", ""),
-                command=data.get("command", ""),
-                args=data.get("args"),
-                env=data.get("env"),
-                url=data.get("url", ""),
-                tools=data.get("tools"),
-                enabled=data.get("enabled", True),
-                description=data.get("description", ""),
-            )
-            return web.json_response({"status": "ok", "server": server})
-        except (ValueError, KeyError) as exc:
-            return web.json_response(
-                {"status": "error", "message": str(exc)}, status=400
-            )
+        data = await parse_json(req)
+        server = self._store.add_server(
+            name=data.get("name", ""),
+            server_type=data.get("type", ""),
+            command=data.get("command", ""),
+            args=data.get("args"),
+            env=data.get("env"),
+            url=data.get("url", ""),
+            tools=data.get("tools"),
+            enabled=data.get("enabled", True),
+            description=data.get("description", ""),
+        )
+        return ok_response(server=server)
 
     async def _update(self, req: web.Request) -> web.Response:
         server_id = req.match_info["server_id"]
-        data = await req.json()
+        data = await parse_json(req)
         updated = self._store.update_server(server_id, **data)
         if not updated:
-            return web.json_response(
-                {"status": "error", "message": "Server not found"}, status=404
-            )
-        return web.json_response({"status": "ok", "server": updated})
+            return error_response("Server not found", status=404)
+        return ok_response(server=updated)
 
     async def _enable(self, req: web.Request) -> web.Response:
         server_id = req.match_info["server_id"]
-        ok = self._store.set_enabled(server_id, True)
-        if not ok:
-            return web.json_response(
-                {"status": "error", "message": "Server not found"}, status=404
-            )
-        return web.json_response({"status": "ok"})
+        if not self._store.set_enabled(server_id, True):
+            return error_response("Server not found", status=404)
+        return ok_response()
 
     async def _disable(self, req: web.Request) -> web.Response:
         server_id = req.match_info["server_id"]
-        ok = self._store.set_enabled(server_id, False)
-        if not ok:
-            return web.json_response(
-                {"status": "error", "message": "Server not found"}, status=404
-            )
-        return web.json_response({"status": "ok"})
+        if not self._store.set_enabled(server_id, False):
+            return error_response("Server not found", status=404)
+        return ok_response()
 
     async def _remove(self, req: web.Request) -> web.Response:
         server_id = req.match_info["server_id"]
-        ok = self._store.remove_server(server_id)
-        if not ok:
-            return web.json_response(
-                {"status": "error", "message": "Server not found"}, status=404
-            )
-        return web.json_response({"status": "ok"})
+        if not self._store.remove_server(server_id):
+            return error_response("Server not found", status=404)
+        return ok_response()
 
     async def _registry(self, req: web.Request) -> web.Response:
         page = req.query.get("page", "1")

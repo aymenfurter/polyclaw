@@ -19,13 +19,26 @@ _DEFAULT_PROFILE: dict[str, Any] = {
 }
 
 
-def _profile_path() -> Path:
-    return cfg.data_dir / "agent_profile.json"
+def _load_json(path: Path, default: Any = None) -> Any:
+    """Load a JSON file, returning *default* on any error."""
+    if default is None:
+        default = {}
+    if not path.exists():
+        return default() if callable(default) else (dict(default) if isinstance(default, dict) else list(default) if isinstance(default, list) else default)
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return default() if callable(default) else (dict(default) if isinstance(default, dict) else list(default) if isinstance(default, list) else default)
+
+
+def _write_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n")
 
 
 def profile_path() -> Path:
     """Return the path to the agent profile JSON file."""
-    return _profile_path()
+    return cfg.data_dir / "agent_profile.json"
 
 
 def _usage_path() -> Path:
@@ -37,69 +50,40 @@ def _interactions_path() -> Path:
 
 
 def load_profile() -> dict[str, Any]:
-    path = _profile_path()
-    if not path.exists():
-        return dict(_DEFAULT_PROFILE)
-    try:
-        data = json.loads(path.read_text())
-        for key, default in _DEFAULT_PROFILE.items():
-            data.setdefault(key, default)
-        return data
-    except (json.JSONDecodeError, OSError):
-        return dict(_DEFAULT_PROFILE)
+    data = _load_json(profile_path(), _DEFAULT_PROFILE)
+    for key, default in _DEFAULT_PROFILE.items():
+        data.setdefault(key, default)
+    return data
 
 
 def save_profile(profile: dict[str, Any]) -> None:
-    path = _profile_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(profile, indent=2) + "\n")
+    _write_json(profile_path(), profile)
 
 
 def load_skill_usage() -> dict[str, int]:
-    path = _usage_path()
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {}
+    return _load_json(_usage_path(), {})
 
 
 def increment_skill_usage(skill_name: str) -> None:
     usage = load_skill_usage()
     usage[skill_name] = usage.get(skill_name, 0) + 1
-    _usage_path().parent.mkdir(parents=True, exist_ok=True)
-    _usage_path().write_text(json.dumps(usage, indent=2) + "\n")
+    _write_json(_usage_path(), usage)
 
 
 def log_interaction(interaction_type: str, channel: str = "") -> None:
     path = _interactions_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    interactions: list[dict[str, Any]] = []
-    if path.exists():
-        try:
-            interactions = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
+    interactions = _load_json(path, [])
     interactions.append({
         "type": interaction_type,
         "channel": channel,
         "timestamp": time.time(),
     })
-    # Keep only last 1000 interactions
-    interactions = interactions[-1000:]
-    path.write_text(json.dumps(interactions, indent=2) + "\n")
+    _write_json(path, interactions[-1000:])
 
 
 def load_interactions() -> list[dict[str, Any]]:
     """Load the raw interaction log."""
-    path = _interactions_path()
-    if not path.exists():
-        return []
-    try:
-        return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return []
+    return _load_json(_interactions_path(), [])
 
 
 def get_contributions(days: int = 365) -> list[dict[str, Any]]:
@@ -117,17 +101,8 @@ def get_contributions(days: int = 365) -> list[dict[str, Any]]:
 
     buckets: dict[str, dict[str, int]] = defaultdict(lambda: {"user": 0, "scheduled": 0})
     for entry in interactions:
-        ts = entry.get("timestamp")
-        if ts is None:
-            continue
-        try:
-            if isinstance(ts, (int, float)):
-                d = datetime.fromtimestamp(ts, tz=timezone.utc).date()
-            else:
-                d = datetime.fromisoformat(str(ts)).date()
-        except (ValueError, OSError):
-            continue
-        if d < start:
+        d = _parse_interaction_date(entry)
+        if d is None or d < start:
             continue
         key = d.isoformat()
         itype = entry.get("type", "user")
@@ -146,6 +121,21 @@ def get_contributions(days: int = 365) -> list[dict[str, Any]]:
     return result
 
 
+def _parse_interaction_date(entry: dict[str, Any]) -> Any:
+    """Parse an interaction's timestamp to a date, or return None."""
+    from datetime import datetime, timezone
+
+    ts = entry.get("timestamp")
+    if ts is None:
+        return None
+    try:
+        if isinstance(ts, (int, float)):
+            return datetime.fromtimestamp(ts, tz=timezone.utc).date()
+        return datetime.fromisoformat(str(ts)).date()
+    except (ValueError, OSError):
+        return None
+
+
 def get_activity_stats() -> dict[str, Any]:
     """Compute summary activity statistics from interactions."""
     from datetime import datetime, timedelta, timezone
@@ -155,24 +145,14 @@ def get_activity_stats() -> dict[str, Any]:
     today = now.date()
     week_start = today - timedelta(days=today.weekday())
 
-    total = len(interactions)
     today_count = 0
     week_count = 0
     month_count = 0
-    streak = 0
-
-    # Build a set of active days for streak calculation
     active_days: set[str] = set()
+
     for entry in interactions:
-        ts = entry.get("timestamp")
-        if ts is None:
-            continue
-        try:
-            if isinstance(ts, (int, float)):
-                d = datetime.fromtimestamp(ts, tz=timezone.utc).date()
-            else:
-                d = datetime.fromisoformat(str(ts)).date()
-        except (ValueError, OSError):
+        d = _parse_interaction_date(entry)
+        if d is None:
             continue
         active_days.add(d.isoformat())
         if d == today:
@@ -183,6 +163,7 @@ def get_activity_stats() -> dict[str, Any]:
             month_count += 1
 
     # Calculate current streak (consecutive days ending today or yesterday)
+    streak = 0
     check = today
     if check.isoformat() not in active_days:
         check = today - timedelta(days=1)
@@ -191,7 +172,7 @@ def get_activity_stats() -> dict[str, Any]:
         check -= timedelta(days=1)
 
     return {
-        "total": total,
+        "total": len(interactions),
         "today": today_count,
         "this_week": week_count,
         "this_month": month_count,

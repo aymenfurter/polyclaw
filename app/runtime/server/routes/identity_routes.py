@@ -47,9 +47,27 @@ _REQUIRED_ROLES: list[dict[str, str]] = [
         "data_action": "",
     },
     {
+        "feature": "Foundry IQ (AI Search)",
+        "role": "Search Index Data Contributor",
+        "role_id": "8ece5a2f-6d1e-5eb5-8592-d2a6e1a458d6",
+        "data_action": "",
+    },
+    {
+        "feature": "Foundry IQ (Embeddings)",
+        "role": "Cognitive Services OpenAI User",
+        "role_id": "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd",
+        "data_action": "",
+    },
+    {
         "feature": "Sandbox / Code Interpreter",
         "role": "Azure ContainerApps Session Executor",
         "role_id": "0fb8eba5-a2bb-4abe-b1c1-49dfad359bb0",
+        "data_action": "",
+    },
+    {
+        "feature": "Foundry BYOK (OpenAI Chat)",
+        "role": "Cognitive Services OpenAI User",
+        "role_id": "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd",
         "data_action": "",
     },
 ]
@@ -153,6 +171,8 @@ class IdentityRoutes:
 
         # Resolve expected session pool scope for scope-aware checking.
         session_pool_scope = self._resolve_session_pool_scope()
+        if not session_pool_scope:
+            session_pool_scope = await self._discover_session_pool()
 
         # Check which required roles are present.  For the Session
         # Executor role we also verify that the assignment scope covers
@@ -239,27 +259,36 @@ class IdentityRoutes:
         if self._guardrails_store:
             cs_endpoint = self._guardrails_store.config.content_safety_endpoint
 
+        cs_resource_id = ""
         if cs_endpoint:
-            resource_id = await self._resolve_cs_resource(cs_endpoint)
-            if resource_id:
-                await self._assign_role(
-                    principal_id, principal_type,
-                    "a97b65f3-24c7-4388-baec-2e87135dc908",
-                    resource_id, "Cognitive Services User", steps,
-                    use_object_id=use_object_id,
-                )
-            else:
-                steps.append({
-                    "step": "content_safety_rbac",
-                    "status": "warning",
-                    "detail": f"Cannot resolve resource for endpoint {cs_endpoint}",
-                })
+            cs_resource_id = await self._resolve_cs_resource(cs_endpoint)
+        else:
+            # Discover from the resource group when no endpoint is stored.
+            cs_resource_id = await self._discover_cs_resource()
+
+        if cs_resource_id:
+            await self._assign_role(
+                principal_id, principal_type,
+                "a97b65f3-24c7-4388-baec-2e87135dc908",
+                cs_resource_id, "Cognitive Services User", steps,
+                use_object_id=use_object_id,
+            )
         else:
             steps.append({
                 "step": "content_safety_rbac",
-                "status": "skipped",
-                "detail": "No Content Safety endpoint configured",
+                "status": "warning" if cs_endpoint else "skipped",
+                "detail": (
+                    f"Cannot resolve resource for endpoint {cs_endpoint}"
+                    if cs_endpoint
+                    else "No Content Safety resource found in resource group"
+                ),
             })
+
+        # Fix Foundry OpenAI role (BYOK chat)
+        await self._fix_foundry_openai_role(
+            principal_id, principal_type, steps,
+            use_object_id=use_object_id,
+        )
 
         # Fix Session Pool Executor role
         await self._fix_session_pool_role(
@@ -337,6 +366,67 @@ class IdentityRoutes:
             f"Found: {scopes_str}"
         )
 
+    async def _fix_foundry_openai_role(
+        self,
+        principal_id: str,
+        principal_type: str,
+        steps: list[dict[str, Any]],
+        *,
+        use_object_id: bool = True,
+    ) -> None:
+        """Assign Cognitive Services OpenAI User on the Foundry AI resource."""
+        assert self._az is not None
+        resource_id = await self._resolve_foundry_resource()
+        if not resource_id:
+            steps.append({
+                "step": "foundry_openai_rbac",
+                "status": "skipped",
+                "detail": "No Foundry endpoint configured or resource not found",
+            })
+            return
+
+        await self._assign_role(
+            principal_id, principal_type,
+            "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd",
+            resource_id,
+            "Cognitive Services OpenAI User",
+            steps,
+            use_object_id=use_object_id,
+        )
+
+    async def _resolve_foundry_resource(self) -> str:
+        """Resolve the ARM resource ID for the configured FOUNDRY_ENDPOINT."""
+        endpoint = cfg.foundry_endpoint
+        if not endpoint or not self._az:
+            return ""
+
+        stripped = endpoint.rstrip("/").lower()
+        for prefix in ("https://", "http://"):
+            if stripped.startswith(prefix):
+                stripped = stripped[len(prefix):]
+                break
+        host = stripped.split("/")[0]
+
+        resource_name = ""
+        for suffix in (".cognitiveservices.azure.com", ".openai.azure.com"):
+            if suffix in host:
+                resource_name = host.split(suffix)[0]
+                break
+
+        if resource_name:
+            resources = await run_sync(
+                self._az.json,
+                "resource", "list",
+                "--name", resource_name,
+                "--resource-type", "Microsoft.CognitiveServices/accounts",
+                "--query", "[].id",
+            )
+            if isinstance(resources, list) and resources:
+                logger.info("[identity.resolve] Foundry resource: %s", resources[0])
+                return resources[0]
+
+        return ""
+
     async def _fix_session_pool_role(
         self,
         principal_id: str,
@@ -362,10 +452,13 @@ class IdentityRoutes:
                         f"/providers/Microsoft.App/sessionPools/{name}"
                     )
         if not pool_id:
+            # Discover from the resource group.
+            pool_id = await self._discover_session_pool()
+        if not pool_id:
             steps.append({
                 "step": "session_pool_rbac",
                 "status": "skipped",
-                "detail": "No session pool configured",
+                "detail": "No session pool found in resource group",
             })
             return
 
@@ -429,46 +522,73 @@ class IdentityRoutes:
     async def _resolve_cs_resource(self, endpoint: str) -> str:
         """Find the ARM resource ID for a Content Safety endpoint.
 
-        First tries scoping to the configured resource group (fast).  If
-        that yields nothing, falls back to a subscription-wide listing.
+        Extracts the resource name from the endpoint hostname and looks it
+        up via ``az resource list`` (fast) instead of the slow
+        ``az cognitiveservices account list``.  Falls back to the
+        default-RG discovery helper when name extraction fails.
         """
         assert self._az is not None
-        normalised = endpoint.rstrip("/").lower()
 
-        rg = _DEFAULT_RG
-        if rg:
-            accounts = await run_sync(
+        resource_name = ""
+        stripped = endpoint.rstrip("/").lower()
+        for prefix in ("https://", "http://"):
+            if stripped.startswith(prefix):
+                stripped = stripped[len(prefix):]
+                break
+        host = stripped.split("/")[0]
+        if ".cognitiveservices.azure.com" in host:
+            resource_name = host.split(".cognitiveservices.azure.com")[0]
+
+        if resource_name:
+            # Subscription-wide lookup by name -- works across any RG.
+            resources = await run_sync(
                 self._az.json,
-                "cognitiveservices", "account", "list",
-                "--resource-group", rg,
+                "resource", "list",
+                "--name", resource_name,
+                "--resource-type", "Microsoft.CognitiveServices/accounts",
+                "--query", "[].id",
             )
-            rid = self._match_cs_endpoint(accounts, normalised)
-            if rid:
-                return rid
+            if isinstance(resources, list) and resources:
+                logger.info("[identity.resolve] CS resource: %s", resources[0])
+                return resources[0]
 
-        # Fallback: subscription-wide (slower)
-        accounts = await run_sync(
-            self._az.json, "cognitiveservices", "account", "list",
-        )
-        return self._match_cs_endpoint(accounts, normalised)
+        # Fallback to RG-scoped discovery
+        return await self._discover_cs_resource()
 
-    @staticmethod
-    def _match_cs_endpoint(
-        accounts: list[Any] | dict[str, Any] | None,
-        normalised: str,
+    async def _discover_resource(
+        self, resource_type: str, query: str, label: str,
     ) -> str:
-        """Return the ARM resource ID whose endpoint matches *normalised*."""
-        if not isinstance(accounts, list):
+        """Find an Azure resource by type, checking configured RG then subscription-wide."""
+        if not self._az:
             return ""
-        for acct in accounts:
-            if not isinstance(acct, dict):
-                continue
-            acct_ep = (
-                acct.get("properties", {}).get("endpoint", "")
-            ).rstrip("/").lower()
-            if acct_ep == normalised:
-                return acct.get("id", "")
+        rg = cfg.env.read("FOUNDRY_RESOURCE_GROUP") or _DEFAULT_RG
+        for rg_args in (["--resource-group", rg], []):
+            resources = await run_sync(
+                self._az.json,
+                "resource", "list",
+                *rg_args,
+                "--resource-type", resource_type,
+                "--query", query,
+            )
+            if isinstance(resources, list) and resources:
+                rid = resources[0]
+                logger.info("[identity.discover] found %s: %s", label, rid)
+                return rid
         return ""
+
+    async def _discover_cs_resource(self) -> str:
+        """Find a ContentSafety Cognitive Services account."""
+        return await self._discover_resource(
+            "Microsoft.CognitiveServices/accounts",
+            "[?kind=='ContentSafety'].id",
+            "CS resource",
+        )
+
+    async def _discover_session_pool(self) -> str:
+        """Find a session pool ARM id."""
+        return await self._discover_resource(
+            "Microsoft.App/sessionPools", "[].id", "session pool",
+        )
 
     async def _assign_role(
         self,
@@ -501,22 +621,12 @@ class IdentityRoutes:
             "--role", role_id,
             "--scope", scope,
         )
+        step_name = f"assign_{role_name.lower().replace(' ', '_')}"
         if ok:
-            steps.append({
-                "step": f"assign_{role_name.lower().replace(' ', '_')}",
-                "status": "ok",
-                "detail": f"{role_name} assigned to {principal_id}",
-            })
+            status, detail = "ok", f"{role_name} assigned to {principal_id}"
         elif "already exists" in (msg or "").lower() or "conflict" in (msg or "").lower():
-            steps.append({
-                "step": f"assign_{role_name.lower().replace(' ', '_')}",
-                "status": "ok",
-                "detail": "Already assigned",
-            })
+            status, detail = "ok", "Already assigned"
         else:
-            steps.append({
-                "step": f"assign_{role_name.lower().replace(' ', '_')}",
-                "status": "failed",
-                "detail": f"Assignment failed: {msg}",
-            })
+            status, detail = "failed", f"Assignment failed: {msg}"
             logger.warning("[identity.fix] role assignment failed: %s", msg, exc_info=True)
+        steps.append({"step": step_name, "status": status, "detail": detail})
