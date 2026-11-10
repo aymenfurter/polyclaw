@@ -13,6 +13,7 @@ import sys
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape as escape_markup
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +40,18 @@ async def tty_approve(
     if len(args_str) > 300:
         args_str = args_str[:297] + "..."
 
+    # toolName/toolArgs can originate from an MCP server, which is free to
+    # name its own tools with no restriction on this side. escape() keeps
+    # Rich from treating embedded "[tag]" sequences as real markup, so
+    # untrusted text can't change the styling or content of what's shown.
+    safe_tool_name = escape_markup(str(tool_name))
+    safe_args_str = escape_markup(args_str)
+
     _console.print(
-        f"\n[bold yellow]Tool approval required:[/bold yellow] [bold]{tool_name}[/bold]"
+        f"\n[bold yellow]Tool approval required:[/bold yellow] [bold]{safe_tool_name}[/bold]"
     )
     if args_str:
-        _console.print(f"[dim]Arguments: {args_str}[/dim]")
+        _console.print(f"[dim]Arguments: {safe_args_str}[/dim]")
     _console.print("[bold]Allow? [y/n][/bold] ", end="")
 
     approved = await asyncio.to_thread(_read_yn)
